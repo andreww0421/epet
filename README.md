@@ -1,6 +1,14 @@
 # 班級寵物養成系統
 
-這是一個用於班級經營的前端小工具，老師可以管理學生積分，學生則能透過積分餵養寵物、扭蛋、對戰與查看排行榜。
+一個用於班級經營的前端小工具。老師可以管理學生積分與班級資料，學生則能用積分餵養寵物、扭蛋、對戰，並查看排行榜。
+
+## 直接開啟網站
+
+GitHub Pages 部署網址：
+
+- [https://andreww0421.github.io/epet/](https://andreww0421.github.io/epet/)
+
+推送到 `main` 後，GitHub Actions 會自動重新部署網站。
 
 ## 功能
 
@@ -22,7 +30,7 @@
 
 ## 本機執行
 
-先安裝依賴：
+安裝依賴：
 
 ```bash
 npm install
@@ -34,9 +42,11 @@ npm install
 npm run dev
 ```
 
-預設會在 `http://localhost:3000` 啟動。
+預設網址：
 
-## 驗證指令
+- `http://localhost:3000`
+
+## 驗證
 
 型別檢查：
 
@@ -50,11 +60,19 @@ npm run lint
 npm run build
 ```
 
+## 部署
+
+這個專案已設定 GitHub Pages。
+
+- production `base` 為 `/epet/`
+- GitHub Actions workflow 會建置 `dist/`
+- 成功後會自動發佈到 GitHub Pages
+
 ## 資料說明
 
 - 所有資料都儲存在瀏覽器的 `localStorage`
-- 匯出後可保存成 JSON 檔，之後再匯入回系統
-- 系統支援舊版資料結構的匯入與自動轉換
+- 可匯出成 JSON 檔備份
+- 支援匯入舊版資料並自動轉換
 
 ## 專案結構
 
@@ -63,6 +81,9 @@ src/
   App.tsx
   main.tsx
   index.css
+.github/
+  workflows/
+    deploy.yml
 index.html
 vite.config.ts
 ```
