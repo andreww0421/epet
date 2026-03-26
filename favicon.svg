@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title>Classroom Pet System</title>
+  <rect width="64" height="64" rx="16" fill="#fff7ed"/>
+  <path d="M20 18c0 5-3 8-7 8s-7-3-7-8 3-8 7-8 7 3 7 8Zm38 0c0 5-3 8-7 8s-7-3-7-8 3-8 7-8 7 3 7 8Z" fill="#f59e0b"/>
+  <path d="M32 15c13.255 0 24 10.745 24 24S45.255 63 32 63 8 52.255 8 39 18.745 15 32 15Z" fill="#ffffff" stroke="#4f46e5" stroke-width="4"/>
+  <circle cx="24" cy="37" r="3.5" fill="#4f46e5"/>
+  <circle cx="40" cy="37" r="3.5" fill="#4f46e5"/>
+  <path d="M23 47c3 4 15 4 18 0" fill="none" stroke="#f59e0b" stroke-linecap="round" stroke-width="4"/>
+  <path d="M27 30c3-3 7-3 10 0" fill="none" stroke="#4f46e5" stroke-linecap="round" stroke-width="4"/>
+</svg>
