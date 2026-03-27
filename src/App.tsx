@@ -17,6 +17,15 @@ type StudentStats = {
   losses: number;
 };
 
+type DisciplineRecordType = 'warning' | 'autoPenalty' | 'discipline';
+
+type DisciplineRecord = {
+  id: string;
+  type: DisciplineRecordType;
+  createdAt: number;
+  warningCount?: number;
+};
+
 type Student = {
   id: string;
   name: string;
@@ -24,8 +33,18 @@ type Student = {
   pet: Pet;
   stats?: StudentStats;
   rankPoints?: number;
+  warningPoints?: number;
+  disciplineRecords?: DisciplineRecord[];
   badges?: string[];
 };
+
+type UpgradeRewardState = {
+  studentId: string;
+  studentName: string;
+  reachedLevel: number;
+};
+
+type PetAnimationMode = 'feed' | 'gacha' | 'reroll';
 
 type Language = 'zh' | 'en';
 
@@ -125,6 +144,17 @@ const translations = {
     feedNeedPoints: '餵食需 {cost} 積分',
     battleNeedFullness: '對戰需 50 飽食度',
     upgradeNeedFullness: '升級需飽食度 100',
+    happiness: '心情',
+    moodLowPenalty: '心情不足 40，無法升級',
+    upgradeGachaUnlocked: '{name} 升到 {level} 級，可免費抽一次換寵！',
+    upgradeGachaTitle: '升級獎勵扭蛋',
+    upgradeGachaDesc: '{name} 已升到 {level} 級，要不要免費抽一次新寵物？',
+    upgradeGachaKeep: '保留原寵物',
+    upgradeGachaDraw: '抽新寵物',
+    upgradeGachaResetNote: '若換新寵物，會重設為 Lv. 2 / 飽食度 30 / 心情 25',
+    upgradeGachaChanged: '{name} 換成了 {pet}！',
+    upgradeGachaReady: '升到 Lv. {level} 可換寵',
+    upgradeGachaNow: '本級可免費換寵',
     language: '語言 / Language',
     classManagement: '班級管理',
     addClass: '新增班級',
@@ -153,6 +183,18 @@ const translations = {
     badgeVeteran: '百戰天龍',
     rankPoints: '段位分',
     resetSeason: '重置賽季',
+    warningPoints: '警告',
+    issueWarning: '記警告',
+    discipline: '正式處罰',
+    warningIssued: '{name} 記 1 次警告（{count}/3）',
+    warningTriggeredPenalty: '{name} 累積 3 次警告，已自動處罰',
+    disciplineApplied: '{name} 已受到正式處罰',
+    disciplineRecords: '處罰記錄',
+    noDisciplineRecords: '目前還沒有處罰記錄',
+    recordWarning: '記警告',
+    recordAutoPenalty: '自動處罰',
+    recordDiscipline: '正式處罰',
+    recordPenaltySummary: '積分 -{points} / 飽食 -{fullness} / 心情 -{happiness} / RP -{rankPoints}',
   },
   en: {
     appTitle: 'Classroom Pet System',
@@ -231,6 +273,17 @@ const translations = {
     feedNeedPoints: 'Feeding requires {cost} pts',
     battleNeedFullness: 'Battling requires 50 fullness',
     upgradeNeedFullness: 'Upgrade requires 100 fullness',
+    happiness: 'Mood',
+    moodLowPenalty: 'Mood must be at least 40 to upgrade',
+    upgradeGachaUnlocked: '{name} reached level {level} and unlocked a free pet reroll!',
+    upgradeGachaTitle: 'Level-Up Reward Gacha',
+    upgradeGachaDesc: '{name} reached level {level}. Do you want to reroll into a new pet for free?',
+    upgradeGachaKeep: 'Keep Current Pet',
+    upgradeGachaDraw: 'Draw New Pet',
+    upgradeGachaResetNote: 'Choosing a new pet resets it to Lv. 2 / Fullness 30 / Mood 25',
+    upgradeGachaChanged: '{name} switched to {pet}!',
+    upgradeGachaReady: 'Reach Lv. {level} to reroll',
+    upgradeGachaNow: 'Free reroll unlocked',
     language: 'Language',
     classManagement: 'Class Management',
     addClass: 'Add Class',
@@ -259,6 +312,18 @@ const translations = {
     badgeVeteran: 'Veteran',
     rankPoints: 'RP',
     resetSeason: 'Reset Season',
+    warningPoints: 'Warnings',
+    issueWarning: 'Warn',
+    discipline: 'Discipline',
+    warningIssued: '{name} received 1 warning ({count}/3)',
+    warningTriggeredPenalty: '{name} reached 3 warnings and was auto-penalized',
+    disciplineApplied: '{name} received a formal penalty',
+    disciplineRecords: 'Discipline Records',
+    noDisciplineRecords: 'No discipline records yet',
+    recordWarning: 'Warning',
+    recordAutoPenalty: 'Auto Penalty',
+    recordDiscipline: 'Formal Penalty',
+    recordPenaltySummary: 'Points -{points} / Fullness -{fullness} / Mood -{happiness} / RP -{rankPoints}',
   }
 };
 
@@ -298,6 +363,13 @@ const PET_TYPES = [
 
 const DEFAULT_CLASS_NAME = '預設班級';
 const STORAGE_KEY = 'tamagotchi_classroom_data';
+const UPGRADE_GACHA_LEVELS = new Set([2, 4, 6, 8]);
+const UPGRADE_REWARD_LEVEL = 2;
+const UPGRADE_REWARD_FULLNESS = 30;
+const UPGRADE_REWARD_HAPPINESS = 25;
+const WARNING_THRESHOLD = 3;
+const WARNING_AUTO_PENALTY = { points: 20, fullness: 15, happiness: 10, rankPoints: 15 };
+const DIRECT_DISCIPLINE_PENALTY = { points: 30, fullness: 20, happiness: 15, rankPoints: 30 };
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
@@ -305,6 +377,28 @@ const toFiniteNumber = (value: unknown, fallback: number) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 };
+
+const getRandomPetType = (useRarity = false) => {
+  if (!useRarity) {
+    const possiblePets = PET_TYPES.filter((pet) => pet.id !== 'egg');
+    return possiblePets[Math.floor(Math.random() * possiblePets.length)].id;
+  }
+
+  const rand = Math.random();
+  let rarity = 'common';
+  if (rand > 0.9) rarity = 'legendary';
+  else if (rand > 0.6) rarity = 'rare';
+
+  const possiblePets = PET_TYPES.filter((pet) => pet.rarity === rarity && pet.id !== 'egg');
+  return possiblePets[Math.floor(Math.random() * possiblePets.length)].id;
+};
+
+const createDisciplineRecord = (type: DisciplineRecordType, warningCount?: number): DisciplineRecord => ({
+  id: `record-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  type,
+  createdAt: Date.now(),
+  warningCount,
+});
 
 const computeBadges = (student: Pick<Student, 'points' | 'pet' | 'stats'>) => {
   const badges = new Set<string>();
@@ -351,6 +445,23 @@ const normalizeStudent = (student: any, fallbackIndex: number): Student => {
       losses: Math.max(0, Math.floor(toFiniteNumber(student?.stats?.losses, 0))),
     },
     rankPoints: Math.max(0, Math.floor(toFiniteNumber(student?.rankPoints, 1000))),
+    warningPoints: Math.max(0, Math.floor(toFiniteNumber(student?.warningPoints, 0))),
+    disciplineRecords: Array.isArray(student?.disciplineRecords)
+      ? student.disciplineRecords
+          .map((record: any, index: number) => ({
+            id:
+              typeof record?.id === 'string' && record.id
+                ? record.id
+                : `record-${Date.now()}-${fallbackIndex}-${index}`,
+            type:
+              record?.type === 'warning' || record?.type === 'autoPenalty' || record?.type === 'discipline'
+                ? record.type
+                : 'warning',
+            createdAt: toFiniteNumber(record?.createdAt, Date.now()),
+            warningCount: record?.warningCount == null ? undefined : Math.max(0, Math.floor(toFiniteNumber(record.warningCount, 0))),
+          }))
+          .sort((a: DisciplineRecord, b: DisciplineRecord) => b.createdAt - a.createdAt)
+      : [],
     badges: [],
   };
 
@@ -430,8 +541,9 @@ const applyDecay = (appData: AppData, now = Date.now()): AppData => {
 export default function App() {
   const [data, setData] = useState<AppData | null>(null);
   const [view, setView] = useState<'dashboard' | 'classroom'>('classroom');
-  const [animatingPets, setAnimatingPets] = useState<Record<string, boolean>>({});
+  const [animatingPets, setAnimatingPets] = useState<Record<string, PetAnimationMode | undefined>>({});
   const [toast, setToast] = useState<{message: string, type: 'success' | 'error'} | null>(null);
+  const [upgradeReward, setUpgradeReward] = useState<UpgradeRewardState | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const lang = data?.settings?.language || 'zh';
@@ -489,6 +601,37 @@ export default function App() {
     saveData({ ...data, classes: newClasses });
   };
 
+  const triggerPetAnimation = (studentId: string, mode: PetAnimationMode, durationMs: number) => {
+    setAnimatingPets((prev) => ({ ...prev, [studentId]: mode }));
+    setTimeout(() => {
+      setAnimatingPets((prev) => {
+        const next = { ...prev };
+        delete next[studentId];
+        return next;
+      });
+    }, durationMs);
+  };
+
+  const applyPenaltyToStudent = (
+    student: Student,
+    penalty: { points: number; fullness: number; happiness: number; rankPoints: number },
+    nextWarningPoints = student.warningPoints ?? 0,
+    record?: DisciplineRecord,
+  ): Student => ({
+    ...student,
+    points: clamp(student.points - penalty.points, 0, 700),
+    pet: {
+      ...student.pet,
+      fullness: clamp(student.pet.fullness - penalty.fullness, 0, 100),
+      happiness: clamp((student.pet.happiness ?? 80) - penalty.happiness, 0, 100),
+    },
+    rankPoints: Math.max(0, (student.rankPoints ?? 0) - penalty.rankPoints),
+    warningPoints: Math.max(0, nextWarningPoints),
+    disciplineRecords: record
+      ? [record, ...(student.disciplineRecords ?? [])].slice(0, 20)
+      : student.disciplineRecords ?? [],
+  });
+
   const switchClass = (classId: string) => {
     if (!data) return;
     saveData({ ...data, currentClassId: classId });
@@ -537,6 +680,8 @@ export default function App() {
       },
       stats: { wins: 0, losses: 0 },
       rankPoints: 1000,
+      warningPoints: 0,
+      disciplineRecords: [],
       badges: []
     };
     
@@ -561,9 +706,71 @@ export default function App() {
     updateCurrentClassStudents(currentClass.students.map(s => ({
       ...s,
       stats: { wins: 0, losses: 0 },
-      rankPoints: 1000
+      rankPoints: 1000,
+      warningPoints: 0,
     })));
     showToast(tLang.resetSeason);
+  };
+
+  const warnStudent = (studentId: string) => {
+    if (!data) return;
+    const currentClass = data.classes.find((c) => c.id === data.currentClassId);
+    if (!currentClass) return;
+
+    const targetStudent = currentClass.students.find((student) => student.id === studentId);
+    if (!targetStudent) return;
+
+    const nextWarningCount = (targetStudent.warningPoints ?? 0) + 1;
+    const triggersPenalty = nextWarningCount >= WARNING_THRESHOLD;
+    const warningRecord = createDisciplineRecord('warning', nextWarningCount);
+    const autoPenaltyRecord = createDisciplineRecord('autoPenalty', nextWarningCount);
+
+    updateCurrentClassStudents(
+      currentClass.students.map((student) => {
+        if (student.id !== studentId) return student;
+        if (triggersPenalty) {
+          return applyPenaltyToStudent(
+            {
+              ...student,
+              disciplineRecords: [warningRecord, ...(student.disciplineRecords ?? [])].slice(0, 20),
+            },
+            WARNING_AUTO_PENALTY,
+            0,
+            autoPenaltyRecord,
+          );
+        }
+        return {
+          ...student,
+          warningPoints: nextWarningCount,
+          disciplineRecords: [warningRecord, ...(student.disciplineRecords ?? [])].slice(0, 20),
+        };
+      }),
+    );
+
+    showToast(
+      triggersPenalty
+        ? tLang.warningTriggeredPenalty.replace('{name}', targetStudent.name)
+        : tLang.warningIssued.replace('{name}', targetStudent.name).replace('{count}', nextWarningCount.toString()),
+      triggersPenalty ? 'error' : 'success',
+    );
+  };
+
+  const disciplineStudent = (studentId: string) => {
+    if (!data) return;
+    const currentClass = data.classes.find((c) => c.id === data.currentClassId);
+    if (!currentClass) return;
+
+    const targetStudent = currentClass.students.find((student) => student.id === studentId);
+    if (!targetStudent) return;
+    const disciplineRecord = createDisciplineRecord('discipline');
+
+    updateCurrentClassStudents(
+      currentClass.students.map((student) =>
+        student.id === studentId ? applyPenaltyToStudent(student, DIRECT_DISCIPLINE_PENALTY, 0, disciplineRecord) : student,
+      ),
+    );
+
+    showToast(tLang.disciplineApplied.replace('{name}', targetStudent.name), 'error');
   };
 
   const gachaPet = (studentId: string) => {
@@ -574,19 +781,9 @@ export default function App() {
     const student = currentClass.students.find(s => s.id === studentId);
     if (!student || student.points < 200) return;
 
-    const rand = Math.random();
-    let rarity = 'common';
-    if (rand > 0.9) rarity = 'legendary';
-    else if (rand > 0.6) rarity = 'rare';
+    const newPetType = getRandomPetType(true);
 
-    const possiblePets = PET_TYPES.filter(p => p.rarity === rarity && p.id !== 'egg');
-    const newPetType = possiblePets[Math.floor(Math.random() * possiblePets.length)].id;
-
-    // Trigger animation
-    setAnimatingPets(prev => ({ ...prev, [studentId]: true }));
-    setTimeout(() => {
-      setAnimatingPets(prev => ({ ...prev, [studentId]: false }));
-    }, 1500);
+    triggerPetAnimation(studentId, 'gacha', 1500);
 
     updateCurrentClassStudents(currentClass.students.map(s => {
       if (s.id === studentId) {
@@ -605,6 +802,41 @@ export default function App() {
     showToast(tLang.gachaResult.replace('{pet}', (petNames[data.settings?.language || 'zh'] as any)[newPetType]), 'success');
   };
 
+  const rerollPetFromUpgrade = (studentId: string) => {
+    if (!data) return;
+    const currentClass = data.classes.find((c) => c.id === data.currentClassId);
+    if (!currentClass) return;
+
+    const newPetType = getRandomPetType(true);
+
+    triggerPetAnimation(studentId, 'reroll', 1800);
+
+    updateCurrentClassStudents(
+      currentClass.students.map((student) =>
+        student.id === studentId
+          ? {
+              ...student,
+              pet: {
+                ...student.pet,
+                type: newPetType,
+                level: UPGRADE_REWARD_LEVEL,
+                fullness: UPGRADE_REWARD_FULLNESS,
+                happiness: UPGRADE_REWARD_HAPPINESS,
+              },
+            }
+          : student,
+      ),
+    );
+
+    const targetStudent = currentClass.students.find((student) => student.id === studentId);
+    showToast(
+      tLang.upgradeGachaChanged
+        .replace('{name}', targetStudent?.name || '')
+        .replace('{pet}', (petNames[data.settings?.language || 'zh'] as any)[newPetType]),
+      'success',
+    );
+  };
+
   const feedPet = (studentId: string) => {
     if (!data) return;
     const currentClass = data.classes.find(c => c.id === data.currentClassId);
@@ -612,11 +844,7 @@ export default function App() {
     
     const feedCost = data.settings?.feedCost ?? 10;
     
-    // Trigger animation
-    setAnimatingPets(prev => ({ ...prev, [studentId]: true }));
-    setTimeout(() => {
-      setAnimatingPets(prev => ({ ...prev, [studentId]: false }));
-    }, 1000);
+    triggerPetAnimation(studentId, 'feed', 1000);
 
     updateCurrentClassStudents(currentClass.students.map(s => {
       if (s.id === studentId && s.points >= feedCost) {
@@ -625,7 +853,8 @@ export default function App() {
           points: s.points - feedCost,
           pet: {
             ...s.pet,
-            fullness: Math.min(100, s.pet.fullness + 20)
+            fullness: Math.min(100, s.pet.fullness + 20),
+            happiness: Math.min(100, (s.pet.happiness ?? 80) + 10),
           }
         };
       }
@@ -649,12 +878,18 @@ export default function App() {
         showToast(tLang.fullnessNeed100, 'error');
         return;
     }
+    if ((student.pet.happiness || 0) < 40) {
+        showToast(tLang.moodLowPenalty, 'error');
+        return;
+    }
     
     const upgradeCost = 100 + (currentLevel - 1) * 50;
     if (student.points < upgradeCost) {
         showToast(tLang.upgradeNeedPoints.replace('{cost}', upgradeCost.toString()), 'error');
         return;
     }
+
+    const nextLevel = currentLevel + 1;
     
     updateCurrentClassStudents(currentClass.students.map(s => {
       if (s.id === studentId) {
@@ -663,13 +898,22 @@ export default function App() {
           points: s.points - upgradeCost,
           pet: {
             ...s.pet,
-            level: currentLevel + 1
+            level: nextLevel
           }
         };
       }
       return s;
     }));
-    showToast(tLang.petUpgraded.replace('{name}', student.name).replace('{level}', (currentLevel + 1).toString()), 'success');
+    showToast(tLang.petUpgraded.replace('{name}', student.name).replace('{level}', nextLevel.toString()), 'success');
+
+    if (UPGRADE_GACHA_LEVELS.has(nextLevel)) {
+      setUpgradeReward({
+        studentId,
+        studentName: student.name,
+        reachedLevel: nextLevel,
+      });
+      showToast(tLang.upgradeGachaUnlocked.replace('{name}', student.name).replace('{level}', nextLevel.toString()), 'success');
+    }
   };
 
   const decreaseLevel = (studentId: string) => {
@@ -868,6 +1112,8 @@ export default function App() {
             importData={importData}
             fileInputRef={fileInputRef}
             decreaseLevel={decreaseLevel}
+            warnStudent={warnStudent}
+            disciplineStudent={disciplineStudent}
             updateSettings={updateSettings}
             switchClass={switchClass}
             addClass={addClass}
@@ -890,6 +1136,44 @@ export default function App() {
         )}
       </main>
 
+      {upgradeReward && (
+        <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl shadow-xl max-w-md w-full overflow-hidden">
+            <div className="p-6">
+              <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-amber-100">
+                <Dices className="h-7 w-7 text-amber-600" />
+              </div>
+              <h3 className="text-xl font-bold text-slate-900 text-center mb-2">{tLang.upgradeGachaTitle}</h3>
+              <p className="text-sm text-slate-600 text-center leading-6">
+                {tLang.upgradeGachaDesc
+                  .replace('{name}', upgradeReward.studentName)
+                  .replace('{level}', upgradeReward.reachedLevel.toString())}
+              </p>
+              <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                {tLang.upgradeGachaResetNote}
+              </div>
+            </div>
+            <div className="bg-slate-50 px-6 py-4 flex justify-end gap-3">
+              <button
+                onClick={() => setUpgradeReward(null)}
+                className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50"
+              >
+                {tLang.upgradeGachaKeep}
+              </button>
+              <button
+                onClick={() => {
+                  rerollPetFromUpgrade(upgradeReward.studentId);
+                  setUpgradeReward(null);
+                }}
+                className="px-4 py-2 text-sm font-medium text-white bg-amber-500 border border-transparent rounded-md hover:bg-amber-600"
+              >
+                {tLang.upgradeGachaDraw}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Toast Notification */}
       {toast && (
         <div className="fixed bottom-6 right-6 z-50 animate-[bounce_0.5s_ease-in-out]">
@@ -906,7 +1190,7 @@ export default function App() {
 }
 
 // --- Dashboard View Component ---
-function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData, importData, fileInputRef, decreaseLevel, updateSettings, switchClass, addClass, deleteClass, resetSeason, lang, tLang }: any) {
+function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData, importData, fileInputRef, decreaseLevel, warnStudent, disciplineStudent, updateSettings, switchClass, addClass, deleteClass, resetSeason, lang, tLang }: any) {
   const [newStudentName, setNewStudentName] = useState('');
   const [studentToDelete, setStudentToDelete] = useState<string | null>(null);
   const [customPoints, setCustomPoints] = useState<{id: string, name: string} | null>(null);
@@ -919,6 +1203,45 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
   const [newClassName, setNewClassName] = useState('');
   const [showAddClass, setShowAddClass] = useState(false);
   const [classToDelete, setClassToDelete] = useState<string | null>(null);
+  const currentClass = data.classes.find((c: any) => c.id === data.currentClassId);
+  const currentStudents = currentClass?.students || [];
+  const disciplineRecords = currentStudents
+    .flatMap((student: any) =>
+      (student.disciplineRecords ?? []).map((record: any) => ({
+        ...record,
+        studentName: student.name,
+      })),
+    )
+    .sort((a: any, b: any) => b.createdAt - a.createdAt)
+    .slice(0, 12);
+
+  const getRecordLabel = (type: DisciplineRecordType) => {
+    if (type === 'autoPenalty') return tLang.recordAutoPenalty;
+    if (type === 'discipline') return tLang.recordDiscipline;
+    return tLang.recordWarning;
+  };
+
+  const getRecordTone = (type: DisciplineRecordType) => {
+    if (type === 'autoPenalty') return 'bg-amber-100 text-amber-700';
+    if (type === 'discipline') return 'bg-rose-100 text-rose-700';
+    return 'bg-slate-100 text-slate-700';
+  };
+
+  const formatRecordTime = (timestamp: number) =>
+    new Date(timestamp).toLocaleString(lang === 'zh' ? 'zh-TW' : 'en-US', {
+      month: 'numeric',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+
+  const penaltySummary = (penalty: { points: number; fullness: number; happiness: number; rankPoints: number }) =>
+    tLang.recordPenaltySummary
+      .replace('{points}', penalty.points.toString())
+      .replace('{fullness}', penalty.fullness.toString())
+      .replace('{happiness}', penalty.happiness.toString())
+      .replace('{rankPoints}', penalty.rankPoints.toString());
 
   const handleSaveSettings = () => {
     updateSettings(Number(decayAmount), decayType, currentLang, Number(feedCost));
@@ -945,6 +1268,8 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
       },
       stats: { wins: 0, losses: 0 },
       rankPoints: 1000,
+      warningPoints: 0,
+      disciplineRecords: [],
       badges: []
     };
     addStudent(newStudent);
@@ -1075,21 +1400,30 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-200">
-              {data.classes.find((c: any) => c.id === data.currentClassId)?.students.length === 0 ? (
+              {currentStudents.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-6 py-8 text-center text-slate-500">
                     {tLang.noStudents}
                   </td>
                 </tr>
               ) : (
-                data.classes.find((c: any) => c.id === data.currentClassId)?.students.map((student: any) => {
+                currentStudents.map((student: any) => {
                   const petConfig = PET_TYPES.find(p => p.id === student.pet.type) || PET_TYPES[0];
                   const PetIcon = petConfig.icon;
+                  const warningPoints = student.warningPoints ?? 0;
                   
                   return (
                     <tr key={student.id} className="hover:bg-slate-50 transition-colors">
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="text-sm font-medium text-slate-900">{student.name}</div>
+                        <div className="mt-1">
+                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-bold ${
+                            warningPoints > 0 ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-500'
+                          }`}>
+                            <AlertCircle className="mr-1 h-3 w-3" />
+                            {tLang.warningPoints} {warningPoints}/{WARNING_THRESHOLD}
+                          </span>
+                        </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="flex items-center text-sm text-slate-600">
@@ -1104,17 +1438,20 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
                         <div className="text-sm font-bold text-indigo-600">{student.points} / 700</div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="flex items-center">
-                          <div className="w-full bg-slate-200 rounded-full h-2.5 mr-2 max-w-[100px]">
-                            <div 
-                              className={`h-2.5 rounded-full ${
-                                student.pet.fullness > 70 ? 'bg-green-500' : 
-                                student.pet.fullness >= 30 ? 'bg-yellow-400' : 'bg-red-500'
-                              }`} 
-                              style={{ width: `${student.pet.fullness}%` }}
-                            ></div>
+                        <div>
+                          <div className="flex items-center">
+                            <div className="w-full bg-slate-200 rounded-full h-2.5 mr-2 max-w-[100px]">
+                              <div 
+                                className={`h-2.5 rounded-full ${
+                                  student.pet.fullness > 70 ? 'bg-green-500' : 
+                                  student.pet.fullness >= 30 ? 'bg-yellow-400' : 'bg-red-500'
+                                }`} 
+                                style={{ width: `${student.pet.fullness}%` }}
+                              ></div>
+                            </div>
+                            <span className="text-sm text-slate-600">{student.pet.fullness}/100</span>
                           </div>
-                          <span className="text-sm text-slate-600">{student.pet.fullness}/100</span>
+                          <div className="mt-1 text-xs text-slate-500">{tLang.happiness}: {student.pet.happiness ?? 80}/100</div>
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
@@ -1174,6 +1511,23 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
                             <ChevronsDown className="h-4 w-4" />
                           </button>
 
+                          <div className="flex space-x-1 bg-amber-50 p-1 rounded-md border border-amber-100">
+                            <button
+                              onClick={() => warnStudent(student.id)}
+                              className="inline-flex items-center px-2 py-1 rounded text-xs font-medium text-amber-700 hover:bg-amber-200 transition-colors"
+                              title={tLang.issueWarning}
+                            >
+                              <AlertCircle className="h-3 w-3" />
+                            </button>
+                            <button
+                              onClick={() => disciplineStudent(student.id)}
+                              className="inline-flex items-center px-2 py-1 rounded text-xs font-medium text-red-700 hover:bg-red-100 transition-colors"
+                              title={tLang.discipline}
+                            >
+                              <Shield className="h-3 w-3" />
+                            </button>
+                          </div>
+
                           {/* Delete */}
                           <button
                             onClick={() => setStudentToDelete(student.id)}
@@ -1191,6 +1545,46 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
             </tbody>
           </table>
         </div>
+      </div>
+
+      <div className="mt-6 bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200">
+        <div className="px-5 py-4 border-b border-slate-200 bg-slate-50">
+          <h3 className="text-lg font-medium text-slate-900 flex items-center">
+            <Shield className="h-5 w-5 mr-2 text-rose-500" />
+            {tLang.disciplineRecords}
+          </h3>
+        </div>
+        {disciplineRecords.length === 0 ? (
+          <div className="px-5 py-8 text-sm text-slate-500 text-center">{tLang.noDisciplineRecords}</div>
+        ) : (
+          <div className="divide-y divide-slate-200">
+            {disciplineRecords.map((record: any) => (
+              <div key={record.id} className="px-5 py-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-bold ${getRecordTone(record.type)}`}>
+                      {getRecordLabel(record.type)}
+                    </span>
+                    <span className="font-medium text-slate-900">{record.studentName}</span>
+                    {record.type === 'warning' && (
+                      <span className="text-sm text-slate-500">
+                        {tLang.warningPoints} {record.warningCount}/{WARNING_THRESHOLD}
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-1 text-sm text-slate-600">
+                    {record.type === 'warning'
+                      ? tLang.warningIssued.replace('{name}', record.studentName).replace('{count}', String(record.warningCount ?? 1))
+                      : record.type === 'autoPenalty'
+                        ? penaltySummary(WARNING_AUTO_PENALTY)
+                        : penaltySummary(DIRECT_DISCIPLINE_PENALTY)}
+                  </div>
+                </div>
+                <div className="text-xs font-medium text-slate-400">{formatRecordTime(record.createdAt)}</div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* System Settings */}
@@ -1502,7 +1896,7 @@ function ClassroomView({ data, feedPet, upgradePet, battle, gachaPet, animatingP
                 onUpgrade={() => upgradePet(student.id)}
                 onBattle={() => handleOpenBattle(student.id)}
                 onGacha={() => gachaPet(student.id)}
-                isAnimating={animatingPets[student.id]}
+                animationMode={animatingPets[student.id]}
                 lang={lang}
                 tLang={tLang}
                 feedCost={data.settings?.feedCost ?? 10}
@@ -1654,22 +2048,29 @@ function ClassroomView({ data, feedPet, upgradePet, battle, gachaPet, animatingP
   );
 }
 
-function PetCard({ student, onFeed, onUpgrade, onBattle, onGacha, isAnimating, lang, tLang, feedCost, getRankInfo }: any) {
-  const { name, points, pet, badges = [], rankPoints = 0 } = student;
-  const { fullness, type, level = 1 } = pet;
+function PetCard({ student, onFeed, onUpgrade, onBattle, onGacha, animationMode, lang, tLang, feedCost, getRankInfo }: any) {
+  const { name, points, pet, badges = [], rankPoints = 0, warningPoints = 0 } = student;
+  const { fullness, type, level = 1, happiness = 80 } = pet;
   
   const petConfig = PET_TYPES.find(p => p.id === type) || PET_TYPES[0];
   const PetIcon = petConfig.icon;
 
   const isStrong = points >= 100 || fullness === 100;
-  const isHappy = fullness > 70;
-  const isNormal = fullness >= 30 && fullness <= 70;
-  const isHungry = fullness < 30;
+  const isLowMood = happiness < 40;
+  const isHappy = fullness > 70 && !isLowMood;
+  const isNormal = fullness >= 30 && fullness <= 70 && !isLowMood;
+  const isHungry = fullness < 30 || isLowMood;
   const canFeed = points >= feedCost;
   const canBattle = fullness >= 50;
   const upgradeCost = 100 + (level - 1) * 50;
-  const canUpgrade = level < 10 && fullness >= 100 && points >= upgradeCost;
+  const canUpgrade = level < 10 && fullness >= 100 && points >= upgradeCost && happiness >= 40;
   const canGacha = points >= 200;
+  const nextMilestoneLevel = [2, 4, 6, 8].find((milestone) => milestone > level);
+  const currentLevelHasReward = UPGRADE_GACHA_LEVELS.has(level);
+  const isAnimating = Boolean(animationMode);
+  const isRerollAnimation = animationMode === 'reroll';
+  const isGachaAnimation = animationMode === 'gacha';
+  const isFeedAnimation = animationMode === 'feed';
 
   let StatusIcon = Smile;
   let statusText = tLang.statusHappy;
@@ -1711,6 +2112,12 @@ function PetCard({ student, onFeed, onUpgrade, onBattle, onGacha, isAnimating, l
           <span className="text-xs font-bold text-amber-600 flex items-center">
             <Star className="h-3 w-3 mr-1 fill-amber-500" /> Lv. {level}
           </span>
+          {warningPoints > 0 && (
+            <span className="mt-1 inline-flex w-fit items-center rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-bold text-rose-700">
+              <AlertCircle className="mr-1 h-3 w-3" />
+              {tLang.warningPoints} {warningPoints}/{WARNING_THRESHOLD}
+            </span>
+          )}
         </div>
         <div className="flex items-center bg-white px-2 py-1 rounded-full shadow-sm">
           <span className="text-xs font-bold text-indigo-600 mr-1">{tLang.points}</span>
@@ -1734,15 +2141,59 @@ function PetCard({ student, onFeed, onUpgrade, onBattle, onGacha, isAnimating, l
         {/* Floating Hearts Animation */}
         {isAnimating && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
-            <Heart className="text-pink-500 fill-pink-500 h-8 w-8 animate-[ping_1s_ease-out_forwards] absolute opacity-75" />
-            <Heart className="text-pink-400 fill-pink-400 h-6 w-6 animate-[bounce_1s_ease-in-out_infinite] absolute -mt-16 ml-8" />
-            <Heart className="text-pink-400 fill-pink-400 h-5 w-5 animate-[bounce_1.2s_ease-in-out_infinite] absolute -mt-12 -ml-10" />
+            <div className={`absolute rounded-full blur-3xl animate-pulse ${
+              isRerollAnimation
+                ? 'h-44 w-44 bg-gradient-to-r from-fuchsia-300/40 via-amber-300/50 to-cyan-300/40'
+                : isGachaAnimation
+                  ? 'h-40 w-40 bg-gradient-to-r from-violet-300/35 via-indigo-300/35 to-sky-300/35'
+                  : 'h-36 w-36 bg-amber-300/30'
+            }`} />
+            {(isGachaAnimation || isRerollAnimation) && (
+              <>
+                <div className={`absolute h-28 w-28 rounded-full border-4 ${
+                  isRerollAnimation ? 'border-fuchsia-300/70' : 'border-indigo-300/70'
+                } animate-[spin_1.8s_linear_infinite]`} />
+                <div className={`absolute h-40 w-40 rounded-full border-2 ${
+                  isRerollAnimation ? 'border-amber-200/70' : 'border-sky-200/70'
+                } animate-[ping_1.4s_ease-out_infinite]`} />
+              </>
+            )}
+            <Sparkles className={`absolute h-10 w-10 ${
+              isRerollAnimation ? 'text-fuchsia-400 animate-[spin_1.2s_linear_infinite]' : 'text-yellow-400 animate-[spin_1.5s_linear_infinite]'
+            }`} />
+            <Sparkles className={`absolute -mt-10 -ml-14 h-8 w-8 ${
+              isRerollAnimation ? 'text-cyan-400 animate-[ping_0.9s_ease-out_infinite]' : 'text-indigo-400 animate-[ping_1.1s_ease-out_infinite]'
+            }`} />
+            <Sparkles className={`absolute mt-10 mr-16 h-7 w-7 ${
+              isRerollAnimation ? 'text-amber-400 animate-[ping_1s_ease-out_infinite]' : 'text-emerald-400 animate-[ping_1.3s_ease-out_infinite]'
+            }`} />
+            {isRerollAnimation && (
+              <>
+                <Sparkles className="absolute -mt-16 ml-14 h-7 w-7 text-rose-400 animate-[bounce_0.9s_ease-in-out_infinite]" />
+                <div className="absolute bottom-4 rounded-full bg-white/90 px-3 py-1 text-[10px] font-black uppercase tracking-[0.25em] text-fuchsia-600 shadow-md animate-bounce">
+                  New Pet
+                </div>
+              </>
+            )}
+            {(isFeedAnimation || isRerollAnimation) && (
+              <>
+                <Heart className="text-pink-500 fill-pink-500 h-8 w-8 animate-[ping_1s_ease-out_forwards] absolute opacity-75" />
+                <Heart className="text-pink-400 fill-pink-400 h-6 w-6 animate-[bounce_1s_ease-in-out_infinite] absolute -mt-16 ml-8" />
+                <Heart className="text-pink-400 fill-pink-400 h-5 w-5 animate-[bounce_1.2s_ease-in-out_infinite] absolute -mt-12 -ml-10" />
+              </>
+            )}
           </div>
         )}
 
         {/* Pet Character */}
         <div className={`relative transition-all duration-500 ${isAnimating ? 'scale-125 -translate-y-4' : 'hover:scale-110'} ${evolutionStage >= 3 ? 'scale-110' : ''}`}>
-          <div className={`p-4 rounded-full ${isStrong ? 'bg-amber-100' : bgColor} ${evolutionStage >= 2 ? 'shadow-[0_0_15px_rgba(251,191,36,0.6)]' : ''} ${evolutionStage >= 3 ? 'shadow-[0_0_25px_rgba(167,139,250,0.8)]' : ''}`}>
+          <div className={`p-4 rounded-full ${isStrong ? 'bg-amber-100' : bgColor} ${
+            isRerollAnimation
+              ? 'shadow-[0_0_30px_rgba(217,70,239,0.65)] ring-4 ring-fuchsia-200/70'
+              : evolutionStage >= 2
+                ? 'shadow-[0_0_15px_rgba(251,191,36,0.6)]'
+                : ''
+          } ${evolutionStage >= 3 ? 'shadow-[0_0_25px_rgba(167,139,250,0.8)]' : ''}`}>
             {evolutionStage >= 3 && (
               <Crown className="h-6 w-6 text-yellow-500 absolute -top-4 left-1/2 transform -translate-x-1/2 z-10 drop-shadow-sm" />
             )}
@@ -1779,6 +2230,13 @@ function PetCard({ student, onFeed, onUpgrade, onBattle, onGacha, isAnimating, l
               style={{ width: `${fullness}%` }}
             ></div>
           </div>
+          <div className="mt-3 flex items-center justify-between text-xs font-medium text-gray-500">
+            <span className="flex items-center">
+              <Heart className="h-3 w-3 mr-1 text-pink-500" />
+              {tLang.happiness}
+            </span>
+            <span>{happiness}/100</span>
+          </div>
         </div>
       </div>
 
@@ -1813,18 +2271,33 @@ function PetCard({ student, onFeed, onUpgrade, onBattle, onGacha, isAnimating, l
             </button>
 
             <div className="flex space-x-2">
-              <button
-                onClick={onUpgrade}
-                disabled={!canUpgrade}
-                className={`flex-1 flex items-center justify-center py-2 px-2 rounded-xl font-bold text-xs transition-all duration-200 ${
-                  !canUpgrade
-                    ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                    : 'bg-indigo-500 hover:bg-indigo-600 text-white shadow-sm hover:shadow active:scale-95'
-                }`}
-              >
-                <Trophy className="h-3 w-3 mr-1" />
-                {level >= 10 ? tLang.maxLevel : tLang.upgradePet.replace('{cost}', upgradeCost.toString())}
-              </button>
+              <div className="relative flex-1">
+                {level < 10 && currentLevelHasReward && (
+                  <div className="pointer-events-none absolute -top-3 left-1/2 z-10 -translate-x-1/2 rounded-full border border-amber-200 bg-gradient-to-r from-amber-100 via-yellow-100 to-orange-100 px-2 py-0.5 text-[10px] font-black tracking-wide text-amber-700 shadow-sm animate-pulse">
+                    <Sparkles className="mr-1 inline h-3 w-3" />
+                    {tLang.upgradeGachaNow}
+                  </div>
+                )}
+                {level < 10 && !currentLevelHasReward && nextMilestoneLevel && (
+                  <div className="pointer-events-none absolute -top-3 left-1/2 z-10 -translate-x-1/2 rounded-full border border-indigo-200 bg-white/95 px-2 py-0.5 text-[10px] font-bold text-indigo-600 shadow-sm">
+                    {tLang.upgradeGachaReady.replace('{level}', nextMilestoneLevel.toString())}
+                  </div>
+                )}
+                <button
+                  onClick={onUpgrade}
+                  disabled={!canUpgrade}
+                  className={`w-full flex items-center justify-center py-2 px-2 rounded-xl font-bold text-xs transition-all duration-200 ${
+                    !canUpgrade
+                      ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                      : currentLevelHasReward
+                        ? 'bg-gradient-to-r from-amber-400 via-orange-400 to-rose-400 hover:from-amber-500 hover:via-orange-500 hover:to-rose-500 text-white shadow-md hover:shadow-lg active:scale-95'
+                        : 'bg-indigo-500 hover:bg-indigo-600 text-white shadow-sm hover:shadow active:scale-95'
+                  }`}
+                >
+                  <Trophy className="h-3 w-3 mr-1" />
+                  {level >= 10 ? tLang.maxLevel : tLang.upgradePet.replace('{cost}', upgradeCost.toString())}
+                </button>
+              </div>
               
               <button
                 onClick={onBattle}
@@ -1846,6 +2319,7 @@ function PetCard({ student, onFeed, onUpgrade, onBattle, onGacha, isAnimating, l
                 {!canBattle && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.battleNeedFullness}</span>}
                 {!canUpgrade && level < 10 && fullness < 100 && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.upgradeNeedFullness}</span>}
                 {!canUpgrade && level < 10 && fullness >= 100 && points < upgradeCost && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.upgradeNeedPoints.replace('{cost}', upgradeCost.toString())}</span>}
+                {!canUpgrade && level < 10 && fullness >= 100 && points >= upgradeCost && happiness < 40 && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.moodLowPenalty}</span>}
               </p>
             )}
           </>
