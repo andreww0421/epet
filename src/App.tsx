@@ -1471,43 +1471,6 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
         </div>
       </div>
 
-      <div className="bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200 mb-6 p-5">
-        <h3 className="text-lg font-medium text-slate-900 mb-4 flex items-center">
-          <BookOpen className="h-5 w-5 mr-2 text-emerald-500" />
-          {tLang.guideTitle}
-        </h3>
-        <div className="grid gap-4 lg:grid-cols-2">
-          <div className="rounded-2xl border border-emerald-100 bg-emerald-50/70 p-4">
-            <div className="mb-3 flex items-center text-sm font-bold text-emerald-800">
-              <Star className="mr-2 h-4 w-4" />
-              {tLang.guideStudentTitle}
-            </div>
-            <ul className="space-y-2 text-sm text-emerald-900">
-              {(tLang.guideStudentItems as string[]).map((item) => (
-                <li key={item} className="flex items-start">
-                  <span className="mt-1 mr-2 h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                  <span>{item}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-          <div className="rounded-2xl border border-indigo-100 bg-indigo-50/70 p-4">
-            <div className="mb-3 flex items-center text-sm font-bold text-indigo-800">
-              <Shield className="mr-2 h-4 w-4" />
-              {tLang.guideTeacherTitle}
-            </div>
-            <ul className="space-y-2 text-sm text-indigo-900">
-              {(tLang.guideTeacherItems as string[]).map((item) => (
-                <li key={item} className="flex items-start">
-                  <span className="mt-1 mr-2 h-1.5 w-1.5 rounded-full bg-indigo-500" />
-                  <span>{item}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
-      </div>
-
       {/* Students Table */}
       <div className="bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200">
         <div className="overflow-x-auto">
@@ -1767,6 +1730,43 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
             </div>
           )
         )}
+      </div>
+
+      <div className="mt-6 bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200 p-5">
+        <h3 className="text-lg font-medium text-slate-900 mb-4 flex items-center">
+          <BookOpen className="h-5 w-5 mr-2 text-emerald-500" />
+          {tLang.guideTitle}
+        </h3>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="rounded-2xl border border-emerald-100 bg-emerald-50/70 p-4">
+            <div className="mb-3 flex items-center text-sm font-bold text-emerald-800">
+              <Star className="mr-2 h-4 w-4" />
+              {tLang.guideStudentTitle}
+            </div>
+            <ul className="space-y-2 text-sm text-emerald-900">
+              {(tLang.guideStudentItems as string[]).map((item) => (
+                <li key={item} className="flex items-start">
+                  <span className="mt-1 mr-2 h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                  <span>{item}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div className="rounded-2xl border border-indigo-100 bg-indigo-50/70 p-4">
+            <div className="mb-3 flex items-center text-sm font-bold text-indigo-800">
+              <Shield className="mr-2 h-4 w-4" />
+              {tLang.guideTeacherTitle}
+            </div>
+            <ul className="space-y-2 text-sm text-indigo-900">
+              {(tLang.guideTeacherItems as string[]).map((item) => (
+                <li key={item} className="flex items-start">
+                  <span className="mt-1 mr-2 h-1.5 w-1.5 rounded-full bg-indigo-500" />
+                  <span>{item}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
       </div>
 
       {/* System Settings */}
