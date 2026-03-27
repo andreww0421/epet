@@ -4,6 +4,34 @@ import {
   Heart, Frown, Meh, Smile, Dumbbell, Download, Upload, Plus, Minus, Utensils, Users, Settings, AlertCircle, Trash2, Swords, Star, Shield, Zap, Trophy, X, ChevronsDown, Edit2, Save,
   Egg, Medal, Award, Crown, Sparkles, Gift, Dices, BarChart3, RefreshCw
 } from 'lucide-react';
+import {
+  DIRECT_DISCIPLINE_PENALTY,
+  MAX_ACTIVITY_RECORDS,
+  PENALTY_DURATION_MS,
+  UPGRADE_GACHA_LEVELS,
+  UPGRADE_REWARD_FULLNESS,
+  UPGRADE_REWARD_HAPPINESS,
+  UPGRADE_REWARD_LEVEL,
+  WARNING_AUTO_PENALTY,
+  WARNING_THRESHOLD,
+  applyFeedToStudent,
+  applyPenaltyToStudent,
+  applyPointAdjustmentToStudent,
+  clamp,
+  createDisciplineRecord,
+  createPointAdjustmentRecord,
+  getNextUpgradeGachaLevel,
+  getUpcomingUpgradeGachaLevel,
+  isPenaltyActive,
+  normalizePenaltyStatus,
+  resolveBattle,
+  toFiniteNumber,
+  type DisciplineRecord,
+  type DisciplineRecordType,
+  type PenaltyStatus,
+  type PointAdjustmentRecord,
+  type PointAdjustmentSource,
+} from './gameRules';
 
 type Pet = {
   type: string;
@@ -17,15 +45,6 @@ type StudentStats = {
   losses: number;
 };
 
-type DisciplineRecordType = 'warning' | 'autoPenalty' | 'discipline';
-
-type DisciplineRecord = {
-  id: string;
-  type: DisciplineRecordType;
-  createdAt: number;
-  warningCount?: number;
-};
-
 type Student = {
   id: string;
   name: string;
@@ -34,7 +53,10 @@ type Student = {
   stats?: StudentStats;
   rankPoints?: number;
   warningPoints?: number;
+  nextUpgradeGachaLevel?: number | null;
+  penaltyStatus?: PenaltyStatus;
   disciplineRecords?: DisciplineRecord[];
+  pointAdjustmentRecords?: PointAdjustmentRecord[];
   badges?: string[];
 };
 
@@ -195,6 +217,19 @@ const translations = {
     recordAutoPenalty: '自動處罰',
     recordDiscipline: '正式處罰',
     recordPenaltySummary: '積分 -{points} / 飽食 -{fullness} / 心情 -{happiness} / RP -{rankPoints}',
+    pointAdjustmentRecords: '加減分記錄',
+    noPointAdjustmentRecords: '目前還沒有加減分記錄',
+    recordMenuDiscipline: '處罰記錄',
+    recordMenuPoints: '加減分記錄',
+    recordQuickAdjust: '快速加減分',
+    recordManualAdjust: '手動調整',
+    recordPointSummary: '{label} {amount} 分',
+    penaltyStatus: '虛弱中',
+    penaltyAuto: '警告處罰',
+    penaltyDiscipline: '正式處罰',
+    penaltyUntil: '恢復時間 {time}',
+    battleBlockedByPenalty: '懲罰狀態中，暫時不能對戰',
+    battleDraw: '對戰平手，雙方暫時沒有分出勝負',
   },
   en: {
     appTitle: 'Classroom Pet System',
@@ -212,6 +247,7 @@ const translations = {
     fullnessNeed50Battle: 'Fullness below 50, cannot battle!',
     battleWon: 'Battle won! Gained 50 points',
     battleLost: 'Battle lost! Deducted 60 points',
+    battleDraw: 'Battle draw. No one wins this round.',
     importSuccess: 'Data imported successfully!',
     invalidData: 'Invalid data format',
     fileReadFailed: 'File read failed',
@@ -320,10 +356,22 @@ const translations = {
     disciplineApplied: '{name} received a formal penalty',
     disciplineRecords: 'Discipline Records',
     noDisciplineRecords: 'No discipline records yet',
+    pointAdjustmentRecords: 'Point Adjustment Records',
+    noPointAdjustmentRecords: 'No point adjustment records yet',
+    recordMenuDiscipline: 'Discipline',
+    recordMenuPoints: 'Points',
     recordWarning: 'Warning',
     recordAutoPenalty: 'Auto Penalty',
     recordDiscipline: 'Formal Penalty',
     recordPenaltySummary: 'Points -{points} / Fullness -{fullness} / Mood -{happiness} / RP -{rankPoints}',
+    recordQuickAdjust: 'Quick Adjustment',
+    recordManualAdjust: 'Manual Adjustment',
+    recordPointSummary: '{label} {amount} pts',
+    penaltyStatus: 'Weakened',
+    penaltyAuto: 'Warning Penalty',
+    penaltyDiscipline: 'Formal Penalty',
+    penaltyUntil: 'Recovers at {time}',
+    battleBlockedByPenalty: 'Penalty status is active. Battle is temporarily locked.',
   }
 };
 
@@ -363,20 +411,6 @@ const PET_TYPES = [
 
 const DEFAULT_CLASS_NAME = '預設班級';
 const STORAGE_KEY = 'tamagotchi_classroom_data';
-const UPGRADE_GACHA_LEVELS = new Set([2, 4, 6, 8]);
-const UPGRADE_REWARD_LEVEL = 2;
-const UPGRADE_REWARD_FULLNESS = 30;
-const UPGRADE_REWARD_HAPPINESS = 25;
-const WARNING_THRESHOLD = 3;
-const WARNING_AUTO_PENALTY = { points: 20, fullness: 15, happiness: 10, rankPoints: 15 };
-const DIRECT_DISCIPLINE_PENALTY = { points: 30, fullness: 20, happiness: 15, rankPoints: 30 };
-
-const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
-
-const toFiniteNumber = (value: unknown, fallback: number) => {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-};
 
 const getRandomPetType = (useRarity = false) => {
   if (!useRarity) {
@@ -392,13 +426,6 @@ const getRandomPetType = (useRarity = false) => {
   const possiblePets = PET_TYPES.filter((pet) => pet.rarity === rarity && pet.id !== 'egg');
   return possiblePets[Math.floor(Math.random() * possiblePets.length)].id;
 };
-
-const createDisciplineRecord = (type: DisciplineRecordType, warningCount?: number): DisciplineRecord => ({
-  id: `record-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-  type,
-  createdAt: Date.now(),
-  warningCount,
-});
 
 const computeBadges = (student: Pick<Student, 'points' | 'pet' | 'stats'>) => {
   const badges = new Set<string>();
@@ -429,7 +456,7 @@ const createInitialData = (now = Date.now()): AppData => ({
   },
 });
 
-const normalizeStudent = (student: any, fallbackIndex: number): Student => {
+const normalizeStudent = (student: any, fallbackIndex: number, now = Date.now()): Student => {
   const normalizedStudent: Student = {
     id: typeof student?.id === 'string' && student.id ? student.id : `student-${Date.now()}-${fallbackIndex}`,
     name: typeof student?.name === 'string' && student.name.trim() ? student.name.trim() : `Student ${fallbackIndex + 1}`,
@@ -446,6 +473,13 @@ const normalizeStudent = (student: any, fallbackIndex: number): Student => {
     },
     rankPoints: Math.max(0, Math.floor(toFiniteNumber(student?.rankPoints, 1000))),
     warningPoints: Math.max(0, Math.floor(toFiniteNumber(student?.warningPoints, 0))),
+    nextUpgradeGachaLevel:
+      student?.nextUpgradeGachaLevel == null
+        ? getUpcomingUpgradeGachaLevel(clamp(Math.floor(toFiniteNumber(student?.pet?.level, 1)), 1, 10))
+        : UPGRADE_GACHA_LEVELS.has(Math.floor(toFiniteNumber(student?.nextUpgradeGachaLevel, 2)))
+          ? Math.floor(toFiniteNumber(student?.nextUpgradeGachaLevel, 2))
+          : null,
+    penaltyStatus: normalizePenaltyStatus(student?.penaltyStatus, now),
     disciplineRecords: Array.isArray(student?.disciplineRecords)
       ? student.disciplineRecords
           .map((record: any, index: number) => ({
@@ -461,6 +495,19 @@ const normalizeStudent = (student: any, fallbackIndex: number): Student => {
             warningCount: record?.warningCount == null ? undefined : Math.max(0, Math.floor(toFiniteNumber(record.warningCount, 0))),
           }))
           .sort((a: DisciplineRecord, b: DisciplineRecord) => b.createdAt - a.createdAt)
+      : [],
+    pointAdjustmentRecords: Array.isArray(student?.pointAdjustmentRecords)
+      ? student.pointAdjustmentRecords
+          .map((record: any, index: number) => ({
+            id:
+              typeof record?.id === 'string' && record.id
+                ? record.id
+                : `points-${Date.now()}-${fallbackIndex}-${index}`,
+            amount: toFiniteNumber(record?.amount, 0),
+            createdAt: toFiniteNumber(record?.createdAt, now),
+            source: record?.source === 'manual' ? 'manual' : 'quick',
+          }))
+          .sort((a: PointAdjustmentRecord, b: PointAdjustmentRecord) => b.createdAt - a.createdAt)
       : [],
     badges: [],
   };
@@ -488,7 +535,7 @@ const normalizeAppData = (raw: any, now = Date.now()): AppData => {
     id: typeof classItem?.id === 'string' && classItem.id ? classItem.id : `class-${Date.now()}-${index}`,
     name: typeof classItem?.name === 'string' && classItem.name.trim() ? classItem.name.trim() : DEFAULT_CLASS_NAME,
     students: Array.isArray(classItem?.students)
-      ? classItem.students.map((student: any, studentIndex: number) => normalizeStudent(student, studentIndex))
+      ? classItem.students.map((student: any, studentIndex: number) => normalizeStudent(student, studentIndex, now))
       : [],
   }));
 
@@ -612,26 +659,6 @@ export default function App() {
     }, durationMs);
   };
 
-  const applyPenaltyToStudent = (
-    student: Student,
-    penalty: { points: number; fullness: number; happiness: number; rankPoints: number },
-    nextWarningPoints = student.warningPoints ?? 0,
-    record?: DisciplineRecord,
-  ): Student => ({
-    ...student,
-    points: clamp(student.points - penalty.points, 0, 700),
-    pet: {
-      ...student.pet,
-      fullness: clamp(student.pet.fullness - penalty.fullness, 0, 100),
-      happiness: clamp((student.pet.happiness ?? 80) - penalty.happiness, 0, 100),
-    },
-    rankPoints: Math.max(0, (student.rankPoints ?? 0) - penalty.rankPoints),
-    warningPoints: Math.max(0, nextWarningPoints),
-    disciplineRecords: record
-      ? [record, ...(student.disciplineRecords ?? [])].slice(0, 20)
-      : student.disciplineRecords ?? [],
-  });
-
   const switchClass = (classId: string) => {
     if (!data) return;
     saveData({ ...data, currentClassId: classId });
@@ -656,12 +683,15 @@ export default function App() {
     showToast(`${tLang.classDeleted}${className}`);
   };
 
-  const addPoints = (studentId: string, pointsToAdd: number) => {
+  const addPoints = (studentId: string, pointsToAdd: number, source: PointAdjustmentSource = 'quick') => {
     if (!data) return;
     const currentClass = data.classes.find(c => c.id === data.currentClassId);
     if (!currentClass) return;
-    updateCurrentClassStudents(currentClass.students.map(s => 
-      s.id === studentId ? { ...s, points: Math.min(700, Math.max(0, s.points + pointsToAdd)) } : s
+    const now = Date.now();
+    updateCurrentClassStudents(currentClass.students.map(s =>
+      s.id === studentId
+        ? applyPointAdjustmentToStudent(s, pointsToAdd, createPointAdjustmentRecord(pointsToAdd, source, now))
+        : s,
     ));
   };
 
@@ -681,7 +711,10 @@ export default function App() {
       stats: { wins: 0, losses: 0 },
       rankPoints: 1000,
       warningPoints: 0,
+      nextUpgradeGachaLevel: 2,
+      penaltyStatus: undefined,
       disciplineRecords: [],
+      pointAdjustmentRecords: [],
       badges: []
     };
     
@@ -708,6 +741,7 @@ export default function App() {
       stats: { wins: 0, losses: 0 },
       rankPoints: 1000,
       warningPoints: 0,
+      penaltyStatus: undefined,
     })));
     showToast(tLang.resetSeason);
   };
@@ -720,10 +754,11 @@ export default function App() {
     const targetStudent = currentClass.students.find((student) => student.id === studentId);
     if (!targetStudent) return;
 
+    const now = Date.now();
     const nextWarningCount = (targetStudent.warningPoints ?? 0) + 1;
     const triggersPenalty = nextWarningCount >= WARNING_THRESHOLD;
-    const warningRecord = createDisciplineRecord('warning', nextWarningCount);
-    const autoPenaltyRecord = createDisciplineRecord('autoPenalty', nextWarningCount);
+    const warningRecord = createDisciplineRecord('warning', nextWarningCount, now);
+    const autoPenaltyRecord = createDisciplineRecord('autoPenalty', nextWarningCount, now);
 
     updateCurrentClassStudents(
       currentClass.students.map((student) => {
@@ -732,17 +767,21 @@ export default function App() {
           return applyPenaltyToStudent(
             {
               ...student,
-              disciplineRecords: [warningRecord, ...(student.disciplineRecords ?? [])].slice(0, 20),
+              disciplineRecords: [warningRecord, ...(student.disciplineRecords ?? [])].slice(0, MAX_ACTIVITY_RECORDS),
             },
             WARNING_AUTO_PENALTY,
-            0,
-            autoPenaltyRecord,
+            {
+              nextWarningPoints: 0,
+              record: autoPenaltyRecord,
+              now,
+              source: 'autoPenalty',
+            },
           );
         }
         return {
           ...student,
           warningPoints: nextWarningCount,
-          disciplineRecords: [warningRecord, ...(student.disciplineRecords ?? [])].slice(0, 20),
+          disciplineRecords: [warningRecord, ...(student.disciplineRecords ?? [])].slice(0, MAX_ACTIVITY_RECORDS),
         };
       }),
     );
@@ -762,15 +801,40 @@ export default function App() {
 
     const targetStudent = currentClass.students.find((student) => student.id === studentId);
     if (!targetStudent) return;
-    const disciplineRecord = createDisciplineRecord('discipline');
+    const now = Date.now();
+    const disciplineRecord = createDisciplineRecord('discipline', undefined, now);
 
     updateCurrentClassStudents(
       currentClass.students.map((student) =>
-        student.id === studentId ? applyPenaltyToStudent(student, DIRECT_DISCIPLINE_PENALTY, 0, disciplineRecord) : student,
+        student.id === studentId
+          ? applyPenaltyToStudent(student, DIRECT_DISCIPLINE_PENALTY, {
+              nextWarningPoints: 0,
+              record: disciplineRecord,
+              now,
+              source: 'discipline',
+            })
+          : student,
       ),
     );
 
     showToast(tLang.disciplineApplied.replace('{name}', targetStudent.name), 'error');
+  };
+
+  const advanceUpgradeRewardProgress = (studentId: string, claimedLevel: number) => {
+    if (!data) return;
+    const currentClass = data.classes.find((c) => c.id === data.currentClassId);
+    if (!currentClass) return;
+
+    updateCurrentClassStudents(
+      currentClass.students.map((student) =>
+        student.id === studentId
+          ? {
+              ...student,
+              nextUpgradeGachaLevel: getNextUpgradeGachaLevel(claimedLevel),
+            }
+          : student,
+      ),
+    );
   };
 
   const gachaPet = (studentId: string) => {
@@ -802,7 +866,7 @@ export default function App() {
     showToast(tLang.gachaResult.replace('{pet}', (petNames[data.settings?.language || 'zh'] as any)[newPetType]), 'success');
   };
 
-  const rerollPetFromUpgrade = (studentId: string) => {
+  const rerollPetFromUpgrade = (studentId: string, claimedLevel: number) => {
     if (!data) return;
     const currentClass = data.classes.find((c) => c.id === data.currentClassId);
     if (!currentClass) return;
@@ -823,6 +887,7 @@ export default function App() {
                 fullness: UPGRADE_REWARD_FULLNESS,
                 happiness: UPGRADE_REWARD_HAPPINESS,
               },
+              nextUpgradeGachaLevel: getNextUpgradeGachaLevel(claimedLevel),
             }
           : student,
       ),
@@ -843,20 +908,13 @@ export default function App() {
     if (!currentClass) return;
     
     const feedCost = data.settings?.feedCost ?? 10;
+    const now = Date.now();
     
     triggerPetAnimation(studentId, 'feed', 1000);
 
     updateCurrentClassStudents(currentClass.students.map(s => {
       if (s.id === studentId && s.points >= feedCost) {
-        return {
-          ...s,
-          points: s.points - feedCost,
-          pet: {
-            ...s.pet,
-            fullness: Math.min(100, s.pet.fullness + 20),
-            happiness: Math.min(100, (s.pet.happiness ?? 80) + 10),
-          }
-        };
+        return applyFeedToStudent(s, feedCost, now);
       }
       return s;
     }));
@@ -906,7 +964,9 @@ export default function App() {
     }));
     showToast(tLang.petUpgraded.replace('{name}', student.name).replace('{level}', nextLevel.toString()), 'success');
 
-    if (UPGRADE_GACHA_LEVELS.has(nextLevel)) {
+    const nextRewardLevel = student.nextUpgradeGachaLevel ?? getUpcomingUpgradeGachaLevel(currentLevel);
+
+    if (nextRewardLevel !== null && nextLevel === nextRewardLevel) {
       setUpgradeReward({
         studentId,
         studentName: student.name,
@@ -961,60 +1021,39 @@ export default function App() {
     const defender = currentClass.students.find(s => s.id === defenderId);
     
     if (!attacker || !defender) return;
-    
-    if (attacker.pet.fullness < 50) {
-        showToast(tLang.fullnessNeed50Battle, 'error');
-        return;
+
+    const battleResult = resolveBattle(
+      attacker,
+      defender,
+      {
+        attacker: Math.floor(Math.random() * 20),
+        defender: Math.floor(Math.random() * 20),
+      },
+      Date.now(),
+    );
+
+    if (battleResult.blocked === 'penalty') {
+      showToast(tLang.battleBlockedByPenalty, 'error');
+      return;
     }
-    
-    // Calculate battle score
-    const attackerScore = (attacker.pet.level || 1) * 10 + attacker.pet.fullness + Math.floor(Math.random() * 20);
-    const defenderScore = (defender.pet.level || 1) * 10 + defender.pet.fullness + Math.floor(Math.random() * 20);
-    
-    const isWin = attackerScore >= defenderScore;
-    
-    updateCurrentClassStudents(currentClass.students.map(s => {
-      if (s.id === attackerId) {
-          const stats = s.stats || { wins: 0, losses: 0 };
-          const rankPoints = s.rankPoints || 0;
-          return {
-              ...s,
-              points: Math.min(700, Math.max(0, s.points + (isWin ? 50 : -60))),
-              pet: {
-                  ...s.pet,
-                  fullness: Math.max(0, s.pet.fullness - 50)
-              },
-              stats: {
-                  wins: isWin ? stats.wins + 1 : stats.wins,
-                  losses: isWin ? stats.losses : stats.losses + 1
-              },
-              rankPoints: isWin ? rankPoints + 20 : Math.max(0, rankPoints - 10)
-          };
-      }
-      if (s.id === defenderId) {
-          const stats = s.stats || { wins: 0, losses: 0 };
-          const rankPoints = s.rankPoints || 0;
-          return {
-              ...s,
-              points: Math.min(700, Math.max(0, s.points + (isWin ? -50 : 20))),
-              pet: {
-                  ...s.pet,
-                  fullness: Math.max(0, s.pet.fullness - (isWin ? 50 : 10))
-              },
-              stats: {
-                  wins: !isWin ? stats.wins + 1 : stats.wins,
-                  losses: !isWin ? stats.losses : stats.losses + 1
-              },
-              rankPoints: !isWin ? rankPoints + 20 : Math.max(0, rankPoints - 10)
-          };
-      }
-      return s;
+
+    if (battleResult.blocked === 'fullness') {
+      showToast(tLang.fullnessNeed50Battle, 'error');
+      return;
+    }
+
+    updateCurrentClassStudents(currentClass.students.map((student) => {
+      if (student.id === attackerId) return battleResult.attacker;
+      if (student.id === defenderId) return battleResult.defender;
+      return student;
     }));
-    
-    if (isWin) {
-        showToast(tLang.battleWon, 'success');
+
+    if (battleResult.outcome === 'win') {
+      showToast(tLang.battleWon, 'success');
+    } else if (battleResult.outcome === 'loss') {
+      showToast(tLang.battleLost, 'error');
     } else {
-        showToast(tLang.battleLost, 'error');
+      showToast(tLang.battleDraw, 'success');
     }
   };
 
@@ -1155,14 +1194,17 @@ export default function App() {
             </div>
             <div className="bg-slate-50 px-6 py-4 flex justify-end gap-3">
               <button
-                onClick={() => setUpgradeReward(null)}
+                onClick={() => {
+                  advanceUpgradeRewardProgress(upgradeReward.studentId, upgradeReward.reachedLevel);
+                  setUpgradeReward(null);
+                }}
                 className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50"
               >
                 {tLang.upgradeGachaKeep}
               </button>
               <button
                 onClick={() => {
-                  rerollPetFromUpgrade(upgradeReward.studentId);
+                  rerollPetFromUpgrade(upgradeReward.studentId, upgradeReward.reachedLevel);
                   setUpgradeReward(null);
                 }}
                 className="px-4 py-2 text-sm font-medium text-white bg-amber-500 border border-transparent rounded-md hover:bg-amber-600"
@@ -1195,6 +1237,7 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
   const [studentToDelete, setStudentToDelete] = useState<string | null>(null);
   const [customPoints, setCustomPoints] = useState<{id: string, name: string} | null>(null);
   const [pointsAmount, setPointsAmount] = useState('');
+  const [recordView, setRecordView] = useState<'discipline' | 'points'>('discipline');
   const [decayAmount, setDecayAmount] = useState(data.settings?.decayAmount ?? data.settings?.hourlyDecay ?? 2);
   const [decayType, setDecayType] = useState<'hourly' | 'daily'>(data.settings?.decayType ?? 'hourly');
   const [feedCost, setFeedCost] = useState(data.settings?.feedCost ?? 10);
@@ -1208,6 +1251,15 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
   const disciplineRecords = currentStudents
     .flatMap((student: any) =>
       (student.disciplineRecords ?? []).map((record: any) => ({
+        ...record,
+        studentName: student.name,
+      })),
+    )
+    .sort((a: any, b: any) => b.createdAt - a.createdAt)
+    .slice(0, 12);
+  const pointAdjustmentRecords = currentStudents
+    .flatMap((student: any) =>
+      (student.pointAdjustmentRecords ?? []).map((record: any) => ({
         ...record,
         studentName: student.name,
       })),
@@ -1269,7 +1321,10 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
       stats: { wins: 0, losses: 0 },
       rankPoints: 1000,
       warningPoints: 0,
+      nextUpgradeGachaLevel: 2,
+      penaltyStatus: undefined,
       disciplineRecords: [],
+      pointAdjustmentRecords: [],
       badges: []
     };
     addStudent(newStudent);
@@ -1411,19 +1466,31 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
                   const petConfig = PET_TYPES.find(p => p.id === student.pet.type) || PET_TYPES[0];
                   const PetIcon = petConfig.icon;
                   const warningPoints = student.warningPoints ?? 0;
+                  const activePenalty = isPenaltyActive(student.penaltyStatus);
                   
                   return (
                     <tr key={student.id} className="hover:bg-slate-50 transition-colors">
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="text-sm font-medium text-slate-900">{student.name}</div>
-                        <div className="mt-1">
+                        <div className="mt-1 flex flex-wrap gap-1">
                           <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-bold ${
                             warningPoints > 0 ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-500'
                           }`}>
                             <AlertCircle className="mr-1 h-3 w-3" />
                             {tLang.warningPoints} {warningPoints}/{WARNING_THRESHOLD}
                           </span>
+                          {activePenalty && (
+                            <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-700">
+                              <Zap className="mr-1 h-3 w-3" />
+                              {tLang.penaltyStatus}
+                            </span>
+                          )}
                         </div>
+                        {activePenalty && (
+                          <div className="mt-1 text-[11px] text-amber-700">
+                            {tLang.penaltyUntil.replace('{time}', formatRecordTime(student.penaltyStatus.until))}
+                          </div>
+                        )}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="flex items-center text-sm text-slate-600">
@@ -1459,14 +1526,14 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
                           {/* Add Points */}
                           <div className="flex space-x-1 bg-indigo-50 p-1 rounded-md border border-indigo-100">
                             <button
-                              onClick={() => addPoints(student.id, 10)}
+                              onClick={() => addPoints(student.id, 10, 'quick')}
                               className="inline-flex items-center px-2 py-1 rounded text-xs font-medium text-indigo-700 hover:bg-indigo-200 transition-colors"
                               title={tLang.addPoints}
                             >
                               <Plus className="h-3 w-3" /> 10
                             </button>
                             <button
-                              onClick={() => addPoints(student.id, 50)}
+                              onClick={() => addPoints(student.id, 50, 'quick')}
                               className="inline-flex items-center px-2 py-1 rounded text-xs font-medium text-indigo-700 hover:bg-indigo-200 transition-colors"
                               title={tLang.addPoints}
                             >
@@ -1477,7 +1544,7 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
                           {/* Deduct Points */}
                           <div className="flex space-x-1 bg-rose-50 p-1 rounded-md border border-rose-100">
                             <button
-                              onClick={() => addPoints(student.id, -10)}
+                              onClick={() => addPoints(student.id, -10, 'quick')}
                               disabled={student.points < 10}
                               className="inline-flex items-center px-2 py-1 rounded text-xs font-medium text-rose-700 hover:bg-rose-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                               title={tLang.deductPoints}
@@ -1485,7 +1552,7 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
                               <Minus className="h-3 w-3" /> 10
                             </button>
                             <button
-                              onClick={() => addPoints(student.id, -50)}
+                              onClick={() => addPoints(student.id, -50, 'quick')}
                               disabled={student.points < 50}
                               className="inline-flex items-center px-2 py-1 rounded text-xs font-medium text-rose-700 hover:bg-rose-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                               title={tLang.deductPoints}
@@ -1548,42 +1615,89 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
       </div>
 
       <div className="mt-6 bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200">
-        <div className="px-5 py-4 border-b border-slate-200 bg-slate-50">
+        <div className="px-5 py-4 border-b border-slate-200 bg-slate-50 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <h3 className="text-lg font-medium text-slate-900 flex items-center">
             <Shield className="h-5 w-5 mr-2 text-rose-500" />
-            {tLang.disciplineRecords}
+            {recordView === 'discipline' ? tLang.disciplineRecords : tLang.pointAdjustmentRecords}
           </h3>
-        </div>
-        {disciplineRecords.length === 0 ? (
-          <div className="px-5 py-8 text-sm text-slate-500 text-center">{tLang.noDisciplineRecords}</div>
-        ) : (
-          <div className="divide-y divide-slate-200">
-            {disciplineRecords.map((record: any) => (
-              <div key={record.id} className="px-5 py-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-bold ${getRecordTone(record.type)}`}>
-                      {getRecordLabel(record.type)}
-                    </span>
-                    <span className="font-medium text-slate-900">{record.studentName}</span>
-                    {record.type === 'warning' && (
-                      <span className="text-sm text-slate-500">
-                        {tLang.warningPoints} {record.warningCount}/{WARNING_THRESHOLD}
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-1 text-sm text-slate-600">
-                    {record.type === 'warning'
-                      ? tLang.warningIssued.replace('{name}', record.studentName).replace('{count}', String(record.warningCount ?? 1))
-                      : record.type === 'autoPenalty'
-                        ? penaltySummary(WARNING_AUTO_PENALTY)
-                        : penaltySummary(DIRECT_DISCIPLINE_PENALTY)}
-                  </div>
-                </div>
-                <div className="text-xs font-medium text-slate-400">{formatRecordTime(record.createdAt)}</div>
-              </div>
-            ))}
+          <div className="inline-flex rounded-full bg-white p-1 border border-slate-200">
+            <button
+              onClick={() => setRecordView('discipline')}
+              className={`rounded-full px-3 py-1 text-xs font-bold transition-colors ${
+                recordView === 'discipline' ? 'bg-rose-100 text-rose-700' : 'text-slate-500 hover:bg-slate-100'
+              }`}
+            >
+              {tLang.recordMenuDiscipline}
+            </button>
+            <button
+              onClick={() => setRecordView('points')}
+              className={`rounded-full px-3 py-1 text-xs font-bold transition-colors ${
+                recordView === 'points' ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500 hover:bg-slate-100'
+              }`}
+            >
+              {tLang.recordMenuPoints}
+            </button>
           </div>
+        </div>
+        {recordView === 'discipline' ? (
+          disciplineRecords.length === 0 ? (
+            <div className="px-5 py-8 text-sm text-slate-500 text-center">{tLang.noDisciplineRecords}</div>
+          ) : (
+            <div className="divide-y divide-slate-200">
+              {disciplineRecords.map((record: any) => (
+                <div key={record.id} className="px-5 py-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-bold ${getRecordTone(record.type)}`}>
+                        {getRecordLabel(record.type)}
+                      </span>
+                      <span className="font-medium text-slate-900">{record.studentName}</span>
+                      {record.type === 'warning' && (
+                        <span className="text-sm text-slate-500">
+                          {tLang.warningPoints} {record.warningCount}/{WARNING_THRESHOLD}
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-1 text-sm text-slate-600">
+                      {record.type === 'warning'
+                        ? tLang.warningIssued.replace('{name}', record.studentName).replace('{count}', String(record.warningCount ?? 1))
+                        : record.type === 'autoPenalty'
+                          ? penaltySummary(WARNING_AUTO_PENALTY)
+                          : penaltySummary(DIRECT_DISCIPLINE_PENALTY)}
+                    </div>
+                  </div>
+                  <div className="text-xs font-medium text-slate-400">{formatRecordTime(record.createdAt)}</div>
+                </div>
+              ))}
+            </div>
+          )
+        ) : (
+          pointAdjustmentRecords.length === 0 ? (
+            <div className="px-5 py-8 text-sm text-slate-500 text-center">{tLang.noPointAdjustmentRecords}</div>
+          ) : (
+            <div className="divide-y divide-slate-200">
+              {pointAdjustmentRecords.map((record: any) => (
+                <div key={record.id} className="px-5 py-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-bold ${
+                        record.amount >= 0 ? 'bg-indigo-100 text-indigo-700' : 'bg-rose-100 text-rose-700'
+                      }`}>
+                        {record.source === 'manual' ? tLang.recordManualAdjust : tLang.recordQuickAdjust}
+                      </span>
+                      <span className="font-medium text-slate-900">{record.studentName}</span>
+                    </div>
+                    <div className="mt-1 text-sm text-slate-600">
+                      {tLang.recordPointSummary
+                        .replace('{label}', record.amount >= 0 ? '+' : '-')
+                        .replace('{amount}', Math.abs(record.amount).toString())}
+                    </div>
+                  </div>
+                  <div className="text-xs font-medium text-slate-400">{formatRecordTime(record.createdAt)}</div>
+                </div>
+              ))}
+            </div>
+          )
         )}
       </div>
 
@@ -1753,7 +1867,7 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
                 onClick={() => {
                   const amount = parseInt(pointsAmount, 10);
                   if (!isNaN(amount) && amount > 0) {
-                    addPoints(customPoints.id, -amount);
+                    addPoints(customPoints.id, -amount, 'manual');
                     setCustomPoints(null);
                     setPointsAmount('');
                   }
@@ -1767,7 +1881,7 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
                 onClick={() => {
                   const amount = parseInt(pointsAmount, 10);
                   if (!isNaN(amount) && amount > 0) {
-                    addPoints(customPoints.id, amount);
+                    addPoints(customPoints.id, amount, 'manual');
                     setCustomPoints(null);
                     setPointsAmount('');
                   }
@@ -2049,7 +2163,7 @@ function ClassroomView({ data, feedPet, upgradePet, battle, gachaPet, animatingP
 }
 
 function PetCard({ student, onFeed, onUpgrade, onBattle, onGacha, animationMode, lang, tLang, feedCost, getRankInfo }: any) {
-  const { name, points, pet, badges = [], rankPoints = 0, warningPoints = 0 } = student;
+  const { name, points, pet, badges = [], rankPoints = 0, warningPoints = 0, nextUpgradeGachaLevel = 2, penaltyStatus } = student;
   const { fullness, type, level = 1, happiness = 80 } = pet;
   
   const petConfig = PET_TYPES.find(p => p.id === type) || PET_TYPES[0];
@@ -2060,13 +2174,13 @@ function PetCard({ student, onFeed, onUpgrade, onBattle, onGacha, animationMode,
   const isHappy = fullness > 70 && !isLowMood;
   const isNormal = fullness >= 30 && fullness <= 70 && !isLowMood;
   const isHungry = fullness < 30 || isLowMood;
+  const hasActivePenalty = isPenaltyActive(penaltyStatus);
   const canFeed = points >= feedCost;
-  const canBattle = fullness >= 50;
+  const canBattle = fullness >= 50 && !hasActivePenalty;
   const upgradeCost = 100 + (level - 1) * 50;
   const canUpgrade = level < 10 && fullness >= 100 && points >= upgradeCost && happiness >= 40;
   const canGacha = points >= 200;
-  const nextMilestoneLevel = [2, 4, 6, 8].find((milestone) => milestone > level);
-  const currentLevelHasReward = UPGRADE_GACHA_LEVELS.has(level);
+  const hasUpgradeReward = nextUpgradeGachaLevel !== null && level >= nextUpgradeGachaLevel;
   const isAnimating = Boolean(animationMode);
   const isRerollAnimation = animationMode === 'reroll';
   const isGachaAnimation = animationMode === 'gacha';
@@ -2116,6 +2230,12 @@ function PetCard({ student, onFeed, onUpgrade, onBattle, onGacha, animationMode,
             <span className="mt-1 inline-flex w-fit items-center rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-bold text-rose-700">
               <AlertCircle className="mr-1 h-3 w-3" />
               {tLang.warningPoints} {warningPoints}/{WARNING_THRESHOLD}
+            </span>
+          )}
+          {hasActivePenalty && (
+            <span className="mt-1 inline-flex w-fit items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-700">
+              <Zap className="mr-1 h-3 w-3" />
+              {tLang.penaltyStatus}
             </span>
           )}
         </div>
@@ -2272,15 +2392,9 @@ function PetCard({ student, onFeed, onUpgrade, onBattle, onGacha, animationMode,
 
             <div className="flex space-x-2">
               <div className="relative flex-1">
-                {level < 10 && currentLevelHasReward && (
-                  <div className="pointer-events-none absolute -top-3 left-1/2 z-10 -translate-x-1/2 rounded-full border border-amber-200 bg-gradient-to-r from-amber-100 via-yellow-100 to-orange-100 px-2 py-0.5 text-[10px] font-black tracking-wide text-amber-700 shadow-sm animate-pulse">
-                    <Sparkles className="mr-1 inline h-3 w-3" />
-                    {tLang.upgradeGachaNow}
-                  </div>
-                )}
-                {level < 10 && !currentLevelHasReward && nextMilestoneLevel && (
-                  <div className="pointer-events-none absolute -top-3 left-1/2 z-10 -translate-x-1/2 rounded-full border border-indigo-200 bg-white/95 px-2 py-0.5 text-[10px] font-bold text-indigo-600 shadow-sm">
-                    {tLang.upgradeGachaReady.replace('{level}', nextMilestoneLevel.toString())}
+                {level < 10 && hasUpgradeReward && (
+                  <div className="pointer-events-none absolute -top-2 -left-2 z-10 flex h-7 w-7 items-center justify-center rounded-full border border-amber-200 bg-gradient-to-br from-amber-200 via-yellow-100 to-orange-200 text-amber-700 shadow-md animate-pulse">
+                    <Dices className="h-3.5 w-3.5" />
                   </div>
                 )}
                 <button
@@ -2289,7 +2403,7 @@ function PetCard({ student, onFeed, onUpgrade, onBattle, onGacha, animationMode,
                   className={`w-full flex items-center justify-center py-2 px-2 rounded-xl font-bold text-xs transition-all duration-200 ${
                     !canUpgrade
                       ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                      : currentLevelHasReward
+                      : hasUpgradeReward
                         ? 'bg-gradient-to-r from-amber-400 via-orange-400 to-rose-400 hover:from-amber-500 hover:via-orange-500 hover:to-rose-500 text-white shadow-md hover:shadow-lg active:scale-95'
                         : 'bg-indigo-500 hover:bg-indigo-600 text-white shadow-sm hover:shadow active:scale-95'
                   }`}
@@ -2316,7 +2430,8 @@ function PetCard({ student, onFeed, onUpgrade, onBattle, onGacha, animationMode,
             {(!canFeed || !canBattle || (!canUpgrade && level < 10)) && (
               <p className="text-center text-[10px] text-red-500 mt-2 flex flex-col items-center justify-center">
                 {!canFeed && fullness < 100 && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.feedNeedPoints.replace('{cost}', feedCost.toString())}</span>}
-                {!canBattle && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.battleNeedFullness}</span>}
+                {!canBattle && hasActivePenalty && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.battleBlockedByPenalty}</span>}
+                {!canBattle && !hasActivePenalty && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.battleNeedFullness}</span>}
                 {!canUpgrade && level < 10 && fullness < 100 && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.upgradeNeedFullness}</span>}
                 {!canUpgrade && level < 10 && fullness >= 100 && points < upgradeCost && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.upgradeNeedPoints.replace('{cost}', upgradeCost.toString())}</span>}
                 {!canUpgrade && level < 10 && fullness >= 100 && points >= upgradeCost && happiness < 40 && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.moodLowPenalty}</span>}
