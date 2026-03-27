@@ -1,13 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Dog, Cat, Bird, Rabbit, Turtle, Fish, Snail, Bug, Rat, Squirrel, PiggyBank, Worm, Ghost, Bot, PawPrint,
-  Heart, Frown, Meh, Smile, Dumbbell, Download, Upload, Plus, Minus, Utensils, Users, Settings, AlertCircle, Trash2, Swords, Star, Shield, Zap, Trophy, X, ChevronsDown, Edit2, Save,
+  Heart, Frown, Meh, Smile, Dumbbell, Download, Upload, Plus, Minus, Utensils, Users, Settings, AlertCircle, Trash2, Swords, Star, Shield, Zap, Trophy, X, ChevronsDown, Edit2, Save, BookOpen,
   Egg, Medal, Award, Crown, Sparkles, Gift, Dices, BarChart3, RefreshCw
 } from 'lucide-react';
 import {
   DIRECT_DISCIPLINE_PENALTY,
   MAX_ACTIVITY_RECORDS,
-  PENALTY_DURATION_MS,
   UPGRADE_GACHA_LEVELS,
   UPGRADE_REWARD_FULLNESS,
   UPGRADE_REWARD_HAPPINESS,
@@ -230,6 +229,22 @@ const translations = {
     penaltyUntil: '恢復時間 {time}',
     battleBlockedByPenalty: '懲罰狀態中，暫時不能對戰',
     battleDraw: '對戰平手，雙方暫時沒有分出勝負',
+    guideTitle: '規則說明',
+    guideStudentTitle: '學生玩法',
+    guideTeacherTitle: '導師操作',
+    guideStudentItems: [
+      '學生起始有 200 積分，並擁有一顆神秘蛋。',
+      '餵食會消耗積分並回復飽食度；虛弱狀態下，餵食回復的心情較少。',
+      '升級需要飽食度 100、足夠積分，且心情至少 40。',
+      '免費換寵會依序在 2 / 4 / 6 / 8 等觸發，每次使用後才會推進到下一個門檻。',
+      '對戰需要至少 50 飽食度；虛弱狀態中的學生不能發起對戰。',
+    ],
+    guideTeacherItems: [
+      '快速加減分與手動調整都會寫入加減分記錄。',
+      '警告累積到第 3 次時，會自動觸發處罰並進入 24 小時虛弱。',
+      '正式處罰會直接套用較重處罰，並進入 48 小時虛弱。',
+      '記錄區可切換查看處罰記錄與加減分記錄。',
+    ],
   },
   en: {
     appTitle: 'Classroom Pet System',
@@ -372,6 +387,22 @@ const translations = {
     penaltyDiscipline: 'Formal Penalty',
     penaltyUntil: 'Recovers at {time}',
     battleBlockedByPenalty: 'Penalty status is active. Battle is temporarily locked.',
+    guideTitle: 'Game Guide',
+    guideStudentTitle: 'Student Progression',
+    guideTeacherTitle: 'Teacher Actions',
+    guideStudentItems: [
+      'Students start with 200 points and a mystery egg.',
+      'Feeding costs points and restores fullness; weakened pets recover less mood from feeding.',
+      'Upgrading requires 100 fullness, enough points, and mood 40 or above.',
+      'Free reroll milestones are consumed in order: level 2, 4, 6, then 8.',
+      'Battles require at least 50 fullness and are blocked while a penalty status is active.',
+    ],
+    guideTeacherItems: [
+      'Quick add/deduct buttons and manual adjustments are all saved into the point log.',
+      'Warnings stack to 3. The third warning triggers an automatic penalty plus a 24-hour weakened status.',
+      'Formal discipline applies a stronger penalty and a 48-hour weakened status immediately.',
+      'The record panel can switch between discipline logs and point adjustment logs.',
+    ],
   }
 };
 
@@ -1437,6 +1468,43 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
             <Plus className="h-4 w-4 mr-2" />
             {tLang.add}
           </button>
+        </div>
+      </div>
+
+      <div className="bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200 mb-6 p-5">
+        <h3 className="text-lg font-medium text-slate-900 mb-4 flex items-center">
+          <BookOpen className="h-5 w-5 mr-2 text-emerald-500" />
+          {tLang.guideTitle}
+        </h3>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="rounded-2xl border border-emerald-100 bg-emerald-50/70 p-4">
+            <div className="mb-3 flex items-center text-sm font-bold text-emerald-800">
+              <Star className="mr-2 h-4 w-4" />
+              {tLang.guideStudentTitle}
+            </div>
+            <ul className="space-y-2 text-sm text-emerald-900">
+              {(tLang.guideStudentItems as string[]).map((item) => (
+                <li key={item} className="flex items-start">
+                  <span className="mt-1 mr-2 h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                  <span>{item}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div className="rounded-2xl border border-indigo-100 bg-indigo-50/70 p-4">
+            <div className="mb-3 flex items-center text-sm font-bold text-indigo-800">
+              <Shield className="mr-2 h-4 w-4" />
+              {tLang.guideTeacherTitle}
+            </div>
+            <ul className="space-y-2 text-sm text-indigo-900">
+              {(tLang.guideTeacherItems as string[]).map((item) => (
+                <li key={item} className="flex items-start">
+                  <span className="mt-1 mr-2 h-1.5 w-1.5 rounded-full bg-indigo-500" />
+                  <span>{item}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
       </div>
 
