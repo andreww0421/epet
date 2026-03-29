@@ -30,8 +30,10 @@ import {
   getDateKey,
   isPenaltyActive,
   isPetDead,
+  isBattleReady,
   normalizePenaltyStatus,
   resolveBattle,
+  resolveTeamBattle,
   reviveStudentPet,
   syncPetLifeState,
   toFiniteNumber,
@@ -70,6 +72,8 @@ type Student = {
   disciplineRecords?: DisciplineRecord[];
   pointAdjustmentRecords?: PointAdjustmentRecord[];
   dailyProgress?: DailyProgress;
+  teamId?: string;
+  teammateId?: string;
   badges?: string[];
 };
 
@@ -82,6 +86,7 @@ type UpgradeRewardState = {
 type PetAnimationMode = 'feed' | 'gacha' | 'reroll';
 
 type Language = 'zh' | 'en';
+type BattleMode = 'solo' | 'team' | 'both';
 
 type ClassData = {
   id: string;
@@ -99,6 +104,8 @@ type AppData = {
     language?: Language;
     feedCost?: number;
     feedGain?: number;
+    battleMode?: BattleMode;
+    maxTeamSize?: number;
   };
 };
 
@@ -472,6 +479,8 @@ const PET_TYPES = [
 
 const DEFAULT_CLASS_NAME = '預設班級';
 const STORAGE_KEY = 'tamagotchi_classroom_data';
+const DEFAULT_BATTLE_MODE: BattleMode = 'both';
+const DEFAULT_MAX_TEAM_SIZE = 6;
 
 const getRandomPetType = (useRarity = false) => {
   if (!useRarity) {
@@ -499,6 +508,44 @@ const computeBadges = (student: Pick<Student, 'points' | 'pet' | 'stats'>) => {
   return Array.from(badges);
 };
 
+const clampTeamSize = (value: unknown) => clamp(Math.floor(toFiniteNumber(value, DEFAULT_MAX_TEAM_SIZE)), 2, 6);
+
+const createTeamId = (seed = Date.now()) => `team-${seed}-${Math.random().toString(36).slice(2, 8)}`;
+
+const sanitizeTeamAssignments = (students: Student[], maxTeamSize = DEFAULT_MAX_TEAM_SIZE) => {
+  const grouped = new Map<string, Student[]>();
+  students.forEach((student) => {
+    if (!student.teamId) return;
+    const existing = grouped.get(student.teamId) ?? [];
+    existing.push(student);
+    grouped.set(student.teamId, existing);
+  });
+
+  const validMembers = new Set<string>();
+  for (const members of grouped.values()) {
+    members.slice(0, maxTeamSize).forEach((student) => validMembers.add(student.id));
+  }
+
+  return students.map((student) => {
+    if (!student.teamId || !validMembers.has(student.id)) {
+      return { ...student, teamId: undefined };
+    }
+
+    const teamMembers = grouped.get(student.teamId)?.slice(0, maxTeamSize) ?? [];
+    return {
+      ...student,
+      teamId: teamMembers.length >= 2 ? student.teamId : undefined,
+    };
+  });
+};
+
+const getTeamMembers = (students: Student[], student: Student | undefined, maxTeamSize = DEFAULT_MAX_TEAM_SIZE) => {
+  if (!student) return [];
+  if (!student.teamId) return [student];
+  const teamMembers = students.filter((member) => member.teamId === student.teamId);
+  return teamMembers.slice(0, maxTeamSize);
+};
+
 const createInitialData = (now = Date.now()): AppData => ({
   lastOpened: now,
   classes: [
@@ -515,6 +562,8 @@ const createInitialData = (now = Date.now()): AppData => ({
     language: 'zh',
     feedCost: 10,
     feedGain: 20,
+    battleMode: DEFAULT_BATTLE_MODE,
+    maxTeamSize: DEFAULT_MAX_TEAM_SIZE,
   },
 });
 
@@ -582,6 +631,7 @@ const normalizeStudent = (student: any, fallbackIndex: number, now = Date.now())
       lastClaimDate: typeof student?.dailyProgress?.lastClaimDate === 'string' ? student.dailyProgress.lastClaimDate : undefined,
       streak: Math.max(0, Math.floor(toFiniteNumber(student?.dailyProgress?.streak, 0))),
     },
+    teamId: typeof student?.teamId === 'string' && student.teamId ? student.teamId : undefined,
     badges: [],
   };
 
@@ -605,13 +655,34 @@ const normalizeAppData = (raw: any, now = Date.now()): AppData => {
         },
       ];
 
-  const classes = rawClasses.map((classItem: any, index: number) => ({
-    id: typeof classItem?.id === 'string' && classItem.id ? classItem.id : `class-${Date.now()}-${index}`,
-    name: typeof classItem?.name === 'string' && classItem.name.trim() ? classItem.name.trim() : DEFAULT_CLASS_NAME,
-    students: Array.isArray(classItem?.students)
-      ? classItem.students.map((student: any, studentIndex: number) => normalizeStudent(student, studentIndex, now))
-      : [],
-  }));
+  const classes = rawClasses.map((classItem: any, index: number) => {
+    const rawStudents = Array.isArray(classItem?.students) ? classItem.students : [];
+    const students = rawStudents.map((student: any, studentIndex: number) => normalizeStudent(student, studentIndex, now));
+    const studentById = new Map<string, Student>(students.map((student) => [student.id, student] as const));
+    const legacyPairs = new Map<string, string>();
+    rawStudents.forEach((student: any, studentIndex: number) => {
+      const normalizedId = students[studentIndex]?.id;
+      if (!normalizedId) return;
+      if (typeof student?.teammateId === 'string' && student.teammateId) {
+        legacyPairs.set(normalizedId, student.teammateId);
+      }
+    });
+    const withLegacyTeams = students.map((student) => {
+      if (student.teamId) return student;
+      const legacyMateId = legacyPairs.get(student.id);
+      if (!legacyMateId) return student;
+      const mate = studentById.get(legacyMateId);
+      if (!mate || legacyPairs.get(mate.id) !== student.id) return student;
+      const derivedTeamId = `legacy-team-${[student.id, mate.id].sort().join('-')}`;
+      return { ...student, teamId: derivedTeamId };
+    });
+
+    return {
+      id: typeof classItem?.id === 'string' && classItem.id ? classItem.id : `class-${Date.now()}-${index}`,
+      name: typeof classItem?.name === 'string' && classItem.name.trim() ? classItem.name.trim() : DEFAULT_CLASS_NAME,
+      students: sanitizeTeamAssignments(withLegacyTeams, clampTeamSize(rawSettings?.maxTeamSize)),
+    };
+  });
 
   const currentClassId = typeof raw?.currentClassId === 'string' && classes.some((classData) => classData.id === raw.currentClassId)
     ? raw.currentClassId
@@ -627,6 +698,8 @@ const normalizeAppData = (raw: any, now = Date.now()): AppData => {
       language: rawSettings?.language === 'en' ? 'en' : 'zh',
       feedCost: Math.max(1, toFiniteNumber(rawSettings?.feedCost, initialData.settings?.feedCost ?? 10)),
       feedGain: Math.max(1, toFiniteNumber(rawSettings?.feedGain, initialData.settings?.feedGain ?? 20)),
+      battleMode: rawSettings?.battleMode === 'solo' || rawSettings?.battleMode === 'team' ? rawSettings.battleMode : DEFAULT_BATTLE_MODE,
+      maxTeamSize: clampTeamSize(rawSettings?.maxTeamSize),
     },
   };
 };
@@ -790,6 +863,7 @@ export default function App() {
       disciplineRecords: [],
       pointAdjustmentRecords: [],
       dailyProgress: { streak: 0 },
+      teamId: undefined,
       badges: []
     };
     
@@ -802,7 +876,12 @@ export default function App() {
     const currentClass = data.classes.find(c => c.id === data.currentClassId);
     if (!currentClass) return;
     const studentName = currentClass.students.find(s => s.id === studentId)?.name;
-    updateCurrentClassStudents(currentClass.students.filter(s => s.id !== studentId));
+    updateCurrentClassStudents(
+      sanitizeTeamAssignments(
+        currentClass.students.filter(s => s.id !== studentId),
+        data.settings?.maxTeamSize ?? DEFAULT_MAX_TEAM_SIZE,
+      ),
+    );
     showToast(`${tLang.deletedStudent}${studentName}`);
   };
 
@@ -1044,6 +1123,86 @@ export default function App() {
     );
   };
 
+  const setTeammate = (studentId: string, teammateIds: string[] = []) => {
+    if (!data) return;
+    const currentClass = data.classes.find((c) => c.id === data.currentClassId);
+    if (!currentClass) return;
+    const maxTeamSize = data.settings?.maxTeamSize ?? DEFAULT_MAX_TEAM_SIZE;
+    const selectedIds = Array.from(new Set(teammateIds))
+      .filter((id) => id !== studentId && currentClass.students.some((student) => student.id === id))
+      .slice(0, maxTeamSize - 1);
+    const memberIds = [studentId, ...selectedIds];
+    const teamIdsToClear = new Set(
+      currentClass.students
+        .filter((student) => memberIds.includes(student.id) && student.teamId)
+        .map((student) => student.teamId as string),
+    );
+    const nextTeamId = selectedIds.length > 0 ? createTeamId() : undefined;
+    const reassignedStudents = sanitizeTeamAssignments(
+      currentClass.students.map((student) => {
+        if (student.teamId && teamIdsToClear.has(student.teamId)) {
+          return { ...student, teamId: undefined };
+        }
+        if (nextTeamId && memberIds.includes(student.id)) {
+          return { ...student, teamId: nextTeamId };
+        }
+        return student;
+      }),
+      maxTeamSize,
+    );
+
+    updateCurrentClassStudents(reassignedStudents);
+
+    const teamOwner = currentClass.students.find((student) => student.id === studentId);
+    const teammateNames = currentClass.students
+      .filter((student) => selectedIds.includes(student.id))
+      .map((student) => student.name);
+    showToast(
+      selectedIds.length > 0
+        ? lang === 'en'
+          ? `${teamOwner?.name ?? ''} formed a team with ${teammateNames.join(', ')}.`
+          : `${teamOwner?.name ?? ''} 已和 ${teammateNames.join('、')} 組成隊伍。`
+        : lang === 'en'
+          ? `${teamOwner?.name ?? ''} cleared the team.`
+          : `${teamOwner?.name ?? ''} 已解除隊伍。`,
+      'success',
+    );
+    return;
+
+    const teammateId = undefined as string | undefined;
+    const validTarget = teammateId && currentClass.students.some((student) => student.id === teammateId)
+      ? teammateId
+      : undefined;
+
+    const nextStudents = currentClass.students.map((student) => {
+      if (student.id === studentId || student.id === validTarget) {
+        return { ...student, teammateId: undefined };
+      }
+
+      if (student.teammateId === studentId || student.teammateId === validTarget) {
+        return { ...student, teammateId: undefined };
+      }
+
+      return student;
+    }).map((student) => {
+      if (!validTarget) return student;
+      if (student.id === studentId) return { ...student, teammateId: validTarget };
+      if (student.id === validTarget) return { ...student, teammateId: studentId };
+      return student;
+    });
+
+    updateCurrentClassStudents(nextStudents);
+
+    const owner = currentClass.students.find((student) => student.id === studentId);
+    const teammate = currentClass.students.find((student) => student.id === validTarget);
+    showToast(
+      validTarget
+        ? `${owner?.name ?? ''} ${lang === 'en' ? 'teamed up with' : '已和'} ${teammate?.name ?? ''}${lang === 'en' ? '' : '組隊'}`
+        : `${owner?.name ?? ''}${lang === 'en' ? ' cleared teammate' : ' 已解除組隊'}`,
+      'success',
+    );
+  };
+
   const upgradePet = (studentId: string) => {
     if (!data) return;
     const currentClass = data.classes.find(c => c.id === data.currentClassId);
@@ -1125,11 +1284,14 @@ export default function App() {
     language: Language,
     feedCost: number,
     feedGain: number,
+    battleMode: BattleMode,
+    maxTeamSize: number,
   ) => {
     if (!data) return;
     const safeDecayAmount = Math.max(0, Number.isFinite(decayAmount) ? decayAmount : 2);
     const safeFeedCost = Math.max(1, Number.isFinite(feedCost) ? feedCost : 10);
     const safeFeedGain = Math.max(1, Number.isFinite(feedGain) ? feedGain : 20);
+    const safeMaxTeamSize = clampTeamSize(maxTeamSize);
     const newData = {
       ...data,
       settings: {
@@ -1139,9 +1301,17 @@ export default function App() {
         language,
         feedCost: safeFeedCost,
         feedGain: safeFeedGain,
+        battleMode,
+        maxTeamSize: safeMaxTeamSize,
       }
     };
-    saveData(newData);
+    saveData({
+      ...newData,
+      classes: newData.classes.map((classData) => ({
+        ...classData,
+        students: sanitizeTeamAssignments(classData.students, safeMaxTeamSize),
+      })),
+    });
     showToast(tLang.settingsSaved, 'success');
   };
 
@@ -1153,16 +1323,64 @@ export default function App() {
     const defender = currentClass.students.find(s => s.id === defenderId);
     
     if (!attacker || !defender) return;
+    const now = Date.now();
+    const maxTeamSize = data.settings?.maxTeamSize ?? DEFAULT_MAX_TEAM_SIZE;
+    const battleMode = data.settings?.battleMode ?? DEFAULT_BATTLE_MODE;
+    const attackerMembers = getTeamMembers(currentClass.students, attacker, maxTeamSize)
+      .filter((member) => member.id === attacker.id || isBattleReady(member, now))
+      .map((member) => ({ id: member.id, student: member }));
+    const defenderMembers = getTeamMembers(currentClass.students, defender, maxTeamSize)
+      .filter((member) => member.id === defender.id || isBattleReady(member, now))
+      .map((member) => ({ id: member.id, student: member }));
+    const shouldForceTeamBattle = battleMode === 'team';
+    const shouldUseTeamBattle = battleMode !== 'solo' && attackerMembers.length > 1 && defenderMembers.length > 1;
 
-    const battleResult = resolveBattle(
-      attacker,
-      defender,
-      {
-        attacker: Math.floor(Math.random() * 20),
-        defender: Math.floor(Math.random() * 20),
-      },
-      Date.now(),
-    );
+    if (shouldForceTeamBattle && (attackerMembers.length < 2 || defenderMembers.length < 2)) {
+      showToast(
+        lang === 'en'
+          ? 'Team battle mode requires at least 2 ready members on both sides.'
+          : '隊伍賽模式要求雙方都至少有 2 位可出戰成員。',
+        'error',
+      );
+      return;
+    }
+
+    const battleResult =
+      !shouldUseTeamBattle && !shouldForceTeamBattle
+        ? (() => {
+            const singleResult = resolveBattle(
+              attacker,
+              defender,
+              {
+                attacker: Math.floor(Math.random() * 20),
+                defender: Math.floor(Math.random() * 20),
+              },
+              now,
+            );
+
+            if (singleResult.blocked) return singleResult;
+
+            return {
+              ...singleResult,
+              mode: 'solo' as const,
+              updated: {
+                [attacker.id]: singleResult.attacker,
+                [defender.id]: singleResult.defender,
+              },
+            };
+          })()
+        : {
+            ...resolveTeamBattle(
+              attackerMembers,
+              defenderMembers,
+              {
+                attackers: attackerMembers.map(() => Math.floor(Math.random() * 20)),
+                defenders: defenderMembers.map(() => Math.floor(Math.random() * 20)),
+              },
+              now,
+            ),
+            mode: 'team' as const,
+          };
 
     if (battleResult.blocked === 'penalty') {
       showToast(tLang.battleBlockedByPenalty, 'error');
@@ -1179,18 +1397,30 @@ export default function App() {
       return;
     }
 
+    if (battleResult.blocked === 'invalid') {
+      return;
+    }
+
     updateCurrentClassStudents(currentClass.students.map((student) => {
-      if (student.id === attackerId) return battleResult.attacker;
-      if (student.id === defenderId) return battleResult.defender;
-      return student;
+      return (battleResult as any).updated?.[student.id] ?? student;
     }));
 
+    const teamReward = (battleResult as any).teamReward;
+    const isTeamBattle = (battleResult as any).mode === 'team';
+
     if (battleResult.outcome === 'win') {
-      showToast(tLang.battleWon, 'success');
+      showToast(
+        isTeamBattle && teamReward
+          ? (lang === 'en'
+              ? `Team battle won. Team bonus +${teamReward.bonusPoints} pts / +${teamReward.bonusHappiness} mood.`
+              : `隊伍對戰獲勝，啟動隊伍獎勵：+${teamReward.bonusPoints} 積分 / +${teamReward.bonusHappiness} 心情。`)
+          : tLang.battleWon,
+        'success',
+      );
     } else if (battleResult.outcome === 'loss') {
-      showToast(tLang.battleLost, 'error');
+      showToast(isTeamBattle ? (lang === 'en' ? 'Team battle lost.' : '隊伍對戰失敗。') : tLang.battleLost, 'error');
     } else {
-      showToast(tLang.battleDraw, 'success');
+      showToast(isTeamBattle ? (lang === 'en' ? 'Team battle draw.' : '隊伍對戰平手。') : tLang.battleDraw, 'success');
     }
   };
 
@@ -1308,6 +1538,7 @@ export default function App() {
             feedPet={feedPet}
             claimDailyTask={claimDailyTask}
             revivePet={revivePet}
+            setTeammate={setTeammate}
             upgradePet={upgradePet} 
             battle={battle} 
             gachaPet={gachaPet}
@@ -1385,6 +1616,8 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
   const [decayType, setDecayType] = useState<'hourly' | 'daily'>(data.settings?.decayType ?? 'hourly');
   const [feedCost, setFeedCost] = useState(data.settings?.feedCost ?? 10);
   const [feedGain, setFeedGain] = useState(data.settings?.feedGain ?? 20);
+  const [battleMode, setBattleMode] = useState<BattleMode>(data.settings?.battleMode ?? DEFAULT_BATTLE_MODE);
+  const [maxTeamSize, setMaxTeamSize] = useState(data.settings?.maxTeamSize ?? DEFAULT_MAX_TEAM_SIZE);
   const [currentLang, setCurrentLang] = useState<Language>(lang);
   const [selectedReasons, setSelectedReasons] = useState<Record<string, string>>({});
   
@@ -1444,9 +1677,50 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
     ...option,
     label: option.labels[currentLang] ?? option.labels.zh,
   }));
+  const guideStudentItems =
+    lang === 'en'
+      ? [
+          'Students use points for feeding, upgrades, revives, and gacha; pets still lose fullness over time even after export/import.',
+          'Students can build teams from 2 to 6 members depending on the current system setting.',
+          'Battle mode is controlled in System Settings and can run as solo only, team only, or automatic fallback.',
+          'Team battles use a weighted support formula, so larger teams help without multiplying total power linearly.',
+          'Winning as a full team grants an exclusive bonus of +10 points and +6 mood to each winning member.',
+          'Free reroll milestones are consumed in order at level 2, 4, 6, then 8. Dead pets must be revived before they can act again.',
+        ]
+      : [
+          '學生可用積分餵食、升級、復活與扭蛋；資料匯出後再匯入也會依時間持續扣除飽食度。',
+          '雙方互相選定隊友後會形成隊伍；若兩邊都有可出戰隊友，對戰會自動切換成隊伍模式。',
+          '隊伍對戰採用主將全額、隊友加權的戰力公式，隊友能支援但不會直接把總戰力翻倍。',
+          '完整雙人隊伍獲勝時，每位獲勝成員都會獲得隊伍專屬獎勵：+10 積分、+6 心情。',
+          '免費重抽會依序在 2、4、6、8 級觸發；寵物死亡後必須先復活，才能再次行動。',
+        ];
+  const guideTeacherItems =
+    lang === 'en'
+      ? [
+          'Fixed reason menus keep point changes more consistent, and every quick/manual adjustment is written to the point log.',
+          'Warnings still stack to 3. Auto penalties apply a 24-hour weakened status; formal discipline applies a 48-hour weakened status.',
+          'The record panel lets mentors switch between discipline history and point-adjustment history.',
+          'The team leaderboard ranks paired students by combined RP, then by win rate and average level.',
+          'Team balance is intentionally softer than solo battles, so team mode adds coordination value instead of pure snowballing.',
+        ]
+      : [
+          '固定原因選單可讓加減分更一致，所有快速加減分與手動調整都會寫入加減分記錄。',
+          '警告累積到第 3 次會自動觸發處罰並進入 24 小時虛弱；正式處罰則直接進入 48 小時虛弱。',
+          '記錄面板可切換查看處罰記錄與加減分記錄，方便導師回頭追蹤。',
+          '隊伍排行榜會以隊伍總 RP 排序，再比較勝率與平均等級，方便觀察組隊成效。',
+          '隊伍戰的平衡刻意比單人戰保守，重點是鼓勵合作，而不是讓高等級組合直接滾雪球。',
+        ];
 
   const handleSaveSettings = () => {
-    updateSettings(Number(decayAmount), decayType, currentLang, Number(feedCost), Number(feedGain));
+    updateSettings(
+      Number(decayAmount),
+      decayType,
+      currentLang,
+      Number(feedCost),
+      Number(feedGain),
+      battleMode,
+      Number(maxTeamSize),
+    );
   };
 
   const handleAddClass = () => {
@@ -1476,6 +1750,7 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
       disciplineRecords: [],
       pointAdjustmentRecords: [],
       dailyProgress: { streak: 0 },
+      teamId: undefined,
       badges: []
     };
     addStudent(newStudent);
@@ -1869,7 +2144,7 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
               {tLang.guideStudentTitle}
             </div>
             <ul className="space-y-2 text-sm text-emerald-900">
-              {(tLang.guideStudentItems as string[]).map((item) => (
+              {guideStudentItems.map((item) => (
                 <li key={item} className="flex items-start">
                   <span className="mt-1 mr-2 h-1.5 w-1.5 rounded-full bg-emerald-500" />
                   <span>{item}</span>
@@ -1883,7 +2158,7 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
               {tLang.guideTeacherTitle}
             </div>
             <ul className="space-y-2 text-sm text-indigo-900">
-              {(tLang.guideTeacherItems as string[]).map((item) => (
+              {guideTeacherItems.map((item) => (
                 <li key={item} className="flex items-start">
                   <span className="mt-1 mr-2 h-1.5 w-1.5 rounded-full bg-indigo-500" />
                   <span>{item}</span>
@@ -1955,6 +2230,35 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
               min="1"
               value={feedGain}
               onChange={(e) => setFeedGain(Number(e.target.value))}
+              className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
+            />
+          </div>
+          <div className="flex-1 w-full">
+            <label htmlFor="battleMode" className="block text-sm font-medium text-slate-700 mb-1">
+              {lang === 'en' ? 'Battle Mode' : '對戰模式'}
+            </label>
+            <select
+              id="battleMode"
+              value={battleMode}
+              onChange={(e) => setBattleMode(e.target.value as BattleMode)}
+              className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
+            >
+              <option value="both">{lang === 'en' ? 'Solo + Team' : '個人賽 + 隊伍賽'}</option>
+              <option value="solo">{lang === 'en' ? 'Solo Only' : '僅個人賽'}</option>
+              <option value="team">{lang === 'en' ? 'Team Only' : '僅隊伍賽'}</option>
+            </select>
+          </div>
+          <div className="flex-1 w-full">
+            <label htmlFor="maxTeamSize" className="block text-sm font-medium text-slate-700 mb-1">
+              {lang === 'en' ? 'Max Team Size' : '隊伍上限人數'}
+            </label>
+            <input
+              type="number"
+              id="maxTeamSize"
+              min="2"
+              max="6"
+              value={maxTeamSize}
+              onChange={(e) => setMaxTeamSize(Number(e.target.value))}
               className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
             />
           </div>
@@ -2138,14 +2442,20 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
 }
 
 // --- Classroom View Component ---
-function ClassroomView({ data, feedPet, claimDailyTask, revivePet, upgradePet, battle, gachaPet, animatingPets, lang, tLang }: any) {
+function ClassroomView({ data, feedPet, claimDailyTask, revivePet, setTeammate, upgradePet, battle, gachaPet, animatingPets, lang, tLang }: any) {
   const [battleModalOpen, setBattleModalOpen] = useState(false);
   const [attackerId, setAttackerId] = useState<string | null>(null);
   const [defenderId, setDefenderId] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<'grid' | 'leaderboard'>('grid');
+  const [teamModalStudentId, setTeamModalStudentId] = useState<string | null>(null);
+  const [selectedTeammateIds, setSelectedTeammateIds] = useState<string[]>([]);
+  const [viewMode, setViewMode] = useState<'grid' | 'leaderboard' | 'teams'>('grid');
 
   const currentClass = data.classes.find((c: any) => c.id === data.currentClassId);
   const students = currentClass?.students || [];
+  const attackerStudent = attackerId ? students.find((student: any) => student.id === attackerId) : null;
+  const renderNow = Date.now();
+  const currentBattleMode = data.settings?.battleMode ?? DEFAULT_BATTLE_MODE;
+  const currentMaxTeamSize = data.settings?.maxTeamSize ?? DEFAULT_MAX_TEAM_SIZE;
 
   const handleOpenBattle = (id: string) => {
     setAttackerId(id);
@@ -2161,8 +2471,63 @@ function ClassroomView({ data, feedPet, claimDailyTask, revivePet, upgradePet, b
     }
   };
 
+  const teamModalStudent = teamModalStudentId
+    ? students.find((student: any) => student.id === teamModalStudentId)
+    : null;
+  const currentTeamMembers = teamModalStudent
+    ? getTeamMembers(students, teamModalStudent, currentMaxTeamSize).filter((member) => member.id !== teamModalStudent.id)
+    : [];
+  const availableTeammates = teamModalStudent
+    ? students.filter((candidate: any) => candidate.id !== teamModalStudent.id)
+    : [];
+  const availableOpponents = students.filter(
+    (student: any) => student.id !== attackerId && (!attackerStudent?.teamId || student.teamId !== attackerStudent.teamId),
+  );
+  useEffect(() => {
+    if (!teamModalStudent) {
+      setSelectedTeammateIds([]);
+      return;
+    }
+    setSelectedTeammateIds(currentTeamMembers.map((member) => member.id));
+  }, [teamModalStudentId, currentTeamMembers.length]);
+
   // Sort students for leaderboard
   const sortedByRank = [...students].sort((a, b) => (b.rankPoints || 0) - (a.rankPoints || 0));
+  const teamIds = Array.from(new Set(students.map((student: any) => student.teamId).filter(Boolean)));
+  const teams = teamIds
+    .map((teamId) => {
+      const members = students.filter((student: any) => student.teamId === teamId).slice(0, currentMaxTeamSize);
+      if (members.length < 2) return null;
+      const wins = members.reduce((total: number, member: any) => total + (member.stats?.wins || 0), 0);
+      const losses = members.reduce((total: number, member: any) => total + (member.stats?.losses || 0), 0);
+      const totalBattles = wins + losses;
+      const totalRankPoints = members.reduce((total: number, member: any) => total + (member.rankPoints || 0), 0);
+      const averageLevel = members.reduce((total: number, member: any) => total + (member.pet.level || 1), 0) / members.length;
+      const readyMembers = members.filter((member: any) => isBattleReady(member, renderNow)).length;
+      const averageMood = Math.round(
+        members.reduce((total: number, member: any) => total + (member.pet.happiness || 0), 0) / members.length,
+      );
+
+      return {
+        id: teamId,
+        members,
+        name: members.map((member: any) => member.name).join(' / '),
+        totalRankPoints,
+        totalBattles,
+        wins,
+        losses,
+        winRate: totalBattles > 0 ? Math.round((wins / totalBattles) * 100) : 0,
+        averageLevel,
+        readyMembers,
+        averageMood,
+      };
+    })
+    .filter(Boolean)
+    .sort((a: any, b: any) =>
+      b.totalRankPoints - a.totalRankPoints ||
+      b.winRate - a.winRate ||
+      b.averageLevel - a.averageLevel,
+    );
 
   const getRankInfo = (rp: number = 0) => {
     if (rp >= 400) return { name: tLang.diamond, color: 'text-cyan-500', bg: 'bg-cyan-100', icon: Crown };
@@ -2195,6 +2560,13 @@ function ClassroomView({ data, feedPet, claimDailyTask, revivePet, upgradePet, b
               <BarChart3 className="h-4 w-4 inline mr-2" />
               {tLang.leaderboard}
             </button>
+            <button
+              onClick={() => setViewMode('teams')}
+              className={`px-4 py-2 rounded-full font-medium transition-colors ${viewMode === 'teams' ? 'bg-amber-500 text-white shadow-md' : 'bg-white text-amber-700 hover:bg-amber-100'}`}
+            >
+              <Users className="h-4 w-4 inline mr-2" />
+              {lang === 'en' ? 'Team Leaderboard' : '隊伍排行榜'}
+            </button>
           </div>
         </div>
 
@@ -2213,6 +2585,15 @@ function ClassroomView({ data, feedPet, claimDailyTask, revivePet, upgradePet, b
                 onFeed={() => feedPet(student.id)} 
                 onDailyTask={() => claimDailyTask(student.id)}
                 onRevive={() => revivePet(student.id)}
+                onTeamUp={() => setTeamModalStudentId(student.id)}
+                teammateName={
+                  student.teamId
+                    ? getTeamMembers(students, student, currentMaxTeamSize)
+                        .filter((member) => member.id !== student.id)
+                        .map((member) => member.name)
+                        .join(', ')
+                    : undefined
+                }
                 onUpgrade={() => upgradePet(student.id)}
                 onBattle={() => handleOpenBattle(student.id)}
                 onGacha={() => gachaPet(student.id)}
@@ -2225,7 +2606,7 @@ function ClassroomView({ data, feedPet, claimDailyTask, revivePet, upgradePet, b
               />
             ))}
           </div>
-        ) : (
+        ) : viewMode === 'leaderboard' ? (
           <div className="bg-white rounded-2xl shadow-sm border border-amber-100 overflow-hidden max-w-4xl mx-auto">
             <div className="px-6 py-5 border-b border-amber-100 bg-amber-50 flex items-center justify-between">
               <h3 className="text-lg leading-6 font-medium text-amber-900 flex items-center">
@@ -2297,6 +2678,99 @@ function ClassroomView({ data, feedPet, claimDailyTask, revivePet, upgradePet, b
               </table>
             </div>
           </div>
+        ) : (
+          <div className="space-y-5 max-w-5xl mx-auto">
+            <div className="rounded-2xl border border-sky-100 bg-sky-50/80 p-5 shadow-sm">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h3 className="text-lg font-semibold text-sky-900 flex items-center">
+                    <Users className="h-5 w-5 mr-2 text-sky-600" />
+                    {lang === 'en' ? 'Team Leaderboard' : '隊伍排行榜'}
+                  </h3>
+                  <p className="mt-1 text-sm text-sky-800">
+                    {lang === 'en'
+                      ? 'Team wins grant an exclusive +10 pts / +6 mood bonus to each winning teammate.'
+                      : '完整雙人隊伍獲勝時，每位獲勝成員都會獲得 +10 積分 / +6 心情的隊伍獎勵。'}
+                  </p>
+                </div>
+                <div className="rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-sky-900 shadow-sm">
+                  {lang === 'en' ? 'Active Teams' : '目前隊伍'}: {teams.length}
+                </div>
+              </div>
+            </div>
+
+            {teams.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-sky-200 bg-white px-6 py-14 text-center text-sm text-slate-500">
+                {lang === 'en'
+                  ? 'No teams yet. Use the teammate button on a pet card to create one.'
+                  : '目前還沒有隊伍，請先在寵物卡片中選擇隊友。'}
+              </div>
+            ) : (
+              <div className="bg-white rounded-2xl shadow-sm border border-sky-100 overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-slate-200">
+                    <thead className="bg-slate-50">
+                      <tr>
+                        <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">#</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
+                          {lang === 'en' ? 'Team' : '隊伍'}
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
+                          {lang === 'en' ? 'Total RP' : '總 RP'}
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
+                          {tLang.winRate}
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
+                          {lang === 'en' ? 'Avg Lv.' : '平均等級'}
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
+                          {lang === 'en' ? 'Ready Members' : '可出戰人數'}
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
+                          {lang === 'en' ? 'Avg Mood' : '平均心情'}
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200 bg-white">
+                      {teams.map((team: any, idx: number) => (
+                        <tr key={team.id} className={idx < 3 ? 'bg-sky-50/40' : ''}>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-slate-900">
+                            {idx + 1}
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="text-sm font-semibold text-slate-900">{team.name}</div>
+                            <div className="mt-1 text-xs text-slate-500">
+                              {team.members.map((member: any) => member.name).join(' / ')}
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-slate-700">
+                            {team.totalRankPoints}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
+                            {team.winRate}% ({team.wins}W {team.losses}L)
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
+                            {team.averageLevel.toFixed(1)}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
+                            <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${
+                              team.readyMembers === 2 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
+                            }`}>
+                              {team.readyMembers}/{team.members.length}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
+                            {team.averageMood}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
         )}
       </div>
 
@@ -2314,11 +2788,16 @@ function ClassroomView({ data, feedPet, claimDailyTask, revivePet, upgradePet, b
               </button>
             </div>
             <div className="p-6">
-              <p className="text-sm text-gray-600 mb-4">
-                {tLang.battleRules}
-              </p>
+              <div className="mb-4 space-y-2 text-sm text-gray-600">
+                <p>{tLang.battleRules}</p>
+                <p className="rounded-xl bg-sky-50 px-3 py-2 text-sky-800">
+                  {lang === 'en'
+                    ? `If battle mode allows teams and both sides have ready members, this fight switches to team mode. Teams can include up to ${currentMaxTeamSize} members.`
+                    : `若目前設定允許隊伍賽，且雙方都有可出戰隊員，這場對戰會切換為隊伍模式；每隊最多 ${currentMaxTeamSize} 人。`}
+                </p>
+              </div>
               <div className="space-y-2 max-h-60 overflow-y-auto">
-                {students.filter((s: any) => s.id !== attackerId).map((student: any) => (
+                {availableOpponents.map((student: any) => (
                   <button
                     key={student.id}
                     onClick={() => setDefenderId(student.id)}
@@ -2335,12 +2814,17 @@ function ClassroomView({ data, feedPet, claimDailyTask, revivePet, upgradePet, b
                       </div>
                       <div>
                         <div className="font-medium text-gray-900">{student.name}</div>
-                        <div className="text-xs text-gray-500">Lv. {student.pet.level || 1} | {tLang.petFullness}: {student.pet.fullness}</div>
+                        <div className="text-xs text-gray-500">
+                          Lv. {student.pet.level || 1} | {tLang.petFullness}: {student.pet.fullness}
+                          {student.teamId
+                            ? ` | ${lang === 'en' ? 'Team' : '隊伍'}: ${getTeamMembers(students, student, currentMaxTeamSize).length} ${lang === 'en' ? 'members' : '人'}`
+                            : ''}
+                        </div>
                       </div>
                     </div>
                   </button>
                 ))}
-                {students.length <= 1 && (
+                {availableOpponents.length === 0 && (
                   <div className="text-center py-4 text-gray-500 text-sm">
                     {tLang.noOpponents}
                   </div>
@@ -2365,11 +2849,112 @@ function ClassroomView({ data, feedPet, claimDailyTask, revivePet, upgradePet, b
           </div>
         </div>
       )}
+
+      {teamModalStudent && (
+        <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-xl shadow-xl max-w-lg w-full overflow-hidden">
+            <div className="flex justify-between items-center p-4 border-b border-gray-200">
+              <h3 className="text-lg font-bold text-slate-900 flex items-center">
+                <Users className="h-5 w-5 mr-2 text-indigo-500" />
+                {lang === 'en' ? 'Manage Team' : '管理隊伍'}
+              </h3>
+              <button onClick={() => setTeamModalStudentId(null)} className="text-gray-400 hover:text-gray-500">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="p-6">
+              <p className="text-sm text-gray-600 mb-4">
+                {lang === 'en'
+                  ? `${teamModalStudent.name} can build a team of up to ${currentMaxTeamSize} members.`
+                  : `${teamModalStudent.name} 可建立最多 ${currentMaxTeamSize} 人的隊伍。`}
+              </p>
+              {currentTeamMembers.length > 0 && (
+                <div className="mb-4 rounded-xl bg-sky-50 px-4 py-3 text-sm text-sky-800">
+                  {lang === 'en' ? 'Current Team' : '目前隊伍'}: {currentTeamMembers.map((member: any) => member.name).join(', ')}
+                </div>
+              )}
+              {currentTeamMembers.length > 0 && (
+                <button
+                  onClick={() => {
+                    setTeammate(teamModalStudent.id, []);
+                    setTeamModalStudentId(null);
+                  }}
+                  className="mb-4 inline-flex items-center rounded-md bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700 hover:bg-rose-100"
+                >
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  {lang === 'en' ? 'Clear current team' : '解除目前隊伍'}
+                </button>
+              )}
+              <div className="space-y-2 max-h-72 overflow-y-auto">
+                {availableTeammates.map((candidate: any) => (
+                  <button
+                    key={candidate.id}
+                    onClick={() => {
+                      setSelectedTeammateIds((current) => {
+                        if (current.includes(candidate.id)) {
+                          return current.filter((id) => id !== candidate.id);
+                        }
+                        if (current.length >= currentMaxTeamSize - 1) {
+                          return current;
+                        }
+                        return [...current, candidate.id];
+                      });
+                    }}
+                    className={`w-full rounded-lg border px-4 py-3 text-left transition-colors ${
+                      selectedTeammateIds.includes(candidate.id)
+                        ? 'border-indigo-400 bg-indigo-50'
+                        : 'border-slate-200 hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="font-medium text-slate-900">{candidate.name}</div>
+                      <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${
+                        selectedTeammateIds.includes(candidate.id) ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-500'
+                      }`}>
+                        {selectedTeammateIds.includes(candidate.id)
+                          ? (lang === 'en' ? 'Selected' : '已選取')
+                          : candidate.teamId
+                            ? (lang === 'en' ? 'In Team' : '已有隊伍')
+                            : (lang === 'en' ? 'Available' : '可加入')}
+                      </span>
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      Lv. {candidate.pet.level || 1} | {tLang.petFullness}: {candidate.pet.fullness}
+                    </div>
+                  </button>
+                ))}
+                {availableTeammates.length === 0 && (
+                  <div className="text-center py-6 text-sm text-slate-500">
+                    {lang === 'en' ? 'No available teammates.' : '目前沒有可選的隊友。'}
+                  </div>
+                )}
+              </div>
+              <div className="mt-4 flex justify-end space-x-3">
+                <button
+                  onClick={() => setTeamModalStudentId(null)}
+                  className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50"
+                >
+                  {tLang.cancel}
+                </button>
+                <button
+                  onClick={() => {
+                    setTeammate(teamModalStudent.id, selectedTeammateIds);
+                    setTeamModalStudentId(null);
+                  }}
+                  className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 border border-transparent rounded-md hover:bg-indigo-700"
+                >
+                  {lang === 'en' ? 'Save Team' : '儲存隊伍'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function PetCard({ student, onFeed, onDailyTask, onRevive, onUpgrade, onBattle, onGacha, animationMode, lang, tLang, feedCost, feedGain, getRankInfo }: any) {
+function PetCard({ student, onFeed, onDailyTask, onRevive, onTeamUp, teammateName, onUpgrade, onBattle, onGacha, animationMode, lang, tLang, feedCost, feedGain, getRankInfo }: any) {
   const { name, points, pet, badges = [], rankPoints = 0, warningPoints = 0, nextUpgradeGachaLevel = 2, penaltyStatus, dailyProgress } = student;
   const { fullness, type, level = 1, happiness = 80 } = pet;
   
@@ -2460,6 +3045,12 @@ function PetCard({ student, onFeed, onDailyTask, onRevive, onUpgrade, onBattle, 
             <span className="mt-1 inline-flex w-fit items-center rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-bold text-indigo-700">
               <Star className="mr-1 h-3 w-3" />
               {(tLang.dailyTaskStreak ?? '連續 {days} 天').replace('{days}', String(streak))}
+            </span>
+          )}
+          {teammateName && (
+            <span className="mt-1 inline-flex w-fit items-center rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-bold text-sky-700">
+              <Users className="mr-1 h-3 w-3" />
+              {lang === 'en' ? 'Team' : '隊伍'}: {teammateName}
             </span>
           )}
         </div>
@@ -2621,6 +3212,16 @@ function PetCard({ student, onFeed, onDailyTask, onRevive, onUpgrade, onBattle, 
               {dailyClaimedToday
                 ? (tLang.dailyTaskDone ?? '今日已完成')
                 : `${tLang.dailyTask ?? '每日任務'} (+${DAILY_TASK_REWARD_POINTS})`}
+            </button>
+
+            <button
+              onClick={onTeamUp}
+              className="w-full flex items-center justify-center py-2 px-4 rounded-xl font-bold text-sm transition-all duration-200 bg-sky-100 hover:bg-sky-200 text-sky-900 shadow-sm hover:shadow active:scale-95"
+            >
+              <Users className="h-4 w-4 mr-2" />
+              {teammateName
+                ? (lang === 'en' ? 'Manage Team' : '管理隊伍')
+                : (lang === 'en' ? 'Create Team' : '建立隊伍')}
             </button>
 
             {isDead ? (

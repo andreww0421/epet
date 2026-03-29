@@ -61,6 +61,17 @@ export type PenaltyAmounts = {
 
 export type BattleOutcome = 'win' | 'loss' | 'draw';
 
+export type TeamBattleMember<TStudent extends StudentRuleState> = {
+  id: string;
+  student: TStudent;
+};
+
+export type TeamBattleReward = {
+  winnerIds: string[];
+  bonusPoints: number;
+  bonusHappiness: number;
+};
+
 export const UPGRADE_GACHA_LEVEL_SEQUENCE = [2, 4, 6, 8] as const;
 export const UPGRADE_GACHA_LEVELS = new Set<number>(UPGRADE_GACHA_LEVEL_SEQUENCE);
 export const UPGRADE_REWARD_LEVEL = 2;
@@ -78,6 +89,17 @@ export const PET_DEATH_DELAY_MS = 1000 * 60 * 60 * 24;
 export const REVIVE_COST = 120;
 export const DAILY_TASK_REWARD_POINTS = 30;
 export const DAILY_TASK_REWARD_HAPPINESS = 8;
+export const TEAM_BATTLE_SUPPORT_WEIGHT = 0.65;
+export const TEAM_BATTLE_SYNERGY_BONUS = 12;
+export const TEAM_BATTLE_WIN_POINTS = 30;
+export const TEAM_BATTLE_LOSS_POINTS = 15;
+export const TEAM_BATTLE_WIN_RANK_POINTS = 12;
+export const TEAM_BATTLE_LOSS_RANK_POINTS = 6;
+export const TEAM_BATTLE_WIN_FULLNESS_COST = 30;
+export const TEAM_BATTLE_LOSS_FULLNESS_COST = 35;
+export const TEAM_BATTLE_DRAW_FULLNESS_COST = 20;
+export const TEAM_BATTLE_TEAM_BONUS_POINTS = 10;
+export const TEAM_BATTLE_TEAM_BONUS_HAPPINESS = 6;
 
 export const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
@@ -137,6 +159,28 @@ export const normalizePenaltyStatus = (raw: unknown, now = Date.now()): PenaltyS
 
 export const isPenaltyActive = (penaltyStatus: PenaltyStatus | undefined, now = Date.now()) =>
   Boolean(penaltyStatus && penaltyStatus.until > now);
+
+export const isBattleReady = <T extends StudentRuleState>(student: T, now = Date.now()) => {
+  if (isPetDead(student.pet)) return false;
+  if (isPenaltyActive(student.penaltyStatus, now)) return false;
+  return student.pet.fullness >= 50;
+};
+
+const getBattlePower = <T extends StudentRuleState>(student: T, roll: number) =>
+  student.pet.level * 12 + student.pet.fullness * 0.7 + student.pet.happiness * 0.35 + roll;
+
+const getTeamBattleScore = <T extends StudentRuleState>(
+  members: Array<TeamBattleMember<T>>,
+  rolls: number[],
+) => {
+  const leaderPower = members[0] ? getBattlePower(members[0].student, rolls[0] ?? 0) : 0;
+  const supportPower = members.slice(1).reduce((total, member, index) => {
+    return total + getBattlePower(member.student, rolls[index + 1] ?? 0) * TEAM_BATTLE_SUPPORT_WEIGHT;
+  }, 0);
+  const synergyBonus = members.length > 1 ? TEAM_BATTLE_SYNERGY_BONUS : 0;
+
+  return Math.round(leaderPower + supportPower + synergyBonus);
+};
 
 export const getDateKey = (timestamp = Date.now()) => new Date(timestamp).toISOString().slice(0, 10);
 
@@ -331,6 +375,138 @@ export const resolveBattle = <
       },
       rankPoints: attackerWon ? Math.max(0, defenderRankPoints - 10) : defenderRankPoints + 20,
     },
+  };
+};
+
+export const resolveTeamBattle = <
+  TAttacker extends StudentRuleState,
+  TDefender extends StudentRuleState,
+>(
+  attackers: Array<TeamBattleMember<TAttacker>>,
+  defenders: Array<TeamBattleMember<TDefender>>,
+  randomRolls: { attackers: number[]; defenders: number[] },
+  now = Date.now(),
+) => {
+  const attackerLeader = attackers[0]?.student;
+  const defenderLeader = defenders[0]?.student;
+
+  if (!attackerLeader || !defenderLeader) {
+    return { blocked: 'invalid' as const };
+  }
+
+  if (isPetDead(attackerLeader.pet) || isPetDead(defenderLeader.pet)) {
+    return { blocked: 'dead' as const };
+  }
+
+  if (isPenaltyActive(attackerLeader.penaltyStatus, now)) {
+    return { blocked: 'penalty' as const };
+  }
+
+  if (attackerLeader.pet.fullness < 50) {
+    return { blocked: 'fullness' as const };
+  }
+
+  const attackerScore = getTeamBattleScore(attackers, randomRolls.attackers);
+  const defenderScore = getTeamBattleScore(defenders, randomRolls.defenders);
+
+  let outcome: BattleOutcome = 'draw';
+  if (attackerScore > defenderScore) outcome = 'win';
+  else if (attackerScore < defenderScore) outcome = 'loss';
+
+  const updateMember = <T extends StudentRuleState>(
+    member: TeamBattleMember<T>,
+    sideWon: boolean | null,
+    reward: TeamBattleReward | null,
+  ) => {
+    const stats = member.student.stats ?? { wins: 0, losses: 0 };
+    const rankPoints = member.student.rankPoints ?? 0;
+
+    if (sideWon == null) {
+      return {
+        ...member.student,
+        pet: syncPetLifeState(
+          {
+            ...member.student.pet,
+            fullness: clamp(member.student.pet.fullness - TEAM_BATTLE_DRAW_FULLNESS_COST, 0, 100),
+          },
+          now,
+        ),
+      };
+    }
+
+    const hasTeamReward = Boolean(reward?.winnerIds.includes(member.id));
+    const bonusPoints = hasTeamReward ? reward?.bonusPoints ?? 0 : 0;
+    const bonusHappiness = hasTeamReward ? reward?.bonusHappiness ?? 0 : 0;
+
+    return {
+      ...member.student,
+      points: clamp(
+        member.student.points + (sideWon ? TEAM_BATTLE_WIN_POINTS + bonusPoints : -TEAM_BATTLE_LOSS_POINTS),
+        0,
+        700,
+      ),
+      pet: syncPetLifeState(
+        {
+          ...member.student.pet,
+          fullness: clamp(
+            member.student.pet.fullness - (sideWon ? TEAM_BATTLE_WIN_FULLNESS_COST : TEAM_BATTLE_LOSS_FULLNESS_COST),
+            0,
+            100,
+          ),
+          happiness: clamp(
+            member.student.pet.happiness + (sideWon ? 4 + bonusHappiness : -4),
+            0,
+            100,
+          ),
+        },
+        now,
+      ),
+      stats: {
+        wins: sideWon ? stats.wins + 1 : stats.wins,
+        losses: sideWon ? stats.losses : stats.losses + 1,
+      },
+      rankPoints: sideWon
+        ? rankPoints + TEAM_BATTLE_WIN_RANK_POINTS
+        : Math.max(0, rankPoints - TEAM_BATTLE_LOSS_RANK_POINTS),
+    };
+  };
+
+  const updated: Record<string, TAttacker | TDefender> = {};
+
+  if (outcome === 'draw') {
+    for (const member of attackers) updated[member.id] = updateMember(member, null, null);
+    for (const member of defenders) updated[member.id] = updateMember(member, null, null);
+    return {
+      blocked: null,
+      outcome,
+      attackerScore,
+      defenderScore,
+      updated,
+      teamReward: null,
+    };
+  }
+
+  const attackerWon = outcome === 'win';
+  const winningMembers = attackerWon ? attackers : defenders;
+  const teamReward =
+    winningMembers.length > 1
+      ? {
+          winnerIds: winningMembers.map((member) => member.id),
+          bonusPoints: TEAM_BATTLE_TEAM_BONUS_POINTS,
+          bonusHappiness: TEAM_BATTLE_TEAM_BONUS_HAPPINESS,
+        }
+      : null;
+
+  for (const member of attackers) updated[member.id] = updateMember(member, attackerWon, teamReward);
+  for (const member of defenders) updated[member.id] = updateMember(member, !attackerWon, teamReward);
+
+  return {
+    blocked: null,
+    outcome,
+    attackerScore,
+    defenderScore,
+    updated,
+    teamReward,
   };
 };
 

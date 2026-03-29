@@ -8,6 +8,7 @@ import {
   claimDailyTaskForStudent,
   createPenaltyStatus,
   resolveBattle,
+  resolveTeamBattle,
   reviveStudentPet,
 } from '../src/gameRules.js';
 
@@ -127,6 +128,49 @@ test('claimDailyTaskForStudent grants reward once per day and grows streak', () 
   assert.equal(nextDay.claimed, true);
   assert.equal(nextDay.rewardPoints, 35);
   assert.equal(nextDay.student.dailyProgress?.streak, 2);
+});
+
+test('resolveTeamBattle updates all active team members', () => {
+  const result = resolveTeamBattle(
+    [
+      { id: 'a1', student: createStudent() },
+      {
+        id: 'a2',
+        student: {
+          ...createStudent(),
+          pet: { ...createStudent().pet, level: 4, fullness: 90 },
+        },
+      },
+    ],
+    [
+      { id: 'd1', student: createStudent() },
+      {
+        id: 'd2',
+        student: {
+          ...createStudent(),
+          pet: { ...createStudent().pet, level: 2, fullness: 60 },
+        },
+      },
+    ],
+    {
+      attackers: [10, 12],
+      defenders: [0, 1],
+    },
+    1000,
+  );
+
+  assert.equal(result.blocked, null);
+  assert.equal(result.outcome, 'win');
+  assert.deepEqual(result.teamReward, {
+    winnerIds: ['a1', 'a2'],
+    bonusPoints: 10,
+    bonusHappiness: 6,
+  });
+  assert.equal(result.updated.a1.points, 240);
+  assert.equal(result.updated.a1.pet.happiness, 60);
+  assert.equal(result.updated.a2.stats?.wins, 1);
+  assert.equal(result.updated.d1.points, 185);
+  assert.equal(result.updated.d2.rankPoints, 94);
 });
 
 let failures = 0;
