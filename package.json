@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test:rules": "tsc --outDir .tmp-rule-tests --module NodeNext --target ES2022 --skipLibCheck tests/gameRules.test.ts src/gameRules.ts && node .tmp-rule-tests/tests/gameRules.test.js"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",

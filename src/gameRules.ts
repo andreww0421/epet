@@ -16,11 +16,18 @@ export type PointAdjustmentRecord = {
   amount: number;
   createdAt: number;
   source: PointAdjustmentSource;
+  reasonId?: string;
+  reasonLabel?: string;
 };
 
 export type PenaltyStatus = {
   source: PenaltyStatusSource;
   until: number;
+};
+
+export type DailyProgress = {
+  lastClaimDate?: string;
+  streak: number;
 };
 
 export type StudentRuleState = {
@@ -31,6 +38,8 @@ export type StudentRuleState = {
     fullness: number;
     happiness: number;
     level: number;
+    isDead?: boolean;
+    zeroFullnessSince?: number;
   };
   stats?: {
     wins: number;
@@ -40,6 +49,7 @@ export type StudentRuleState = {
   penaltyStatus?: PenaltyStatus;
   disciplineRecords?: DisciplineRecord[];
   pointAdjustmentRecords?: PointAdjustmentRecord[];
+  dailyProgress?: DailyProgress;
 };
 
 export type PenaltyAmounts = {
@@ -64,6 +74,10 @@ export const PENALTY_DURATION_MS: Record<PenaltyStatusSource, number> = {
   discipline: 1000 * 60 * 60 * 48,
 };
 export const MAX_ACTIVITY_RECORDS = 20;
+export const PET_DEATH_DELAY_MS = 1000 * 60 * 60 * 24;
+export const REVIVE_COST = 120;
+export const DAILY_TASK_REWARD_POINTS = 30;
+export const DAILY_TASK_REWARD_HAPPINESS = 8;
 
 export const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
@@ -92,12 +106,15 @@ export const createDisciplineRecord = (
 export const createPointAdjustmentRecord = (
   amount: number,
   source: PointAdjustmentSource,
+  reason?: { id?: string; label?: string },
   now = Date.now(),
 ): PointAdjustmentRecord => ({
   id: `points-${now}-${Math.random().toString(36).slice(2, 8)}`,
   amount,
   createdAt: now,
   source,
+  reasonId: reason?.id,
+  reasonLabel: reason?.label,
 });
 
 export const appendRecord = <T extends { createdAt: number }>(records: T[] | undefined, record: T) =>
@@ -121,6 +138,38 @@ export const normalizePenaltyStatus = (raw: unknown, now = Date.now()): PenaltyS
 export const isPenaltyActive = (penaltyStatus: PenaltyStatus | undefined, now = Date.now()) =>
   Boolean(penaltyStatus && penaltyStatus.until > now);
 
+export const getDateKey = (timestamp = Date.now()) => new Date(timestamp).toISOString().slice(0, 10);
+
+export const isPetDead = (pet: { isDead?: boolean }) => Boolean(pet.isDead);
+
+export const syncPetLifeState = <
+  TPet extends { fullness: number; isDead?: boolean; zeroFullnessSince?: number },
+>(
+  pet: TPet,
+  now = Date.now(),
+) => {
+  const fullness = clamp(pet.fullness, 0, 100);
+
+  if (fullness > 0) {
+    return {
+      ...pet,
+      fullness,
+      isDead: false,
+      zeroFullnessSince: undefined,
+    };
+  }
+
+  const zeroFullnessSince = pet.zeroFullnessSince ?? now;
+  const isDead = Boolean(pet.isDead) || now - zeroFullnessSince >= PET_DEATH_DELAY_MS;
+
+  return {
+    ...pet,
+    fullness: 0,
+    zeroFullnessSince,
+    isDead,
+  };
+};
+
 export const applyPointAdjustmentToStudent = <T extends StudentRuleState>(
   student: T,
   amount: number,
@@ -131,15 +180,29 @@ export const applyPointAdjustmentToStudent = <T extends StudentRuleState>(
   pointAdjustmentRecords: appendRecord(student.pointAdjustmentRecords, record),
 });
 
-export const applyFeedToStudent = <T extends StudentRuleState>(student: T, feedCost: number, now = Date.now()) => ({
-  ...student,
-  points: student.points - feedCost,
-  pet: {
-    ...student.pet,
-    fullness: clamp(student.pet.fullness + 20, 0, 100),
-    happiness: clamp(student.pet.happiness + (isPenaltyActive(student.penaltyStatus, now) ? 5 : 10), 0, 100),
-  },
-});
+export const applyFeedToStudent = <T extends StudentRuleState>(
+  student: T,
+  feedCost: number,
+  feedGain: number,
+  now = Date.now(),
+) => {
+  if (isPetDead(student.pet)) {
+    return student;
+  }
+
+  return {
+    ...student,
+    points: student.points - feedCost,
+    pet: syncPetLifeState(
+      {
+        ...student.pet,
+        fullness: clamp(student.pet.fullness + feedGain, 0, 100),
+        happiness: clamp(student.pet.happiness + (isPenaltyActive(student.penaltyStatus, now) ? 5 : 10), 0, 100),
+      },
+      now,
+    ),
+  };
+};
 
 export const applyPenaltyToStudent = <T extends StudentRuleState>(
   student: T,
@@ -153,11 +216,14 @@ export const applyPenaltyToStudent = <T extends StudentRuleState>(
 ) => ({
   ...student,
   points: clamp(student.points - penalty.points, 0, 700),
-  pet: {
-    ...student.pet,
-    fullness: clamp(student.pet.fullness - penalty.fullness, 0, 100),
-    happiness: clamp(student.pet.happiness - penalty.happiness, 0, 100),
-  },
+  pet: syncPetLifeState(
+    {
+      ...student.pet,
+      fullness: clamp(student.pet.fullness - penalty.fullness, 0, 100),
+      happiness: clamp(student.pet.happiness - penalty.happiness, 0, 100),
+    },
+    options.now,
+  ),
   rankPoints: Math.max(0, (student.rankPoints ?? 0) - penalty.rankPoints),
   warningPoints: Math.max(0, options.nextWarningPoints ?? student.warningPoints ?? 0),
   penaltyStatus: options.source ? createPenaltyStatus(options.source, options.now) : student.penaltyStatus,
@@ -173,6 +239,10 @@ export const resolveBattle = <
   randomRolls: { attacker: number; defender: number },
   now = Date.now(),
 ) => {
+  if (isPetDead(attacker.pet) || isPetDead(defender.pet)) {
+    return { blocked: 'dead' as const };
+  }
+
   if (isPenaltyActive(attacker.penaltyStatus, now)) {
     return { blocked: 'penalty' as const };
   }
@@ -201,17 +271,23 @@ export const resolveBattle = <
       defenderScore,
       attacker: {
         ...attacker,
-        pet: {
-          ...attacker.pet,
-          fullness: clamp(attacker.pet.fullness - 30, 0, 100),
-        },
+        pet: syncPetLifeState(
+          {
+            ...attacker.pet,
+            fullness: clamp(attacker.pet.fullness - 30, 0, 100),
+          },
+          now,
+        ),
       },
       defender: {
         ...defender,
-        pet: {
-          ...defender.pet,
-          fullness: clamp(defender.pet.fullness - 30, 0, 100),
-        },
+        pet: syncPetLifeState(
+          {
+            ...defender.pet,
+            fullness: clamp(defender.pet.fullness - 30, 0, 100),
+          },
+          now,
+        ),
       },
     };
   }
@@ -226,10 +302,13 @@ export const resolveBattle = <
     attacker: {
       ...attacker,
       points: clamp(attacker.points + (attackerWon ? 50 : -60), 0, 700),
-      pet: {
-        ...attacker.pet,
-        fullness: clamp(attacker.pet.fullness - 50, 0, 100),
-      },
+      pet: syncPetLifeState(
+        {
+          ...attacker.pet,
+          fullness: clamp(attacker.pet.fullness - 50, 0, 100),
+        },
+        now,
+      ),
       stats: {
         wins: attackerWon ? attackerStats.wins + 1 : attackerStats.wins,
         losses: attackerWon ? attackerStats.losses : attackerStats.losses + 1,
@@ -239,15 +318,73 @@ export const resolveBattle = <
     defender: {
       ...defender,
       points: clamp(defender.points + (attackerWon ? -50 : 20), 0, 700),
-      pet: {
-        ...defender.pet,
-        fullness: clamp(defender.pet.fullness - (attackerWon ? 50 : 10), 0, 100),
-      },
+      pet: syncPetLifeState(
+        {
+          ...defender.pet,
+          fullness: clamp(defender.pet.fullness - (attackerWon ? 50 : 10), 0, 100),
+        },
+        now,
+      ),
       stats: {
         wins: attackerWon ? defenderStats.wins : defenderStats.wins + 1,
         losses: attackerWon ? defenderStats.losses + 1 : defenderStats.losses,
       },
       rankPoints: attackerWon ? Math.max(0, defenderRankPoints - 10) : defenderRankPoints + 20,
+    },
+  };
+};
+
+export const applyDecayToStudent = <T extends StudentRuleState>(student: T, decayAmount: number, now = Date.now()) => ({
+  ...student,
+  pet: syncPetLifeState(
+    {
+      ...student.pet,
+      fullness: clamp(student.pet.fullness - decayAmount, 0, 100),
+    },
+    now,
+  ),
+});
+
+export const reviveStudentPet = <T extends StudentRuleState>(student: T) => ({
+  ...student,
+  points: clamp(student.points - REVIVE_COST, 0, 700),
+  pet: {
+    ...student.pet,
+    fullness: 40,
+    happiness: Math.max(25, student.pet.happiness),
+    isDead: false,
+    zeroFullnessSince: undefined,
+  },
+});
+
+export const claimDailyTaskForStudent = <T extends StudentRuleState>(student: T, now = Date.now()) => {
+  const today = getDateKey(now);
+  const yesterday = getDateKey(now - 1000 * 60 * 60 * 24);
+  const lastClaimDate = student.dailyProgress?.lastClaimDate;
+  const currentStreak = student.dailyProgress?.streak ?? 0;
+
+  if (lastClaimDate === today) {
+    return { claimed: false as const, student };
+  }
+
+  const nextStreak = lastClaimDate === yesterday ? currentStreak + 1 : 1;
+  const streakBonus = Math.min(20, (nextStreak - 1) * 5);
+
+  return {
+    claimed: true as const,
+    rewardPoints: DAILY_TASK_REWARD_POINTS + streakBonus,
+    streak: nextStreak,
+    student: {
+      ...student,
+      points: clamp(student.points + DAILY_TASK_REWARD_POINTS + streakBonus, 0, 700),
+      pet: {
+        ...student.pet,
+        happiness: clamp(student.pet.happiness + DAILY_TASK_REWARD_HAPPINESS, 0, 100),
+      },
+      dailyProgress: {
+        lastClaimDate: today,
+        streak: nextStreak,
+      },
     },
   };
 };

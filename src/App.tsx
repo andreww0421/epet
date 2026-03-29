@@ -5,26 +5,37 @@ import {
   Egg, Medal, Award, Crown, Sparkles, Gift, Dices, BarChart3, RefreshCw
 } from 'lucide-react';
 import {
+  DAILY_TASK_REWARD_HAPPINESS,
+  DAILY_TASK_REWARD_POINTS,
   DIRECT_DISCIPLINE_PENALTY,
   MAX_ACTIVITY_RECORDS,
+  PET_DEATH_DELAY_MS,
+  REVIVE_COST,
   UPGRADE_GACHA_LEVELS,
   UPGRADE_REWARD_FULLNESS,
   UPGRADE_REWARD_HAPPINESS,
   UPGRADE_REWARD_LEVEL,
   WARNING_AUTO_PENALTY,
   WARNING_THRESHOLD,
+  applyDecayToStudent,
   applyFeedToStudent,
   applyPenaltyToStudent,
   applyPointAdjustmentToStudent,
+  claimDailyTaskForStudent,
   clamp,
   createDisciplineRecord,
   createPointAdjustmentRecord,
   getNextUpgradeGachaLevel,
   getUpcomingUpgradeGachaLevel,
+  getDateKey,
   isPenaltyActive,
+  isPetDead,
   normalizePenaltyStatus,
   resolveBattle,
+  reviveStudentPet,
+  syncPetLifeState,
   toFiniteNumber,
+  type DailyProgress,
   type DisciplineRecord,
   type DisciplineRecordType,
   type PenaltyStatus,
@@ -37,6 +48,8 @@ type Pet = {
   fullness: number;
   happiness: number;
   level: number;
+  isDead?: boolean;
+  zeroFullnessSince?: number;
 };
 
 type StudentStats = {
@@ -56,6 +69,7 @@ type Student = {
   penaltyStatus?: PenaltyStatus;
   disciplineRecords?: DisciplineRecord[];
   pointAdjustmentRecords?: PointAdjustmentRecord[];
+  dailyProgress?: DailyProgress;
   badges?: string[];
 };
 
@@ -84,7 +98,14 @@ type AppData = {
     decayType: 'hourly' | 'daily';
     language?: Language;
     feedCost?: number;
+    feedGain?: number;
   };
+};
+
+type PointReasonOption = {
+  id: string;
+  amount: number;
+  labels: Record<Language, string>;
 };
 
 const translations = {
@@ -421,6 +442,15 @@ const petNames = {
   }
 };
 
+const POINT_REASON_OPTIONS: PointReasonOption[] = [
+  { id: 'homework', amount: 20, labels: { zh: '作業完成 +20', en: 'Homework Completed +20' } },
+  { id: 'participation', amount: 10, labels: { zh: '課堂參與 +10', en: 'Participation +10' } },
+  { id: 'helpful', amount: 30, labels: { zh: '協助班級 +30', en: 'Helping the Class +30' } },
+  { id: 'late', amount: -10, labels: { zh: '遲到 -10', en: 'Late -10' } },
+  { id: 'missingHomework', amount: -20, labels: { zh: '未交作業 -20', en: 'Missing Homework -20' } },
+  { id: 'disruptive', amount: -30, labels: { zh: '課堂干擾 -30', en: 'Disruptive Behavior -30' } },
+];
+
 const PET_TYPES = [
   { id: 'egg', icon: Egg, rarity: 'common' },
   { id: 'dog', icon: Dog, rarity: 'common' },
@@ -484,6 +514,7 @@ const createInitialData = (now = Date.now()): AppData => ({
     decayType: 'hourly',
     language: 'zh',
     feedCost: 10,
+    feedGain: 20,
   },
 });
 
@@ -497,6 +528,11 @@ const normalizeStudent = (student: any, fallbackIndex: number, now = Date.now())
       fullness: clamp(toFiniteNumber(student?.pet?.fullness, 80), 0, 100),
       happiness: clamp(toFiniteNumber(student?.pet?.happiness, 80), 0, 100),
       level: clamp(Math.floor(toFiniteNumber(student?.pet?.level, 1)), 1, 10),
+      isDead: Boolean(student?.pet?.isDead),
+      zeroFullnessSince:
+        student?.pet?.zeroFullnessSince == null
+          ? undefined
+          : toFiniteNumber(student.pet.zeroFullnessSince, now),
     },
     stats: {
       wins: Math.max(0, Math.floor(toFiniteNumber(student?.stats?.wins, 0))),
@@ -537,14 +573,21 @@ const normalizeStudent = (student: any, fallbackIndex: number, now = Date.now())
             amount: toFiniteNumber(record?.amount, 0),
             createdAt: toFiniteNumber(record?.createdAt, now),
             source: record?.source === 'manual' ? 'manual' : 'quick',
+            reasonId: typeof record?.reasonId === 'string' ? record.reasonId : undefined,
+            reasonLabel: typeof record?.reasonLabel === 'string' ? record.reasonLabel : undefined,
           }))
           .sort((a: PointAdjustmentRecord, b: PointAdjustmentRecord) => b.createdAt - a.createdAt)
       : [],
+    dailyProgress: {
+      lastClaimDate: typeof student?.dailyProgress?.lastClaimDate === 'string' ? student.dailyProgress.lastClaimDate : undefined,
+      streak: Math.max(0, Math.floor(toFiniteNumber(student?.dailyProgress?.streak, 0))),
+    },
     badges: [],
   };
 
   return {
     ...normalizedStudent,
+    pet: syncPetLifeState(normalizedStudent.pet, now),
     badges: computeBadges(normalizedStudent),
   };
 };
@@ -583,6 +626,7 @@ const normalizeAppData = (raw: any, now = Date.now()): AppData => {
       decayType: rawSettings?.decayType === 'daily' ? 'daily' : 'hourly',
       language: rawSettings?.language === 'en' ? 'en' : 'zh',
       feedCost: Math.max(1, toFiniteNumber(rawSettings?.feedCost, initialData.settings?.feedCost ?? 10)),
+      feedGain: Math.max(1, toFiniteNumber(rawSettings?.feedGain, initialData.settings?.feedGain ?? 20)),
     },
   };
 };
@@ -605,13 +649,7 @@ const applyDecay = (appData: AppData, now = Date.now()): AppData => {
     lastOpened: nextLastOpened,
     classes: appData.classes.map((classData) => ({
       ...classData,
-      students: classData.students.map((student) => ({
-        ...student,
-        pet: {
-          ...student.pet,
-          fullness: clamp(student.pet.fullness - decay, 0, 100),
-        },
-      })),
+      students: classData.students.map((student) => applyDecayToStudent(student, decay, now)),
     })),
   };
 };
@@ -714,14 +752,19 @@ export default function App() {
     showToast(`${tLang.classDeleted}${className}`);
   };
 
-  const addPoints = (studentId: string, pointsToAdd: number, source: PointAdjustmentSource = 'quick') => {
+  const addPoints = (
+    studentId: string,
+    pointsToAdd: number,
+    source: PointAdjustmentSource = 'quick',
+    reason?: { id?: string; label?: string },
+  ) => {
     if (!data) return;
     const currentClass = data.classes.find(c => c.id === data.currentClassId);
     if (!currentClass) return;
     const now = Date.now();
     updateCurrentClassStudents(currentClass.students.map(s =>
       s.id === studentId
-        ? applyPointAdjustmentToStudent(s, pointsToAdd, createPointAdjustmentRecord(pointsToAdd, source, now))
+        ? applyPointAdjustmentToStudent(s, pointsToAdd, createPointAdjustmentRecord(pointsToAdd, source, reason, now))
         : s,
     ));
   };
@@ -746,6 +789,7 @@ export default function App() {
       penaltyStatus: undefined,
       disciplineRecords: [],
       pointAdjustmentRecords: [],
+      dailyProgress: { streak: 0 },
       badges: []
     };
     
@@ -939,16 +983,65 @@ export default function App() {
     if (!currentClass) return;
     
     const feedCost = data.settings?.feedCost ?? 10;
+    const feedGain = data.settings?.feedGain ?? 20;
     const now = Date.now();
     
     triggerPetAnimation(studentId, 'feed', 1000);
 
     updateCurrentClassStudents(currentClass.students.map(s => {
       if (s.id === studentId && s.points >= feedCost) {
-        return applyFeedToStudent(s, feedCost, now);
+        return applyFeedToStudent(s, feedCost, feedGain, now);
       }
       return s;
     }));
+  };
+
+  const claimDailyTask = (studentId: string) => {
+    if (!data) return;
+    const currentClass = data.classes.find((c) => c.id === data.currentClassId);
+    if (!currentClass) return;
+
+    const targetStudent = currentClass.students.find((student) => student.id === studentId);
+    if (!targetStudent) return;
+
+    const result = claimDailyTaskForStudent(targetStudent, Date.now());
+    if (!result.claimed) {
+      showToast(tLang.dailyTaskDone ?? '今日已完成', 'error');
+      return;
+    }
+
+    updateCurrentClassStudents(
+      currentClass.students.map((student) => (student.id === studentId ? result.student : student)),
+    );
+
+    showToast(
+      (tLang.dailyTaskReward ?? '完成每日任務，獲得 {points} 積分與 {happiness} 心情')
+        .replace('{points}', String(result.rewardPoints))
+        .replace('{happiness}', String(DAILY_TASK_REWARD_HAPPINESS)),
+      'success',
+    );
+  };
+
+  const revivePet = (studentId: string) => {
+    if (!data) return;
+    const currentClass = data.classes.find((c) => c.id === data.currentClassId);
+    if (!currentClass) return;
+    const targetStudent = currentClass.students.find((student) => student.id === studentId);
+    if (!targetStudent) return;
+
+    if (targetStudent.points < REVIVE_COST) {
+      showToast(tLang.reviveNeedPoints ?? '復活需要 120 積分', 'error');
+      return;
+    }
+
+    updateCurrentClassStudents(
+      currentClass.students.map((student) => (student.id === studentId ? reviveStudentPet(student) : student)),
+    );
+
+    showToast(
+      (tLang.reviveSuccess ?? '{name} 的寵物已復活').replace('{name}', targetStudent.name),
+      'success',
+    );
   };
 
   const upgradePet = (studentId: string) => {
@@ -1026,10 +1119,17 @@ export default function App() {
     showToast(tLang.levelDecreased, 'success');
   };
 
-  const updateSettings = (decayAmount: number, decayType: 'hourly' | 'daily', language: Language, feedCost: number) => {
+  const updateSettings = (
+    decayAmount: number,
+    decayType: 'hourly' | 'daily',
+    language: Language,
+    feedCost: number,
+    feedGain: number,
+  ) => {
     if (!data) return;
     const safeDecayAmount = Math.max(0, Number.isFinite(decayAmount) ? decayAmount : 2);
     const safeFeedCost = Math.max(1, Number.isFinite(feedCost) ? feedCost : 10);
+    const safeFeedGain = Math.max(1, Number.isFinite(feedGain) ? feedGain : 20);
     const newData = {
       ...data,
       settings: {
@@ -1037,7 +1137,8 @@ export default function App() {
         decayAmount: safeDecayAmount,
         decayType,
         language,
-        feedCost: safeFeedCost
+        feedCost: safeFeedCost,
+        feedGain: safeFeedGain,
       }
     };
     saveData(newData);
@@ -1068,6 +1169,11 @@ export default function App() {
       return;
     }
 
+    if (battleResult.blocked === 'dead') {
+      showToast(tLang.battleBlockedByDeath ?? '寵物已死亡，必須先復活', 'error');
+      return;
+    }
+
     if (battleResult.blocked === 'fullness') {
       showToast(tLang.fullnessNeed50Battle, 'error');
       return;
@@ -1090,7 +1196,9 @@ export default function App() {
 
   const exportData = () => {
     if (!data) return;
-    const dataStr = JSON.stringify(data, null, 2);
+    const snapshot = applyDecay({ ...data }, Date.now());
+    saveData(snapshot);
+    const dataStr = JSON.stringify(snapshot, null, 2);
     const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
     const exportFileDefaultName = `tamagotchi_classroom_${new Date().toISOString().slice(0,10)}.json`;
 
@@ -1111,8 +1219,10 @@ export default function App() {
         const hasSupportedShape = Array.isArray(importedData?.classes) || Array.isArray(importedData?.students);
 
         if (hasSupportedShape) {
-          const normalizedData = normalizeAppData(importedData, Date.now());
-          saveData({ ...normalizedData, lastOpened: Date.now() });
+          const now = Date.now();
+          const normalizedData = normalizeAppData(importedData, now);
+          const hydratedData = applyDecay(normalizedData, now);
+          saveData(hydratedData);
           showToast(tLang.importSuccess, 'success');
         } else {
           showToast(tLang.invalidData, 'error');
@@ -1195,9 +1305,11 @@ export default function App() {
         ) : (
           <ClassroomView 
             data={data} 
-            feedPet={feedPet} 
-            upgradePet={upgradePet}
-            battle={battle}
+            feedPet={feedPet}
+            claimDailyTask={claimDailyTask}
+            revivePet={revivePet}
+            upgradePet={upgradePet} 
+            battle={battle} 
             gachaPet={gachaPet}
             animatingPets={animatingPets} 
             lang={lang}
@@ -1272,7 +1384,9 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
   const [decayAmount, setDecayAmount] = useState(data.settings?.decayAmount ?? data.settings?.hourlyDecay ?? 2);
   const [decayType, setDecayType] = useState<'hourly' | 'daily'>(data.settings?.decayType ?? 'hourly');
   const [feedCost, setFeedCost] = useState(data.settings?.feedCost ?? 10);
+  const [feedGain, setFeedGain] = useState(data.settings?.feedGain ?? 20);
   const [currentLang, setCurrentLang] = useState<Language>(lang);
+  const [selectedReasons, setSelectedReasons] = useState<Record<string, string>>({});
   
   const [newClassName, setNewClassName] = useState('');
   const [showAddClass, setShowAddClass] = useState(false);
@@ -1326,8 +1440,13 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
       .replace('{happiness}', penalty.happiness.toString())
       .replace('{rankPoints}', penalty.rankPoints.toString());
 
+  const pointReasonOptions = POINT_REASON_OPTIONS.map((option) => ({
+    ...option,
+    label: option.labels[currentLang] ?? option.labels.zh,
+  }));
+
   const handleSaveSettings = () => {
-    updateSettings(Number(decayAmount), decayType, currentLang, Number(feedCost));
+    updateSettings(Number(decayAmount), decayType, currentLang, Number(feedCost), Number(feedGain));
   };
 
   const handleAddClass = () => {
@@ -1356,6 +1475,7 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
       penaltyStatus: undefined,
       disciplineRecords: [],
       pointAdjustmentRecords: [],
+      dailyProgress: { streak: 0 },
       badges: []
     };
     addStudent(newStudent);
@@ -1554,41 +1674,44 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                         <div className="flex justify-end items-center space-x-3">
-                          {/* Add Points */}
-                          <div className="flex space-x-1 bg-indigo-50 p-1 rounded-md border border-indigo-100">
-                            <button
-                              onClick={() => addPoints(student.id, 10, 'quick')}
-                              className="inline-flex items-center px-2 py-1 rounded text-xs font-medium text-indigo-700 hover:bg-indigo-200 transition-colors"
-                              title={tLang.addPoints}
+                          <div className="flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 p-2">
+                            <select
+                              value={selectedReasons[student.id] ?? POINT_REASON_OPTIONS[0].id}
+                              onChange={(e) =>
+                                setSelectedReasons((prev) => ({
+                                  ...prev,
+                                  [student.id]: e.target.value,
+                                }))
+                              }
+                              className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700"
+                              title={tLang.fixedReason ?? '固定原因'}
                             >
-                              <Plus className="h-3 w-3" /> 10
-                            </button>
+                              {pointReasonOptions.map((option) => (
+                                <option key={option.id} value={option.id}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
                             <button
-                              onClick={() => addPoints(student.id, 50, 'quick')}
-                              className="inline-flex items-center px-2 py-1 rounded text-xs font-medium text-indigo-700 hover:bg-indigo-200 transition-colors"
-                              title={tLang.addPoints}
+                              onClick={() => {
+                                const selectedReasonId = selectedReasons[student.id] ?? POINT_REASON_OPTIONS[0].id;
+                                const selectedReason = pointReasonOptions.find((option) => option.id === selectedReasonId) ?? pointReasonOptions[0];
+                                addPoints(student.id, selectedReason.amount, 'quick', {
+                                  id: selectedReason.id,
+                                  label: selectedReason.label,
+                                });
+                              }}
+                              disabled={
+                                (() => {
+                                  const selectedReasonId = selectedReasons[student.id] ?? POINT_REASON_OPTIONS[0].id;
+                                  const selectedReason = pointReasonOptions.find((option) => option.id === selectedReasonId) ?? pointReasonOptions[0];
+                                  return selectedReason.amount < 0 && student.points < Math.abs(selectedReason.amount);
+                                })()
+                              }
+                              className="inline-flex items-center rounded-md bg-indigo-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                              title={tLang.applyReason ?? '套用'}
                             >
-                              <Plus className="h-3 w-3" /> 50
-                            </button>
-                          </div>
-                          
-                          {/* Deduct Points */}
-                          <div className="flex space-x-1 bg-rose-50 p-1 rounded-md border border-rose-100">
-                            <button
-                              onClick={() => addPoints(student.id, -10, 'quick')}
-                              disabled={student.points < 10}
-                              className="inline-flex items-center px-2 py-1 rounded text-xs font-medium text-rose-700 hover:bg-rose-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                              title={tLang.deductPoints}
-                            >
-                              <Minus className="h-3 w-3" /> 10
-                            </button>
-                            <button
-                              onClick={() => addPoints(student.id, -50, 'quick')}
-                              disabled={student.points < 50}
-                              className="inline-flex items-center px-2 py-1 rounded text-xs font-medium text-rose-700 hover:bg-rose-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                              title={tLang.deductPoints}
-                            >
-                              <Minus className="h-3 w-3" /> 50
+                              {tLang.applyReason ?? '套用'}
                             </button>
                             <button
                               onClick={() => setCustomPoints({id: student.id, name: student.name})}
@@ -1719,9 +1842,11 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
                       <span className="font-medium text-slate-900">{record.studentName}</span>
                     </div>
                     <div className="mt-1 text-sm text-slate-600">
-                      {tLang.recordPointSummary
-                        .replace('{label}', record.amount >= 0 ? '+' : '-')
-                        .replace('{amount}', Math.abs(record.amount).toString())}
+                      {record.reasonLabel
+                        ? `${record.reasonLabel} (${record.amount >= 0 ? '+' : '-'}${Math.abs(record.amount)})`
+                        : tLang.recordPointSummary
+                            .replace('{label}', record.amount >= 0 ? '+' : '-')
+                            .replace('{amount}', Math.abs(record.amount).toString())}
                     </div>
                   </div>
                   <div className="text-xs font-medium text-slate-400">{formatRecordTime(record.createdAt)}</div>
@@ -1819,6 +1944,17 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
               min="1"
               value={feedCost}
               onChange={(e) => setFeedCost(Number(e.target.value))}
+              className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
+            />
+          </div>
+          <div className="flex-1 w-full">
+            <label htmlFor="feedGain" className="block text-sm font-medium text-slate-700 mb-1">{tLang.feedGain ?? '餵食回復飽食度'}</label>
+            <input 
+              type="number" 
+              id="feedGain"
+              min="1"
+              value={feedGain}
+              onChange={(e) => setFeedGain(Number(e.target.value))}
               className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
             />
           </div>
@@ -2002,7 +2138,7 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
 }
 
 // --- Classroom View Component ---
-function ClassroomView({ data, feedPet, upgradePet, battle, gachaPet, animatingPets, lang, tLang }: any) {
+function ClassroomView({ data, feedPet, claimDailyTask, revivePet, upgradePet, battle, gachaPet, animatingPets, lang, tLang }: any) {
   const [battleModalOpen, setBattleModalOpen] = useState(false);
   const [attackerId, setAttackerId] = useState<string | null>(null);
   const [defenderId, setDefenderId] = useState<string | null>(null);
@@ -2075,6 +2211,8 @@ function ClassroomView({ data, feedPet, upgradePet, battle, gachaPet, animatingP
                 key={student.id} 
                 student={student} 
                 onFeed={() => feedPet(student.id)} 
+                onDailyTask={() => claimDailyTask(student.id)}
+                onRevive={() => revivePet(student.id)}
                 onUpgrade={() => upgradePet(student.id)}
                 onBattle={() => handleOpenBattle(student.id)}
                 onGacha={() => gachaPet(student.id)}
@@ -2082,6 +2220,7 @@ function ClassroomView({ data, feedPet, upgradePet, battle, gachaPet, animatingP
                 lang={lang}
                 tLang={tLang}
                 feedCost={data.settings?.feedCost ?? 10}
+                feedGain={data.settings?.feedGain ?? 20}
                 getRankInfo={getRankInfo}
               />
             ))}
@@ -2230,8 +2369,8 @@ function ClassroomView({ data, feedPet, upgradePet, battle, gachaPet, animatingP
   );
 }
 
-function PetCard({ student, onFeed, onUpgrade, onBattle, onGacha, animationMode, lang, tLang, feedCost, getRankInfo }: any) {
-  const { name, points, pet, badges = [], rankPoints = 0, warningPoints = 0, nextUpgradeGachaLevel = 2, penaltyStatus } = student;
+function PetCard({ student, onFeed, onDailyTask, onRevive, onUpgrade, onBattle, onGacha, animationMode, lang, tLang, feedCost, feedGain, getRankInfo }: any) {
+  const { name, points, pet, badges = [], rankPoints = 0, warningPoints = 0, nextUpgradeGachaLevel = 2, penaltyStatus, dailyProgress } = student;
   const { fullness, type, level = 1, happiness = 80 } = pet;
   
   const petConfig = PET_TYPES.find(p => p.id === type) || PET_TYPES[0];
@@ -2243,12 +2382,17 @@ function PetCard({ student, onFeed, onUpgrade, onBattle, onGacha, animationMode,
   const isNormal = fullness >= 30 && fullness <= 70 && !isLowMood;
   const isHungry = fullness < 30 || isLowMood;
   const hasActivePenalty = isPenaltyActive(penaltyStatus);
-  const canFeed = points >= feedCost;
-  const canBattle = fullness >= 50 && !hasActivePenalty;
+  const isDead = isPetDead(pet);
+  const canFeed = points >= feedCost && !isDead;
+  const canBattle = fullness >= 50 && !hasActivePenalty && !isDead;
   const upgradeCost = 100 + (level - 1) * 50;
-  const canUpgrade = level < 10 && fullness >= 100 && points >= upgradeCost && happiness >= 40;
-  const canGacha = points >= 200;
+  const canUpgrade = level < 10 && fullness >= 100 && points >= upgradeCost && happiness >= 40 && !isDead;
+  const canGacha = points >= 200 && !isDead;
   const hasUpgradeReward = nextUpgradeGachaLevel !== null && level >= nextUpgradeGachaLevel;
+  const canRevive = points >= REVIVE_COST;
+  const todayKey = getDateKey();
+  const dailyClaimedToday = dailyProgress?.lastClaimDate === todayKey;
+  const streak = dailyProgress?.streak ?? 0;
   const isAnimating = Boolean(animationMode);
   const isRerollAnimation = animationMode === 'reroll';
   const isGachaAnimation = animationMode === 'gacha';
@@ -2260,7 +2404,13 @@ function PetCard({ student, onFeed, onUpgrade, onBattle, onGacha, animationMode,
   let bgColor = "bg-green-50";
   let borderColor = "border-green-200";
 
-  if (isHungry) {
+  if (isDead) {
+    StatusIcon = Ghost;
+    statusText = tLang.petDead ?? '寵物死亡';
+    statusColor = "text-slate-500";
+    bgColor = "bg-slate-100";
+    borderColor = "border-slate-300";
+  } else if (isHungry) {
     StatusIcon = Frown;
     statusText = tLang.statusHungry;
     statusColor = "text-red-500";
@@ -2304,6 +2454,12 @@ function PetCard({ student, onFeed, onUpgrade, onBattle, onGacha, animationMode,
             <span className="mt-1 inline-flex w-fit items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-700">
               <Zap className="mr-1 h-3 w-3" />
               {tLang.penaltyStatus}
+            </span>
+          )}
+          {streak > 0 && (
+            <span className="mt-1 inline-flex w-fit items-center rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-bold text-indigo-700">
+              <Star className="mr-1 h-3 w-3" />
+              {(tLang.dailyTaskStreak ?? '連續 {days} 天').replace('{days}', String(streak))}
             </span>
           )}
         </div>
@@ -2430,7 +2586,7 @@ function PetCard({ student, onFeed, onUpgrade, onBattle, onGacha, animationMode,
 
       {/* Action Area */}
       <div className="p-4 bg-gray-50 border-t border-gray-100 space-y-2">
-        {type === 'egg' ? (
+        {type === 'egg' && !isDead ? (
           <button
             onClick={onGacha}
             disabled={!canGacha}
@@ -2445,6 +2601,43 @@ function PetCard({ student, onFeed, onUpgrade, onBattle, onGacha, animationMode,
           </button>
         ) : (
           <>
+            {isDead && (
+              <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-center">
+                <div className="text-sm font-bold text-rose-700">{tLang.petDead ?? '寵物死亡'}</div>
+                <div className="mt-1 text-[11px] text-rose-600">{tLang.petDeadHint ?? '飽食度歸零超過 24 小時會死亡，需花 120 積分復活'}</div>
+              </div>
+            )}
+
+            <button
+              onClick={onDailyTask}
+              disabled={dailyClaimedToday}
+              className={`w-full flex items-center justify-center py-2 px-4 rounded-xl font-bold text-sm transition-all duration-200 ${
+                dailyClaimedToday
+                  ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                  : 'bg-emerald-400 hover:bg-emerald-500 text-emerald-950 shadow-sm hover:shadow active:scale-95'
+              }`}
+            >
+              <Gift className="h-4 w-4 mr-2" />
+              {dailyClaimedToday
+                ? (tLang.dailyTaskDone ?? '今日已完成')
+                : `${tLang.dailyTask ?? '每日任務'} (+${DAILY_TASK_REWARD_POINTS})`}
+            </button>
+
+            {isDead ? (
+              <button
+                onClick={onRevive}
+                disabled={!canRevive}
+                className={`w-full flex items-center justify-center py-2 px-4 rounded-xl font-bold text-sm transition-all duration-200 ${
+                  !canRevive
+                    ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                    : 'bg-rose-500 hover:bg-rose-600 text-white shadow-sm hover:shadow active:scale-95'
+                }`}
+              >
+                <RefreshCw className="h-4 w-4 mr-2" />
+                {tLang.revivePet ?? '復活 (-120)'}
+              </button>
+            ) : (
+              <>
             <button
               onClick={onFeed}
               disabled={!canFeed || fullness >= 100}
@@ -2504,6 +2697,8 @@ function PetCard({ student, onFeed, onUpgrade, onBattle, onGacha, animationMode,
                 {!canUpgrade && level < 10 && fullness >= 100 && points < upgradeCost && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.upgradeNeedPoints.replace('{cost}', upgradeCost.toString())}</span>}
                 {!canUpgrade && level < 10 && fullness >= 100 && points >= upgradeCost && happiness < 40 && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.moodLowPenalty}</span>}
               </p>
+            )}
+              </>
             )}
           </>
         )}
