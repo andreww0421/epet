@@ -34,6 +34,7 @@ export type StudentRuleState = {
   points: number;
   rankPoints?: number;
   warningPoints?: number;
+  activeWarningTimestamps?: number[];
   pet: {
     fullness: number;
     happiness: number;
@@ -510,16 +511,21 @@ export const resolveTeamBattle = <
   };
 };
 
-export const applyDecayToStudent = <T extends StudentRuleState>(student: T, decayAmount: number, now = Date.now()) => ({
-  ...student,
-  pet: syncPetLifeState(
-    {
-      ...student.pet,
-      fullness: clamp(student.pet.fullness - decayAmount, 0, 100),
-    },
-    now,
-  ),
-});
+export const applyDecayToStudent = <T extends StudentRuleState>(student: T, decayAmount: number, now = Date.now()) => {
+  const activeWarnings = (student.activeWarningTimestamps || []).filter(t => now - t < 1000 * 60 * 60 * 24);
+  return {
+    ...student,
+    warningPoints: activeWarnings.length,
+    activeWarningTimestamps: activeWarnings,
+    pet: syncPetLifeState(
+      {
+        ...student.pet,
+        fullness: clamp(student.pet.fullness - decayAmount, 0, 100),
+      },
+      now,
+    ),
+  };
+};
 
 export const reviveStudentPet = <T extends StudentRuleState>(student: T) => ({
   ...student,

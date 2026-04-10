@@ -67,6 +67,7 @@ type Student = {
   stats?: StudentStats;
   rankPoints?: number;
   warningPoints?: number;
+  activeWarningTimestamps?: number[];
   nextUpgradeGachaLevel?: number | null;
   penaltyStatus?: PenaltyStatus;
   disciplineRecords?: DisciplineRecord[];
@@ -589,6 +590,9 @@ const normalizeStudent = (student: any, fallbackIndex: number, now = Date.now())
     },
     rankPoints: Math.max(0, Math.floor(toFiniteNumber(student?.rankPoints, 1000))),
     warningPoints: Math.max(0, Math.floor(toFiniteNumber(student?.warningPoints, 0))),
+    activeWarningTimestamps: Array.isArray(student?.activeWarningTimestamps) 
+      ? student.activeWarningTimestamps.map(Number)
+      : Array.from({ length: Math.max(0, Math.floor(toFiniteNumber(student?.warningPoints, 0))) }).map(() => now),
     nextUpgradeGachaLevel:
       student?.nextUpgradeGachaLevel == null
         ? getUpcomingUpgradeGachaLevel(clamp(Math.floor(toFiniteNumber(student?.pet?.level, 1)), 1, 10))
@@ -909,7 +913,9 @@ export default function App() {
     if (!targetStudent) return;
 
     const now = Date.now();
-    const nextWarningCount = (targetStudent.warningPoints ?? 0) + 1;
+    const currentWarnings = (targetStudent.activeWarningTimestamps || []).filter(t => now - t < 1000 * 60 * 60 * 24);
+    const newWarnings = [...currentWarnings, now];
+    const nextWarningCount = newWarnings.length;
     const triggersPenalty = nextWarningCount >= WARNING_THRESHOLD;
     const warningRecord = createDisciplineRecord('warning', nextWarningCount, now);
     const autoPenaltyRecord = createDisciplineRecord('autoPenalty', nextWarningCount, now);
@@ -921,6 +927,7 @@ export default function App() {
           return applyPenaltyToStudent(
             {
               ...student,
+              activeWarningTimestamps: [],
               disciplineRecords: [warningRecord, ...(student.disciplineRecords ?? [])].slice(0, MAX_ACTIVITY_RECORDS),
             },
             WARNING_AUTO_PENALTY,
@@ -935,6 +942,7 @@ export default function App() {
         return {
           ...student,
           warningPoints: nextWarningCount,
+          activeWarningTimestamps: newWarnings,
           disciplineRecords: [warningRecord, ...(student.disciplineRecords ?? [])].slice(0, MAX_ACTIVITY_RECORDS),
         };
       }),
@@ -946,6 +954,69 @@ export default function App() {
         : tLang.warningIssued.replace('{name}', targetStudent.name).replace('{count}', nextWarningCount.toString()),
       triggersPenalty ? 'error' : 'success',
     );
+  };
+
+  const editStudentName = (studentId: string, newName: string) => {
+    if (!data || !newName.trim()) return;
+    const currentClass = data.classes.find(c => c.id === data.currentClassId);
+    if (!currentClass) return;
+    
+    updateCurrentClassStudents(
+      currentClass.students.map((student) =>
+        student.id === studentId
+          ? { ...student, name: newName.trim() }
+          : student
+      )
+    );
+    showToast(lang === 'en' ? `Renamed to ${newName.trim()}` : `已將學生姓名修改為 ${newName.trim()}`, 'success');
+  };
+
+  const removeWarning = (studentId: string) => {
+    if (!data) return;
+    const currentClass = data.classes.find(c => c.id === data.currentClassId);
+    if (!currentClass) return;
+    const targetStudent = currentClass.students.find(s => s.id === studentId);
+    if (!targetStudent || (!targetStudent.warningPoints && !(targetStudent.activeWarningTimestamps?.length))) return;
+
+    let active = targetStudent.activeWarningTimestamps || [];
+    if (active.length > 0) {
+      active = [...active];
+      active.shift();
+    }
+    const nextWarningCount = active.length;
+    
+    updateCurrentClassStudents(
+      currentClass.students.map((student) =>
+        student.id === studentId
+          ? {
+              ...student,
+              warningPoints: nextWarningCount,
+              activeWarningTimestamps: active,
+            }
+          : student
+      )
+    );
+    showToast(lang === 'en' ? `Removed 1 warning from ${targetStudent.name}` : `已為 ${targetStudent.name} 消除一次警告`, 'success');
+  };
+
+  const removePenalty = (studentId: string) => {
+    if (!data) return;
+    const currentClass = data.classes.find(c => c.id === data.currentClassId);
+    if (!currentClass) return;
+    const targetStudent = currentClass.students.find(s => s.id === studentId);
+    if (!targetStudent) return;
+
+    updateCurrentClassStudents(
+      currentClass.students.map((student) =>
+        student.id === studentId
+          ? {
+              ...student,
+              penaltyStatus: undefined,
+            }
+          : student
+      )
+    );
+    showToast(lang === 'en' ? `Removed penalty from ${targetStudent.name}` : `已為 ${targetStudent.name} 解除虛弱狀態`, 'success');
   };
 
   const disciplineStudent = (studentId: string) => {
@@ -1524,6 +1595,9 @@ export default function App() {
             decreaseLevel={decreaseLevel}
             warnStudent={warnStudent}
             disciplineStudent={disciplineStudent}
+            editStudentName={editStudentName}
+            removeWarning={removeWarning}
+            removePenalty={removePenalty}
             updateSettings={updateSettings}
             switchClass={switchClass}
             addClass={addClass}
@@ -1606,7 +1680,7 @@ export default function App() {
 }
 
 // --- Dashboard View Component ---
-function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData, importData, fileInputRef, decreaseLevel, warnStudent, disciplineStudent, updateSettings, switchClass, addClass, deleteClass, resetSeason, lang, tLang }: any) {
+function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData, importData, fileInputRef, decreaseLevel, warnStudent, disciplineStudent, editStudentName, removeWarning, removePenalty, updateSettings, switchClass, addClass, deleteClass, resetSeason, lang, tLang }: any) {
   const [newStudentName, setNewStudentName] = useState('');
   const [studentToDelete, setStudentToDelete] = useState<string | null>(null);
   const [customPoints, setCustomPoints] = useState<{id: string, name: string} | null>(null);
@@ -1897,7 +1971,21 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
                   return (
                     <tr key={student.id} className="hover:bg-slate-50 transition-colors">
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm font-medium text-slate-900">{student.name}</div>
+                        <div className="flex items-center gap-2">
+                          <div className="text-sm font-medium text-slate-900">{student.name}</div>
+                          <button
+                            onClick={() => {
+                              const newName = window.prompt(lang === 'en' ? 'Enter new name' : '輸入新姓名', student.name);
+                              if (newName !== null) {
+                                editStudentName(student.id, newName);
+                              }
+                            }}
+                            className="p-1 text-slate-400 hover:text-indigo-600 rounded-md transition-colors"
+                            title={lang === 'en' ? 'Edit name' : '修改姓名'}
+                          >
+                            <Edit2 className="h-3 w-3" />
+                          </button>
+                        </div>
                         <div className="mt-1 flex flex-wrap gap-1">
                           <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-bold ${
                             warningPoints > 0 ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-500'
@@ -1905,11 +1993,29 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
                             <AlertCircle className="mr-1 h-3 w-3" />
                             {tLang.warningPoints} {warningPoints}/{WARNING_THRESHOLD}
                           </span>
+                          {warningPoints > 0 && (
+                            <button
+                               onClick={() => removeWarning(student.id)}
+                               className="inline-flex items-center rounded-full bg-slate-200 px-1.5 py-0.5 text-[11px] font-bold text-slate-600 hover:bg-slate-300"
+                               title={lang === 'en' ? 'Remove Warning' : '消除警告'}
+                            >
+                               <Minus className="h-3 w-3" />
+                            </button>
+                          )}
                           {activePenalty && (
                             <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-700">
                               <Zap className="mr-1 h-3 w-3" />
                               {tLang.penaltyStatus}
                             </span>
+                          )}
+                          {activePenalty && (
+                            <button
+                               onClick={() => removePenalty(student.id)}
+                               className="inline-flex items-center rounded-full bg-slate-200 px-1.5 py-0.5 text-[11px] font-bold text-slate-600 hover:bg-slate-300"
+                               title={lang === 'en' ? 'Remove Penalty' : '解除虛弱'}
+                            >
+                               <X className="h-3 w-3" />
+                            </button>
                           )}
                         </div>
                         {activePenalty && (
