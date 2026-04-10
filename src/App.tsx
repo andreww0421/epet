@@ -19,6 +19,7 @@ import {
   WARNING_THRESHOLD,
   applyDecayToStudent,
   applyFeedToStudent,
+  applyPlayWithPet,
   applyPenaltyToStudent,
   applyPointAdjustmentToStudent,
   claimDailyTaskForStudent,
@@ -88,7 +89,7 @@ type UpgradeRewardState = {
   reachedLevel: number;
 };
 
-type PetAnimationMode = 'feed' | 'gacha' | 'reroll' | 'attack';
+type PetAnimationMode = 'feed' | 'play' | 'gacha' | 'reroll' | 'attack';
 
 type Language = 'zh' | 'en';
 type BattleMode = 'solo' | 'team' | 'both';
@@ -110,6 +111,8 @@ type AppData = {
     language?: Language;
     feedCost?: number;
     feedGain?: number;
+    playCost?: number;
+    playGain?: number;
     battleMode?: BattleMode;
     maxTeamSize?: number;
   };
@@ -195,8 +198,10 @@ const translations = {
     notEnoughPoints: '積分不足',
     maxLevel: '滿級',
     upgradePet: '升級 (-{cost})',
+    playPet: '玩耍 (-{cost})',
     battle: '對戰',
     feedNeedPoints: '餵食需 {cost} 積分',
+    playNeedPoints: '玩耍需 {cost} 積分',
     battleNeedFullness: '對戰需 50 飽食度',
     upgradeNeedFullness: '升級需飽食度 100',
     happiness: '心情',
@@ -286,6 +291,8 @@ const translations = {
     bossHp: '血量 (Max HP)',
     bossPointsReward: '勝利積分配額',
     bossHappinessReward: '勝利心情配額',
+    playCost: '玩耍所需積分',
+    playGain: '玩耍回復心情',
     attack: '討伐',
     bossDefeated: '【{name}】已被擊敗！全班獲得 {points} 積分與 {happiness} 心情！',
     bossNoActive: '目前沒有活躍的魔王。',
@@ -367,8 +374,10 @@ const translations = {
     notEnoughPoints: 'Not enough pts',
     maxLevel: 'Max Lv',
     upgradePet: 'Upgrade (-{cost})',
+    playPet: 'Play (-{cost})',
     battle: 'Battle',
     feedNeedPoints: 'Feeding requires {cost} pts',
+    playNeedPoints: 'Playing requires {cost} pts',
     battleNeedFullness: 'Battling requires 50 fullness',
     upgradeNeedFullness: 'Upgrade requires 100 fullness',
     happiness: 'Mood',
@@ -457,6 +466,8 @@ const translations = {
     bossHp: 'Max HP',
     bossPointsReward: 'Points Reward',
     bossHappinessReward: 'Happiness Reward',
+    playCost: 'Play Cost',
+    playGain: 'Play Gain',
     attack: 'Attack',
     bossDefeated: '【{name}】 is defeated! Everyone gets {points} pts & {happiness} mood!',
     bossNoActive: 'No active boss currently.',
@@ -594,6 +605,8 @@ const createInitialData = (now = Date.now()): AppData => ({
     language: 'zh',
     feedCost: 10,
     feedGain: 20,
+    playCost: 5,
+    playGain: 15,
     battleMode: DEFAULT_BATTLE_MODE,
     maxTeamSize: DEFAULT_MAX_TEAM_SIZE,
   },
@@ -734,6 +747,8 @@ const normalizeAppData = (raw: any, now = Date.now()): AppData => {
       language: rawSettings?.language === 'en' ? 'en' : 'zh',
       feedCost: Math.max(1, toFiniteNumber(rawSettings?.feedCost, initialData.settings?.feedCost ?? 10)),
       feedGain: Math.max(1, toFiniteNumber(rawSettings?.feedGain, initialData.settings?.feedGain ?? 20)),
+      playCost: Math.max(1, toFiniteNumber(rawSettings?.playCost, initialData.settings?.playCost ?? 5)),
+      playGain: Math.max(1, toFiniteNumber(rawSettings?.playGain, initialData.settings?.playGain ?? 15)),
       battleMode: rawSettings?.battleMode === 'solo' || rawSettings?.battleMode === 'team' ? rawSettings.battleMode : DEFAULT_BATTLE_MODE,
       maxTeamSize: clampTeamSize(rawSettings?.maxTeamSize),
     },
@@ -1296,6 +1311,25 @@ export default function App() {
     }));
   };
 
+  const playWithPet = (studentId: string) => {
+    if (!data) return;
+    const currentClass = data.classes.find(c => c.id === data.currentClassId);
+    if (!currentClass) return;
+    
+    const playCost = data.settings?.playCost ?? 5;
+    const playGain = data.settings?.playGain ?? 15;
+    const now = Date.now();
+    
+    triggerPetAnimation(studentId, 'play', 1000);
+
+    updateCurrentClassStudents(currentClass.students.map(s => {
+      if (s.id === studentId && s.points >= playCost) {
+        return applyPlayWithPet(s, playCost, playGain, now);
+      }
+      return s;
+    }));
+  };
+
   const claimDailyTask = (studentId: string) => {
     if (!data) return;
     const currentClass = data.classes.find((c) => c.id === data.currentClassId);
@@ -1505,6 +1539,8 @@ export default function App() {
     language: Language,
     feedCost: number,
     feedGain: number,
+    playCost: number,
+    playGain: number,
     battleMode: BattleMode,
     maxTeamSize: number,
   ) => {
@@ -1512,6 +1548,8 @@ export default function App() {
     const safeDecayAmount = Math.max(0, Number.isFinite(decayAmount) ? decayAmount : 2);
     const safeFeedCost = Math.max(1, Number.isFinite(feedCost) ? feedCost : 10);
     const safeFeedGain = Math.max(1, Number.isFinite(feedGain) ? feedGain : 20);
+    const safePlayCost = Math.max(1, Number.isFinite(playCost) ? playCost : 5);
+    const safePlayGain = Math.max(1, Number.isFinite(playGain) ? playGain : 15);
     const safeMaxTeamSize = clampTeamSize(maxTeamSize);
     const newData = {
       ...data,
@@ -1522,6 +1560,8 @@ export default function App() {
         language,
         feedCost: safeFeedCost,
         feedGain: safeFeedGain,
+        playCost: safePlayCost,
+        playGain: safePlayGain,
         battleMode,
         maxTeamSize: safeMaxTeamSize,
       }
@@ -1762,6 +1802,7 @@ export default function App() {
           <ClassroomView 
             data={data} 
             feedPet={feedPet}
+            playWithPet={playWithPet}
             claimDailyTask={claimDailyTask}
             revivePet={revivePet}
             setTeammate={setTeammate}
@@ -1845,6 +1886,8 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
   const [decayType, setDecayType] = useState<'hourly' | 'daily'>(data.settings?.decayType ?? 'hourly');
   const [feedCost, setFeedCost] = useState(data.settings?.feedCost ?? 10);
   const [feedGain, setFeedGain] = useState(data.settings?.feedGain ?? 20);
+  const [playCost, setPlayCost] = useState(data.settings?.playCost ?? 5);
+  const [playGain, setPlayGain] = useState(data.settings?.playGain ?? 15);
   const [battleMode, setBattleMode] = useState<BattleMode>(data.settings?.battleMode ?? DEFAULT_BATTLE_MODE);
   const [maxTeamSize, setMaxTeamSize] = useState(data.settings?.maxTeamSize ?? DEFAULT_MAX_TEAM_SIZE);
   const [currentLang, setCurrentLang] = useState<Language>(lang);
@@ -1953,6 +1996,8 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
       currentLang,
       Number(feedCost),
       Number(feedGain),
+      Number(playCost),
+      Number(playGain),
       battleMode,
       Number(maxTeamSize),
     );
@@ -2588,6 +2633,28 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
             />
           </div>
           <div className="flex-1 w-full">
+            <label htmlFor="playCost" className="block text-sm font-medium text-slate-700 mb-1">{tLang.playCost ?? '玩耍所需積分'}</label>
+            <input 
+              type="number" 
+              id="playCost"
+              min="1"
+              value={playCost}
+              onChange={(e) => setPlayCost(Number(e.target.value))}
+              className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
+            />
+          </div>
+          <div className="flex-1 w-full">
+            <label htmlFor="playGain" className="block text-sm font-medium text-slate-700 mb-1">{tLang.playGain ?? '玩耍回復心情'}</label>
+            <input 
+              type="number" 
+              id="playGain"
+              min="1"
+              value={playGain}
+              onChange={(e) => setPlayGain(Number(e.target.value))}
+              className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
+            />
+          </div>
+          <div className="flex-1 w-full">
             <label htmlFor="battleMode" className="block text-sm font-medium text-slate-700 mb-1">
               {lang === 'en' ? 'Battle Mode' : '對戰模式'}
             </label>
@@ -2796,7 +2863,7 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
 }
 
 // --- Classroom View Component ---
-function ClassroomView({ data, feedPet, claimDailyTask, revivePet, setTeammate, upgradePet, battle, executeAttackBoss, gachaPet, animatingPets, bossHitFeedback, showBossVictory, lang, tLang }: any) {
+function ClassroomView({ data, feedPet, playWithPet, claimDailyTask, revivePet, setTeammate, upgradePet, battle, executeAttackBoss, gachaPet, animatingPets, bossHitFeedback, showBossVictory, lang, tLang }: any) {
   const [battleModalOpen, setBattleModalOpen] = useState(false);
   const [attackerId, setAttackerId] = useState<string | null>(null);
   const [defenderId, setDefenderId] = useState<string | null>(null);
@@ -2986,6 +3053,7 @@ function ClassroomView({ data, feedPet, claimDailyTask, revivePet, setTeammate, 
                 key={student.id} 
                 student={student} 
                 onFeed={() => feedPet(student.id)} 
+                onPlay={() => playWithPet(student.id)}
                 onDailyTask={() => claimDailyTask(student.id)}
                 onRevive={() => revivePet(student.id)}
                 onTeamUp={() => setTeamModalStudentId(student.id)}
@@ -3007,6 +3075,8 @@ function ClassroomView({ data, feedPet, claimDailyTask, revivePet, setTeammate, 
                 tLang={tLang}
                 feedCost={data.settings?.feedCost ?? 10}
                 feedGain={data.settings?.feedGain ?? 20}
+                playCost={data.settings?.playCost ?? 5}
+                playGain={data.settings?.playGain ?? 15}
                 getRankInfo={getRankInfo}
               />
             ))}
@@ -3359,7 +3429,7 @@ function ClassroomView({ data, feedPet, claimDailyTask, revivePet, setTeammate, 
   );
 }
 
-function PetCard({ student, activeBoss, onFeed, onDailyTask, onRevive, onTeamUp, teammateName, onUpgrade, onBattle, onAttackBoss, onGacha, animationMode, lang, tLang, feedCost, feedGain, getRankInfo }: any) {
+function PetCard({ student, activeBoss, onFeed, onPlay, onDailyTask, onRevive, onTeamUp, teammateName, onUpgrade, onBattle, onAttackBoss, onGacha, animationMode, lang, tLang, feedCost, feedGain, playCost, playGain, getRankInfo }: any) {
   const { name, points, pet, badges = [], rankPoints = 0, warningPoints = 0, nextUpgradeGachaLevel = 2, penaltyStatus, dailyProgress } = student;
   const { fullness, type, level = 1, happiness = 80 } = pet;
   
@@ -3367,14 +3437,15 @@ function PetCard({ student, activeBoss, onFeed, onDailyTask, onRevive, onTeamUp,
   const PetIcon = petConfig.icon;
 
   const isStrong = points >= 100 || fullness === 100;
-  const isLowMood = happiness < 40;
+  const isLowMood = happiness < 30;
   const isHappy = fullness > 70 && !isLowMood;
   const isNormal = fullness >= 30 && fullness <= 70 && !isLowMood;
   const isHungry = fullness < 30 || isLowMood;
   const hasActivePenalty = isPenaltyActive(penaltyStatus);
   const isDead = isPetDead(pet);
   const canFeed = points >= feedCost && !isDead;
-  const canBattle = fullness >= 50 && !hasActivePenalty && !isDead;
+  const canPlay = points >= playCost && !isDead;
+  const canBattle = fullness >= 50 && !hasActivePenalty && !isDead && !isLowMood;
   const upgradeCost = 100 + (level - 1) * 50;
   const canUpgrade = level < 10 && fullness >= 100 && points >= upgradeCost && happiness >= 40 && !isDead;
   const canGacha = points >= 200 && !isDead;
@@ -3386,8 +3457,9 @@ function PetCard({ student, activeBoss, onFeed, onDailyTask, onRevive, onTeamUp,
   const isRerollAnimation = animationMode === 'reroll';
   const isGachaAnimation = animationMode === 'gacha';
   const isFeedAnimation = animationMode === 'feed';
+  const isPlayAnimation = animationMode === 'play';
   const isAttackAnimation = animationMode === 'attack';
-  const isAnimating = isFeedAnimation || isRerollAnimation || isGachaAnimation || isAttackAnimation;
+  const isAnimating = isFeedAnimation || isPlayAnimation || isRerollAnimation || isGachaAnimation || isAttackAnimation;
 
   let StatusIcon = Smile;
   let statusText = tLang.statusHappy;
@@ -3477,7 +3549,11 @@ function PetCard({ student, activeBoss, onFeed, onDailyTask, onRevive, onTeamUp,
       )}
 
       {/* Pet Visual Area */}
-      <div className="p-6 flex flex-col items-center justify-center relative h-48 bg-gradient-to-b from-white to-amber-50/30">
+      <div className={`p-6 flex flex-col items-center justify-center relative h-48 transition-colors duration-500 ${
+        isDead 
+          ? 'bg-gradient-to-b from-slate-200/50 to-slate-400/30' 
+          : 'bg-gradient-to-b from-white to-amber-50/30'
+      }`}>
         
         {/* Floating Hearts Animation */}
         {isAnimating && (
@@ -3516,11 +3592,11 @@ function PetCard({ student, activeBoss, onFeed, onDailyTask, onRevive, onTeamUp,
                 </div>
               </>
             )}
-            {(isFeedAnimation || isRerollAnimation) && (
+            {(isFeedAnimation || isPlayAnimation || isRerollAnimation) && (
               <>
-                <Heart className="text-pink-500 fill-pink-500 h-8 w-8 animate-[ping_1s_ease-out_forwards] absolute opacity-75" />
-                <Heart className="text-pink-400 fill-pink-400 h-6 w-6 animate-[bounce_1s_ease-in-out_infinite] absolute -mt-16 ml-8" />
-                <Heart className="text-pink-400 fill-pink-400 h-5 w-5 animate-[bounce_1.2s_ease-in-out_infinite] absolute -mt-12 -ml-10" />
+                <Heart className={`h-8 w-8 animate-[ping_1s_ease-out_forwards] absolute opacity-75 ${isPlayAnimation ? 'text-rose-500 fill-rose-500 scale-150' : 'text-pink-500 fill-pink-500'}`} />
+                <Heart className={`h-6 w-6 animate-[bounce_1s_ease-in-out_infinite] absolute -mt-16 ml-8 ${isPlayAnimation ? 'text-rose-400 fill-rose-400 scale-125' : 'text-pink-400 fill-pink-400'}`} />
+                <Heart className={`h-5 w-5 animate-[bounce_1.2s_ease-in-out_infinite] absolute -mt-12 -ml-10 ${isPlayAnimation ? 'text-rose-400 fill-rose-400 scale-125' : 'text-pink-400 fill-pink-400'}`} />
               </>
             )}
             {isAttackAnimation && (
@@ -3529,34 +3605,63 @@ function PetCard({ student, activeBoss, onFeed, onDailyTask, onRevive, onTeamUp,
           </div>
         )}
 
-        {/* Pet Character */}
-        <div className={`relative transition-all duration-300 ${isAttackAnimation ? 'scale-125 -translate-y-6 drop-shadow-md' : isAnimating ? 'scale-125 -translate-y-4' : 'hover:scale-110'} ${evolutionStage >= 3 ? 'scale-110' : ''}`}>
-          <div className={`p-4 rounded-full ${isStrong ? 'bg-amber-100' : bgColor} ${
-            isRerollAnimation
-              ? 'shadow-[0_0_30px_rgba(217,70,239,0.65)] ring-4 ring-fuchsia-200/70'
-              : evolutionStage >= 2
-                ? 'shadow-[0_0_15px_rgba(251,191,36,0.6)]'
-                : ''
-          } ${evolutionStage >= 3 ? 'shadow-[0_0_25px_rgba(167,139,250,0.8)]' : ''}`}>
-            {evolutionStage >= 3 && (
-              <Crown className="h-6 w-6 text-yellow-500 absolute -top-4 left-1/2 transform -translate-x-1/2 z-10 drop-shadow-sm" />
-            )}
-            {isStrong ? (
-              <div className="relative">
-                <PetIcon className={`h-16 w-16 ${statusColor}`} strokeWidth={1.5} />
-                <Dumbbell className="h-8 w-8 text-slate-700 absolute -right-2 -bottom-2 transform rotate-12" />
-              </div>
-            ) : (
-              <PetIcon className={`h-16 w-16 ${statusColor}`} strokeWidth={1.5} />
-            )}
-            {evolutionStage >= 2 && (
-              <Sparkles className="h-5 w-5 text-amber-400 absolute top-0 right-0 animate-pulse" />
-            )}
-          </div>
+        {/* Epic Aura for Stage 3 */}
+        {!isDead && evolutionStage >= 3 && (
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-36 w-36 rounded-full border-[4px] border-yellow-300/20 border-t-yellow-400 border-b-yellow-400 animate-[spin_4s_linear_infinite] shadow-[0_0_30px_rgba(250,204,21,0.6)] z-0 pointer-events-none" />
+        )}
+
+        {/* Pet Character Container */}
+        <div className={`relative transition-all duration-300 z-10 ${
+          isAttackAnimation ? 'scale-125 -translate-y-6 drop-shadow-md' : 
+          isPlayAnimation ? 'scale-125 animate-[bounce_0.5s_ease-in-out_infinite]' :
+          isAnimating ? 'scale-125 -translate-y-4' : 
+          'hover:scale-105'
+        } ${
+          evolutionStage === 1 ? 'scale-90' :
+          evolutionStage === 2 ? 'scale-100' :
+          'scale-125 mt-2'
+        }`}>
           
-          {/* Status Badge */}
-          <div className={`absolute -bottom-2 -right-2 bg-white rounded-full p-1 shadow-sm border ${borderColor}`} title={statusText}>
-            <StatusIcon className={`h-5 w-5 ${statusColor}`} />
+          {/* Status Expressions & Floating Animation Wrapper */}
+          <div className={`relative flex flex-col items-center justify-center transition-all duration-500 ${
+            isDead ? 'opacity-50 grayscale animate-[pulse_3s_ease-in-out_infinite]' :
+            isHungry ? 'opacity-70 saturate-50 contrast-75' :
+            isHappy ? 'brightness-110 drop-shadow-[0_0_8px_rgba(255,255,255,0.5)]' : ''
+          } ${
+            (!isDead && !isHungry && evolutionStage === 1) ? 'animate-[bounce_3s_infinite]' : ''
+          }`}>
+
+            {/* Pet Circle Base */}
+            <div className={`p-4 rounded-full relative z-10 ${isStrong ? 'bg-amber-100' : bgColor} ${
+              isRerollAnimation
+                ? 'shadow-[0_0_30px_rgba(217,70,239,0.65)] ring-4 ring-fuchsia-200/70'
+                : evolutionStage >= 2
+                  ? 'shadow-[0_0_15px_rgba(251,191,36,0.6)]'
+                  : ''
+            } ${evolutionStage >= 3 ? 'shadow-[0_0_25px_rgba(167,139,250,0.8)]' : ''}`}>
+              
+              {evolutionStage >= 3 && (
+                <Crown className="h-10 w-10 text-yellow-400 fill-yellow-400 absolute -top-6 left-1/2 transform -translate-x-1/2 z-20 drop-shadow-[0_0_10px_rgba(250,204,21,0.8)] animate-[pulse_2s_ease-in-out_infinite]" />
+              )}
+              
+              {isStrong ? (
+                <div className="relative">
+                  <PetIcon className={`h-16 w-16 ${statusColor}`} strokeWidth={1.5} />
+                  <Dumbbell className="h-8 w-8 text-slate-700 absolute -right-2 -bottom-2 transform rotate-12" />
+                </div>
+              ) : (
+                <PetIcon className={`h-16 w-16 ${statusColor}`} strokeWidth={1.5} />
+              )}
+
+              {!isDead && evolutionStage >= 2 && (
+                <Sparkles className="h-7 w-7 text-amber-400 fill-amber-400 absolute -top-1 -right-1 animate-pulse drop-shadow-[0_0_8px_rgba(251,191,36,0.9)]" />
+              )}
+            </div>
+
+            {/* Status Badge */}
+            <div className={`absolute -bottom-2 -right-2 bg-white rounded-full p-1.5 shadow-md border-2 z-20 ${borderColor}`} title={statusText}>
+              <StatusIcon className={`h-5 w-5 ${statusColor}`} />
+            </div>
           </div>
         </div>
 
@@ -3574,12 +3679,22 @@ function PetCard({ student, activeBoss, onFeed, onDailyTask, onRevive, onTeamUp,
               style={{ width: `${fullness}%` }}
             ></div>
           </div>
-          <div className="mt-3 flex items-center justify-between text-xs font-medium text-gray-500">
-            <span className="flex items-center">
-              <Heart className="h-3 w-3 mr-1 text-pink-500" />
-              {tLang.happiness}
-            </span>
-            <span>{happiness}/100</span>
+          <div className="mt-4">
+            <div className="flex justify-between text-xs mb-1 font-medium text-gray-500">
+              <span className="flex items-center">
+                <Heart className={`h-3 w-3 mr-1 ${happiness >= 70 ? 'text-emerald-500' : happiness >= 30 ? 'text-amber-500' : 'text-fuchsia-500'}`} />
+                {tLang.happiness}
+              </span>
+              <span>{happiness}/100</span>
+            </div>
+            <div className="w-full bg-gray-100 rounded-full h-2.5 overflow-hidden flex">
+              <div 
+                className={`h-full rounded-full transition-all duration-500 ease-out ${
+                   happiness >= 70 ? 'bg-emerald-400' : happiness >= 30 ? 'bg-amber-400' : 'bg-fuchsia-400'
+                }`}
+                style={{ width: `${clamp(happiness, 0, 100)}%` }}
+              ></div>
+            </div>
           </div>
         </div>
       </div>
@@ -3648,18 +3763,33 @@ function PetCard({ student, activeBoss, onFeed, onDailyTask, onRevive, onTeamUp,
               </button>
             ) : (
               <>
-            <button
-              onClick={onFeed}
-              disabled={!canFeed || fullness >= 100}
-              className={`w-full flex items-center justify-center py-2 px-4 rounded-xl font-bold text-sm transition-all duration-200 ${
-                !canFeed || fullness >= 100
-                  ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                  : 'bg-amber-400 hover:bg-amber-500 text-amber-900 shadow-sm hover:shadow active:scale-95'
-              }`}
-            >
-              <Utensils className="h-4 w-4 mr-2" />
-              {fullness >= 100 ? tLang.alreadyFull : canFeed ? tLang.feedPet.replace('{cost}', feedCost.toString()) : tLang.notEnoughPoints}
-            </button>
+            <div className="flex space-x-2">
+              <button
+                onClick={onFeed}
+                disabled={!canFeed || fullness >= 100}
+                className={`flex-1 flex items-center justify-center py-2 px-2 rounded-xl font-bold text-xs transition-all duration-200 ${
+                  !canFeed || fullness >= 100
+                    ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                    : 'bg-amber-400 hover:bg-amber-500 text-amber-900 shadow-sm hover:shadow active:scale-95'
+                }`}
+              >
+                <Utensils className="h-3 w-3 mr-1" />
+                {fullness >= 100 ? tLang.alreadyFull : canFeed ? tLang.feedPet.replace('{cost}', feedCost) : tLang.notEnoughPoints}
+              </button>
+              
+              <button
+                onClick={onPlay}
+                disabled={!canPlay || happiness >= 100}
+                className={`flex-1 flex items-center justify-center py-2 px-2 rounded-xl font-bold text-xs transition-all duration-200 ${
+                  !canPlay || happiness >= 100
+                    ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                    : 'bg-rose-400 hover:bg-rose-500 text-white shadow-sm hover:shadow active:scale-95'
+                }`}
+              >
+                <Smile className="h-3 w-3 mr-1" />
+                {happiness >= 100 ? (lang === 'en' ? 'Very happy!' : '已經很開心了') : canPlay ? tLang.playPet.replace('{cost}', playCost) : tLang.notEnoughPoints}
+              </button>
+            </div>
 
             <div className="flex space-x-2">
               <div className="relative flex-1">
@@ -3713,11 +3843,13 @@ function PetCard({ student, activeBoss, onFeed, onDailyTask, onRevive, onTeamUp,
               </button>
             )}
             
-            {(!canFeed || !canBattle || (!canUpgrade && level < 10)) && (
-              <p className="text-center text-[10px] text-red-500 mt-2 flex flex-col items-center justify-center">
+            {(!canFeed && fullness < 100 || (!canPlay && happiness < 100) || !canBattle || (!canUpgrade && level < 10)) && (
+              <p className="text-center text-[10px] text-red-500 mt-2 flex flex-col items-center justify-center space-y-0.5">
                 {!canFeed && fullness < 100 && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.feedNeedPoints.replace('{cost}', feedCost.toString())}</span>}
+                {!canPlay && happiness < 100 && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.playNeedPoints.replace('{cost}', playCost.toString())}</span>}
                 {!canBattle && hasActivePenalty && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.battleBlockedByPenalty}</span>}
-                {!canBattle && !hasActivePenalty && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.battleNeedFullness}</span>}
+                {!canBattle && !hasActivePenalty && isLowMood && <span><AlertCircle className="h-3 w-3 inline mr-1" />{lang === 'en' ? 'Mood too low, refusing to battle!' : '心情過低，罷工拒絕出戰！'}</span>}
+                {!canBattle && !hasActivePenalty && !isLowMood && fullness < 50 && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.battleNeedFullness}</span>}
                 {!canUpgrade && level < 10 && fullness < 100 && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.upgradeNeedFullness}</span>}
                 {!canUpgrade && level < 10 && fullness >= 100 && points < upgradeCost && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.upgradeNeedPoints.replace('{cost}', upgradeCost.toString())}</span>}
                 {!canUpgrade && level < 10 && fullness >= 100 && points >= upgradeCost && happiness < 40 && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.moodLowPenalty}</span>}

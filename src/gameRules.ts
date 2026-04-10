@@ -175,6 +175,7 @@ export const isPenaltyActive = (penaltyStatus: PenaltyStatus | undefined, now = 
 export const isBattleReady = <T extends StudentRuleState>(student: T, now = Date.now()) => {
   if (isPetDead(student.pet)) return false;
   if (isPenaltyActive(student.penaltyStatus, now)) return false;
+  if (student.pet.happiness < 30) return false;
   return student.pet.fullness >= 50;
 };
 
@@ -260,6 +261,29 @@ export const applyFeedToStudent = <T extends StudentRuleState>(
   };
 };
 
+export const applyPlayWithPet = <T extends StudentRuleState>(
+  student: T,
+  playCost: number,
+  playGain: number,
+  now = Date.now(),
+) => {
+  if (isPetDead(student.pet)) {
+    return student;
+  }
+
+  return {
+    ...student,
+    points: student.points - playCost,
+    pet: syncPetLifeState(
+      {
+        ...student.pet,
+        happiness: clamp(student.pet.happiness + playGain, 0, 100),
+      },
+      now,
+    ),
+  };
+};
+
 export const applyPenaltyToStudent = <T extends StudentRuleState>(
   student: T,
   penalty: PenaltyAmounts,
@@ -307,6 +331,10 @@ export const resolveBattle = <
     return { blocked: 'fullness' as const };
   }
 
+  if (attacker.pet.happiness < 30) {
+    return { blocked: 'happiness' as const };
+  }
+
   const attackerScore = attacker.pet.level * 10 + attacker.pet.fullness + randomRolls.attacker;
   const defenderScore = defender.pet.level * 10 + defender.pet.fullness + randomRolls.defender;
 
@@ -331,6 +359,7 @@ export const resolveBattle = <
           {
             ...attacker.pet,
             fullness: clamp(attacker.pet.fullness - 30, 0, 100),
+            happiness: clamp(attacker.pet.happiness - 5, 0, 100),
           },
           now,
         ),
@@ -341,6 +370,7 @@ export const resolveBattle = <
           {
             ...defender.pet,
             fullness: clamp(defender.pet.fullness - 30, 0, 100),
+            happiness: clamp(defender.pet.happiness - 5, 0, 100),
           },
           now,
         ),
@@ -362,6 +392,7 @@ export const resolveBattle = <
         {
           ...attacker.pet,
           fullness: clamp(attacker.pet.fullness - 50, 0, 100),
+          happiness: clamp(attacker.pet.happiness + (attackerWon ? 15 : -20), 0, 100),
         },
         now,
       ),
@@ -378,6 +409,7 @@ export const resolveBattle = <
         {
           ...defender.pet,
           fullness: clamp(defender.pet.fullness - (attackerWon ? 50 : 10), 0, 100),
+          happiness: clamp(defender.pet.happiness + (attackerWon ? -20 : 15), 0, 100),
         },
         now,
       ),
@@ -524,6 +556,10 @@ export const resolveTeamBattle = <
 
 export const applyDecayToStudent = <T extends StudentRuleState>(student: T, decayAmount: number, now = Date.now()) => {
   const activeWarnings = (student.activeWarningTimestamps || []).filter(t => now - t < 1000 * 60 * 60 * 24);
+  const newFullness = student.pet.fullness - decayAmount;
+  const actualDecay = Math.max(0, -newFullness);
+  const nextFullness = clamp(newFullness, 0, 100);
+
   return {
     ...student,
     warningPoints: activeWarnings.length,
@@ -531,7 +567,8 @@ export const applyDecayToStudent = <T extends StudentRuleState>(student: T, deca
     pet: syncPetLifeState(
       {
         ...student.pet,
-        fullness: clamp(student.pet.fullness - decayAmount, 0, 100),
+        fullness: nextFullness,
+        happiness: actualDecay > 0 ? clamp(student.pet.happiness - actualDecay, 0, 100) : student.pet.happiness,
       },
       now,
     ),
