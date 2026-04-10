@@ -769,6 +769,8 @@ export default function App() {
   const [animatingPets, setAnimatingPets] = useState<Record<string, PetAnimationMode | undefined>>({});
   const [toast, setToast] = useState<{message: string, type: 'success' | 'error'} | null>(null);
   const [upgradeReward, setUpgradeReward] = useState<UpgradeRewardState | null>(null);
+  const [bossHitFeedback, setBossHitFeedback] = useState<{ damage: number, id: number } | null>(null);
+  const [showBossVictory, setShowBossVictory] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const lang = data?.settings?.language || 'zh';
@@ -897,17 +899,48 @@ export default function App() {
       let newStudents = currentClass.students.map(s => s.id === studentId ? result.updatedStudent! : s);
       let newBoss = result.updatedBoss;
       
-      if (result.isDefeated) {
-        newStudents = applyBossDefeatRewards(newStudents, currentClass.activeBoss.rewardPoints, currentClass.activeBoss.rewardHappiness, Date.now());
-        newBoss.isActive = false;
-        showToast((tLang.bossDefeated ?? '').replace('{name}', newBoss.name).replace('{points}', currentClass.activeBoss.rewardPoints.toString()).replace('{happiness}', currentClass.activeBoss.rewardHappiness.toString()), 'success');
-      }
+      setBossHitFeedback({ damage: result.damageDealt || 0, id: Date.now() });
+      setTimeout(() => setBossHitFeedback(null), 800);
 
-      updateCurrentClass({
-        ...currentClass,
-        students: newStudents as any,
-        activeBoss: newBoss.isActive ? newBoss : undefined
-      });
+      if (result.isDefeated) {
+        setShowBossVictory(true);
+        updateCurrentClass({
+          ...currentClass,
+          students: newStudents as any,
+          activeBoss: { ...newBoss, currentHp: 0, isActive: true }
+        });
+
+        setTimeout(() => {
+          setData(prev => {
+             if (!prev) return prev;
+             const latestClass = prev.classes.find(c => c.id === prev.currentClassId);
+             if (!latestClass || !latestClass.activeBoss) return prev;
+
+             const rewardedStudents = applyBossDefeatRewards(latestClass.students, latestClass.activeBoss.rewardPoints, latestClass.activeBoss.rewardHappiness, Date.now());
+             
+             const updatedClasses = prev.classes.map(c => 
+               c.id === prev.currentClassId ? {
+                 ...c,
+                 students: rewardedStudents as any,
+                 activeBoss: undefined
+               } : c
+             );
+
+             const newData = { ...prev, classes: updatedClasses };
+             localStorage.setItem(STORAGE_KEY, JSON.stringify(newData));
+             return newData;
+          });
+          
+          setShowBossVictory(false);
+          showToast((tLang.bossDefeated ?? '').replace('{name}', newBoss.name).replace('{points}', currentClass.activeBoss.rewardPoints.toString()).replace('{happiness}', currentClass.activeBoss.rewardHappiness.toString()), 'success');
+        }, 3800);
+      } else {
+        updateCurrentClass({
+          ...currentClass,
+          students: newStudents as any,
+          activeBoss: newBoss.isActive ? newBoss : undefined
+        });
+      }
     }
   };
 
@@ -1737,6 +1770,8 @@ export default function App() {
             executeAttackBoss={executeAttackBoss}
             gachaPet={gachaPet}
             animatingPets={animatingPets} 
+            bossHitFeedback={bossHitFeedback}
+            showBossVictory={showBossVictory}
             lang={lang}
             tLang={tLang}
           />
@@ -2761,7 +2796,7 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
 }
 
 // --- Classroom View Component ---
-function ClassroomView({ data, feedPet, claimDailyTask, revivePet, setTeammate, upgradePet, battle, executeAttackBoss, gachaPet, animatingPets, lang, tLang }: any) {
+function ClassroomView({ data, feedPet, claimDailyTask, revivePet, setTeammate, upgradePet, battle, executeAttackBoss, gachaPet, animatingPets, bossHitFeedback, showBossVictory, lang, tLang }: any) {
   const [battleModalOpen, setBattleModalOpen] = useState(false);
   const [attackerId, setAttackerId] = useState<string | null>(null);
   const [defenderId, setDefenderId] = useState<string | null>(null);
@@ -2889,15 +2924,34 @@ function ClassroomView({ data, feedPet, claimDailyTask, revivePet, setTeammate, 
           </div>
         </div>
 
+        {showBossVictory && (
+           <div className="fixed inset-0 z-[100] bg-black/80 flex items-center justify-center backdrop-blur-sm animate-in fade-in duration-500">
+             <div className="relative flex flex-col items-center justify-center animate-[bounce_1s_ease-in-out]">
+                <Sparkles className="absolute -inset-x-12 -inset-y-12 w-full h-full text-amber-500 animate-[pulse_1.5s_ease-in-out_infinite] opacity-50" />
+                <Trophy className="w-32 h-32 text-amber-400 mb-6 drop-shadow-[0_0_30px_rgba(251,191,36,0.8)] animate-[spin_3s_linear_infinite]" />
+                <h1 className="text-5xl md:text-7xl font-black text-amber-400 drop-shadow-[0_0_20px_rgba(251,191,36,0.8)] uppercase tracking-widest text-center animate-[pulse_1s_ease-in-out_infinite]">
+                  {tLang.bossDefeatedTitle ?? '討伐成功'}
+                </h1>
+                <p className="mt-4 text-amber-200 text-xl font-bold tracking-wide drop-shadow-md">
+                  {tLang.bossDefeatedSubtitle ?? 'Epic Victory!'}
+                </p>
+             </div>
+           </div>
+        )}
 
         {data.classes.find((c: any) => c.id === data.currentClassId)?.activeBoss?.isActive && (
-          <div className="mb-8 rounded-2xl bg-slate-900 border-2 border-red-900/50 p-6 shadow-2xl relative overflow-hidden">
+          <div className={`mb-8 rounded-2xl bg-slate-900 border-2 ${bossHitFeedback ? 'border-red-500 bg-red-950 animate-[bounce_0.2s_ease-in-out_2]' : 'border-red-900/50'} p-6 shadow-2xl relative overflow-hidden`}>
             <div className="absolute top-0 right-0 p-4 opacity-10">
               <Skull className="w-32 h-32 text-red-500" />
             </div>
             <div className="relative z-10 flex flex-col md:flex-row items-center gap-6">
-              <div className="flex-shrink-0 flex items-center justify-center w-16 h-16 rounded-full bg-red-950 border border-red-800">
+              <div className="flex-shrink-0 flex items-center justify-center w-16 h-16 rounded-full bg-red-950 border border-red-800 relative">
                 <Swords className="w-8 h-8 text-red-500 animate-pulse" />
+                {bossHitFeedback && (
+                  <div key={bossHitFeedback.id} className="absolute -top-8 text-red-400 font-black text-3xl animate-[bounce_0.8s_ease-out_forwards] drop-shadow-lg whitespace-nowrap z-20">
+                    -{bossHitFeedback.damage}
+                  </div>
+                )}
               </div>
               <div className="flex-1 w-full text-center md:text-left">
                 <h2 className="text-2xl font-black text-rose-100 tracking-wider mb-2 drop-shadow-md">
@@ -3329,10 +3383,11 @@ function PetCard({ student, activeBoss, onFeed, onDailyTask, onRevive, onTeamUp,
   const todayKey = getDateKey();
   const dailyClaimedToday = dailyProgress?.lastClaimDate === todayKey;
   const streak = dailyProgress?.streak ?? 0;
-  const isAnimating = Boolean(animationMode);
   const isRerollAnimation = animationMode === 'reroll';
   const isGachaAnimation = animationMode === 'gacha';
   const isFeedAnimation = animationMode === 'feed';
+  const isAttackAnimation = animationMode === 'attack';
+  const isAnimating = isFeedAnimation || isRerollAnimation || isGachaAnimation || isAttackAnimation;
 
   let StatusIcon = Smile;
   let statusText = tLang.statusHappy;
@@ -3468,11 +3523,14 @@ function PetCard({ student, activeBoss, onFeed, onDailyTask, onRevive, onTeamUp,
                 <Heart className="text-pink-400 fill-pink-400 h-5 w-5 animate-[bounce_1.2s_ease-in-out_infinite] absolute -mt-12 -ml-10" />
               </>
             )}
+            {isAttackAnimation && (
+              <Swords className="text-rose-600 h-14 w-14 absolute z-30 animate-[ping_0.6s_ease-out_forwards] drop-shadow-lg" />
+            )}
           </div>
         )}
 
         {/* Pet Character */}
-        <div className={`relative transition-all duration-500 ${isAnimating ? 'scale-125 -translate-y-4' : 'hover:scale-110'} ${evolutionStage >= 3 ? 'scale-110' : ''}`}>
+        <div className={`relative transition-all duration-300 ${isAttackAnimation ? 'scale-125 -translate-y-6 drop-shadow-md' : isAnimating ? 'scale-125 -translate-y-4' : 'hover:scale-110'} ${evolutionStage >= 3 ? 'scale-110' : ''}`}>
           <div className={`p-4 rounded-full ${isStrong ? 'bg-amber-100' : bgColor} ${
             isRerollAnimation
               ? 'shadow-[0_0_30px_rgba(217,70,239,0.65)] ring-4 ring-fuchsia-200/70'
