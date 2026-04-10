@@ -111,9 +111,11 @@ export const ClassroomView: React.FC = () => {
   };
 
   return (
-    <div className="min-h-full bg-amber-50/50 py-8 px-4 sm:px-6 lg:px-8">
-      <div className="max-w-7xl mx-auto">
-        <div className="text-center mb-10">
+    <div className="flex flex-col h-[calc(100vh-64px)] overflow-hidden bg-amber-50/50">
+      {/* ── Fixed Header Zone (Title + Boss Banner) ── */}
+      <div className="flex-shrink-0 px-4 sm:px-6 lg:px-8 pt-8">
+        <div className="max-w-7xl mx-auto">
+        <div className="text-center mb-6">
           <h1 className="text-3xl font-extrabold text-amber-900 tracking-tight">{tLang.classroomTitle}</h1>
           <p className="mt-3 max-w-2xl mx-auto text-xl text-amber-700 sm:mt-4">
             {tLang.classroomDesc}
@@ -159,7 +161,7 @@ export const ClassroomView: React.FC = () => {
         )}
 
         {currentClass?.activeBoss?.isActive && (
-          <div className={`mb-8 rounded-2xl bg-slate-900 border-2 ${store.bossHitFeedback ? 'border-red-500 bg-red-950 animate-[bounce_0.2s_ease-in-out_2]' : 'border-red-900/50'} p-6 shadow-2xl relative overflow-hidden`}>
+          <div className={`mb-4 rounded-2xl bg-slate-900 border-2 ${store.bossHitFeedback ? 'border-red-500 bg-red-950 animate-[bounce_0.2s_ease-in-out_2]' : 'border-red-900/50'} p-6 shadow-2xl relative overflow-hidden`}>
             <div className="absolute top-0 right-0 p-4 opacity-10">
               <Skull className="w-32 h-32 text-red-500" />
             </div>
@@ -191,7 +193,12 @@ export const ClassroomView: React.FC = () => {
             </div>
           </div>
         )}
+        </div>{/* end max-w-7xl header */}
+      </div>{/* end flex-shrink-0 header zone */}
 
+      {/* ── Scrollable Content Zone ── */}
+      <div className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-8 pb-8">
+        <div className="max-w-7xl mx-auto">
         {students.length === 0 ? (
           <div className="text-center py-20 bg-white rounded-2xl shadow-sm border-2 border-amber-100">
             <Dog className="h-16 w-16 text-amber-300 mx-auto mb-4" />
@@ -376,7 +383,6 @@ export const ClassroomView: React.FC = () => {
             )}
           </div>
         )}
-      </div>
 
       {/* Battle Modal */}
       {battleModalOpen && attackerId && (
@@ -554,6 +560,8 @@ export const ClassroomView: React.FC = () => {
           </div>
         </div>
       )}
+        </div>{/* end max-w-7xl content */}
+      </div>{/* end scrollable zone */}
     </div>
   );
 };
