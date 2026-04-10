@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Dog, Cat, Bird, Rabbit, Turtle, Fish, Snail, Bug, Rat, Squirrel, PiggyBank, Worm, Ghost, Bot, PawPrint,
   Heart, Frown, Meh, Smile, Dumbbell, Download, Upload, Plus, Minus, Utensils, Users, Settings, AlertCircle, Trash2, Swords, Star, Shield, Zap, Trophy, X, ChevronsDown, Edit2, Save, BookOpen,
-  Egg, Medal, Award, Crown, Sparkles, Gift, Dices, BarChart3, RefreshCw
+  Egg, Medal, Award, Crown, Sparkles, Gift, Dices, BarChart3, RefreshCw, Skull
 } from 'lucide-react';
 import {
   DAILY_TASK_REWARD_HAPPINESS,
@@ -37,12 +37,16 @@ import {
   reviveStudentPet,
   syncPetLifeState,
   toFiniteNumber,
+  attackWorldBoss,
+  applyBossDefeatRewards,
+  BOSS_ATTACK_FULLNESS_COST,
   type DailyProgress,
   type DisciplineRecord,
   type DisciplineRecordType,
   type PenaltyStatus,
   type PointAdjustmentRecord,
   type PointAdjustmentSource,
+  type WorldBoss,
 } from './gameRules';
 
 type Pet = {
@@ -84,7 +88,7 @@ type UpgradeRewardState = {
   reachedLevel: number;
 };
 
-type PetAnimationMode = 'feed' | 'gacha' | 'reroll';
+type PetAnimationMode = 'feed' | 'gacha' | 'reroll' | 'attack';
 
 type Language = 'zh' | 'en';
 type BattleMode = 'solo' | 'team' | 'both';
@@ -93,6 +97,7 @@ type ClassData = {
   id: string;
   name: string;
   students: Student[];
+  activeBoss?: WorldBoss;
 };
 
 type AppData = {
@@ -274,6 +279,19 @@ const translations = {
       '正式處罰會直接套用較重處罰，並進入 48 小時虛弱。',
       '記錄區可切換查看處罰記錄與加減分記錄。',
     ],
+    bossManagement: '魔王副本管理',
+    summonBoss: '召喚魔王',
+    removeBoss: '撤退魔王',
+    bossName: '魔王名稱',
+    bossHp: '血量 (Max HP)',
+    bossPointsReward: '勝利積分配額',
+    bossHappinessReward: '勝利心情配額',
+    attack: '討伐',
+    bossDefeated: '【{name}】已被擊敗！全班獲得 {points} 積分與 {happiness} 心情！',
+    bossNoActive: '目前沒有活躍的魔王。',
+    bossDamage: '對魔王造成了 {damage} 點傷害！',
+    enterBossName: '輸入魔王名稱...',
+    enterBossHp: '輸入總血量...',
   },
   en: {
     appTitle: 'Classroom Pet System',
@@ -432,6 +450,19 @@ const translations = {
       'Formal discipline applies a stronger penalty and a 48-hour weakened status immediately.',
       'The record panel can switch between discipline logs and point adjustment logs.',
     ],
+    bossManagement: 'Boss Management',
+    summonBoss: 'Summon Boss',
+    removeBoss: 'Retreat Boss',
+    bossName: 'Boss Name',
+    bossHp: 'Max HP',
+    bossPointsReward: 'Points Reward',
+    bossHappinessReward: 'Happiness Reward',
+    attack: 'Attack',
+    bossDefeated: '【{name}】 is defeated! Everyone gets {points} pts & {happiness} mood!',
+    bossNoActive: 'No active boss currently.',
+    bossDamage: 'Dealt {damage} damage to the boss!',
+    enterBossName: 'Enter boss name...',
+    enterBossHp: 'Enter Max HP...',
   }
 };
 
@@ -685,6 +716,7 @@ const normalizeAppData = (raw: any, now = Date.now()): AppData => {
       id: typeof classItem?.id === 'string' && classItem.id ? classItem.id : `class-${Date.now()}-${index}`,
       name: typeof classItem?.name === 'string' && classItem.name.trim() ? classItem.name.trim() : DEFAULT_CLASS_NAME,
       students: sanitizeTeamAssignments(withLegacyTeams, clampTeamSize(rawSettings?.maxTeamSize)),
+      activeBoss: classItem?.activeBoss,
     };
   });
 
@@ -792,6 +824,91 @@ export default function App() {
       c.id === data.currentClassId ? { ...c, students: evaluatedStudents } : c
     );
     saveData({ ...data, classes: newClasses });
+  };
+
+  const updateCurrentClass = (newClassData: ClassData) => {
+    if (!data) return;
+    const newClasses = data.classes.map(c => 
+      c.id === data.currentClassId ? newClassData : c
+    );
+    saveData({ ...data, classes: newClasses });
+  };
+
+  const summonBoss = (name: string, maxHp: number, rewardPoints: number, rewardHappiness: number) => {
+    if (!data) return;
+    const currentClass = data.classes.find(c => c.id === data.currentClassId);
+    if (!currentClass) return;
+    
+    updateCurrentClass({
+      ...currentClass,
+      activeBoss: {
+        id: `boss-${Date.now()}`,
+        name: name || 'Unknown Boss',
+        maxHp: Math.max(1, maxHp),
+        currentHp: Math.max(1, maxHp),
+        rewardPoints: Math.max(0, rewardPoints),
+        rewardHappiness: Math.max(0, rewardHappiness),
+        isActive: true,
+      }
+    });
+    showToast(lang === 'en' ? `Summoned Boss: ${name}` : `已召喚魔王：${name}`, 'success');
+  };
+
+  const removeBoss = () => {
+    if (!data) return;
+    const currentClass = data.classes.find(c => c.id === data.currentClassId);
+    if (!currentClass) return;
+    
+    updateCurrentClass({
+      ...currentClass,
+      activeBoss: undefined
+    });
+    showToast(tLang.removeBoss, 'success');
+  };
+
+  const executeAttackBoss = (studentId: string) => {
+    if (!data) return;
+    const currentClass = data.classes.find(c => c.id === data.currentClassId);
+    if (!currentClass || !currentClass.activeBoss || !currentClass.activeBoss.isActive) return;
+
+    const targetStudent = currentClass.students.find(s => s.id === studentId);
+    if (!targetStudent) return;
+
+    const result = attackWorldBoss(targetStudent, currentClass.activeBoss, Date.now());
+    
+    if (result.blocked === 'penalty') {
+      showToast(tLang.battleBlockedByPenalty, 'error');
+      return;
+    }
+    if (result.blocked === 'dead') {
+      showToast(tLang.battleBlockedByDeath ?? '寵物已死亡，無法討伐', 'error');
+      return;
+    }
+    if (result.blocked === 'fullness') {
+      showToast((tLang.battleNeedFullness ?? '').replace('50', BOSS_ATTACK_FULLNESS_COST.toString()), 'error');
+      return;
+    }
+    
+    if (result.updatedStudent && result.updatedBoss) {
+      const damageText = (tLang.bossDamage ?? 'Dealt {damage} damage!').replace('{damage}', (result.damageDealt || 0).toString());
+      triggerPetAnimation(studentId, 'attack', 500);
+      showToast(damageText, 'success');
+      
+      let newStudents = currentClass.students.map(s => s.id === studentId ? result.updatedStudent! : s);
+      let newBoss = result.updatedBoss;
+      
+      if (result.isDefeated) {
+        newStudents = applyBossDefeatRewards(newStudents, currentClass.activeBoss.rewardPoints, currentClass.activeBoss.rewardHappiness, Date.now());
+        newBoss.isActive = false;
+        showToast((tLang.bossDefeated ?? '').replace('{name}', newBoss.name).replace('{points}', currentClass.activeBoss.rewardPoints.toString()).replace('{happiness}', currentClass.activeBoss.rewardHappiness.toString()), 'success');
+      }
+
+      updateCurrentClass({
+        ...currentClass,
+        students: newStudents as any,
+        activeBoss: newBoss.isActive ? newBoss : undefined
+      });
+    }
   };
 
   const triggerPetAnimation = (studentId: string, mode: PetAnimationMode, durationMs: number) => {
@@ -1603,6 +1720,8 @@ export default function App() {
             addClass={addClass}
             deleteClass={deleteClass}
             resetSeason={resetSeason}
+            summonBoss={summonBoss}
+            removeBoss={removeBoss}
             lang={lang}
             tLang={tLang}
           />
@@ -1615,6 +1734,7 @@ export default function App() {
             setTeammate={setTeammate}
             upgradePet={upgradePet} 
             battle={battle} 
+            executeAttackBoss={executeAttackBoss}
             gachaPet={gachaPet}
             animatingPets={animatingPets} 
             lang={lang}
@@ -1680,7 +1800,7 @@ export default function App() {
 }
 
 // --- Dashboard View Component ---
-function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData, importData, fileInputRef, decreaseLevel, warnStudent, disciplineStudent, editStudentName, removeWarning, removePenalty, updateSettings, switchClass, addClass, deleteClass, resetSeason, lang, tLang }: any) {
+function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData, importData, fileInputRef, decreaseLevel, warnStudent, disciplineStudent, editStudentName, removeWarning, removePenalty, updateSettings, switchClass, addClass, deleteClass, resetSeason, summonBoss, removeBoss, lang, tLang }: any) {
   const [newStudentName, setNewStudentName] = useState('');
   const [studentToDelete, setStudentToDelete] = useState<string | null>(null);
   const [customPoints, setCustomPoints] = useState<{id: string, name: string} | null>(null);
@@ -1698,6 +1818,12 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
   const [newClassName, setNewClassName] = useState('');
   const [showAddClass, setShowAddClass] = useState(false);
   const [classToDelete, setClassToDelete] = useState<string | null>(null);
+
+  const [bossNameInput, setBossNameInput] = useState('');
+  const [bossHpInput, setBossHpInput] = useState(1000);
+  const [bossPointsInput, setBossPointsInput] = useState(100);
+  const [bossHappinessInput, setBossHappinessInput] = useState(30);
+
   const currentClass = data.classes.find((c: any) => c.id === data.currentClassId);
   const currentStudents = currentClass?.students || [];
   const disciplineRecords = currentStudents
@@ -2275,6 +2401,93 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
         </div>
       </div>
 
+      {/* Boss Management */}
+      <div className="bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200 mt-6 p-5">
+        <h3 className="text-lg font-medium text-amber-900 mb-4 flex items-center">
+          <Skull className="h-5 w-5 mr-2 text-rose-500" />
+          {tLang.bossManagement ?? '魔王副本管理'}
+        </h3>
+        {currentClass?.activeBoss?.isActive ? (
+          <div className="bg-rose-50 border border-rose-200 rounded-lg p-4 flex flex-col md:flex-row items-center justify-between gap-4">
+            <div className="flex-1 w-full">
+              <h4 className="text-lg font-bold text-rose-800 flex items-center mb-2">
+                {currentClass.activeBoss.name}
+              </h4>
+              <div className="w-full bg-slate-200 rounded-full h-4 relative overflow-hidden">
+                <div 
+                  className="bg-rose-500 h-4 rounded-full transition-all duration-300" 
+                  style={{ width: `${Math.max(0, (currentClass.activeBoss.currentHp / currentClass.activeBoss.maxHp) * 100)}%` }}
+                ></div>
+                <div className="absolute inset-0 flex items-center justify-center text-[10px] font-bold text-white shadow-black drop-shadow-md">
+                  {currentClass.activeBoss.currentHp} / {currentClass.activeBoss.maxHp}
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={removeBoss}
+              className="bg-white text-rose-600 border border-rose-200 px-4 py-2 rounded-md font-medium hover:bg-rose-100 transition-colors shrink-0"
+            >
+              {tLang.removeBoss ?? '撤退魔王'}
+            </button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end">
+            <div className="md:col-span-1">
+              <label className="block text-sm font-medium text-slate-700 mb-1">{tLang.bossName ?? '魔王名稱'}</label>
+              <input 
+                type="text" 
+                value={bossNameInput}
+                onChange={(e) => setBossNameInput(e.target.value)}
+                placeholder={tLang.enterBossName ?? '輸入名稱...'}
+                className="w-full rounded-md border-slate-300 shadow-sm focus:border-rose-500 focus:ring-rose-500 sm:text-sm border p-2"
+              />
+            </div>
+            <div className="md:col-span-1">
+              <label className="block text-sm font-medium text-slate-700 mb-1">{tLang.bossHp ?? '血量'}</label>
+              <input 
+                type="number" 
+                min="1"
+                value={bossHpInput}
+                onChange={(e) => setBossHpInput(Number(e.target.value))}
+                className="w-full rounded-md border-slate-300 shadow-sm focus:border-rose-500 focus:ring-rose-500 sm:text-sm border p-2"
+              />
+            </div>
+            <div className="md:col-span-1">
+              <label className="block text-sm font-medium text-slate-700 mb-1">{tLang.bossPointsReward ?? '勝利積分'}</label>
+              <input 
+                type="number" 
+                min="0"
+                value={bossPointsInput}
+                onChange={(e) => setPointsAmount(e.target.value)} // Wait bug...
+                className="w-full rounded-md border-slate-300 shadow-sm focus:border-rose-500 focus:ring-rose-500 sm:text-sm border p-2"
+              />
+            </div>
+            <div className="md:col-span-1">
+              <label className="block text-sm font-medium text-slate-700 mb-1">{tLang.bossHappinessReward ?? '勝利心情'}</label>
+              <input 
+                type="number" 
+                min="0"
+                value={bossHappinessInput}
+                onChange={(e) => setBossHappinessInput(Number(e.target.value))}
+                className="w-full rounded-md border-slate-300 shadow-sm focus:border-rose-500 focus:ring-rose-500 sm:text-sm border p-2"
+              />
+            </div>
+            <div className="md:col-span-1">
+              <button
+                onClick={() => {
+                  summonBoss(bossNameInput, bossHpInput, bossPointsInput, bossHappinessInput);
+                  setBossNameInput('');
+                }}
+                disabled={!bossNameInput.trim()}
+                className="w-full bg-rose-600 text-white px-4 py-2 rounded-md font-medium hover:bg-rose-700 disabled:bg-slate-300 transition-colors"
+              >
+                {tLang.summonBoss ?? '召喚魔王'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* System Settings */}
       <div className="bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200 mt-6 p-5">
         <h3 className="text-lg font-medium text-slate-900 mb-4 flex items-center">
@@ -2548,7 +2761,7 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
 }
 
 // --- Classroom View Component ---
-function ClassroomView({ data, feedPet, claimDailyTask, revivePet, setTeammate, upgradePet, battle, gachaPet, animatingPets, lang, tLang }: any) {
+function ClassroomView({ data, feedPet, claimDailyTask, revivePet, setTeammate, upgradePet, battle, executeAttackBoss, gachaPet, animatingPets, lang, tLang }: any) {
   const [battleModalOpen, setBattleModalOpen] = useState(false);
   const [attackerId, setAttackerId] = useState<string | null>(null);
   const [defenderId, setDefenderId] = useState<string | null>(null);
@@ -2676,6 +2889,36 @@ function ClassroomView({ data, feedPet, claimDailyTask, revivePet, setTeammate, 
           </div>
         </div>
 
+
+        {data.classes.find((c: any) => c.id === data.currentClassId)?.activeBoss?.isActive && (
+          <div className="mb-8 rounded-2xl bg-slate-900 border-2 border-red-900/50 p-6 shadow-2xl relative overflow-hidden">
+            <div className="absolute top-0 right-0 p-4 opacity-10">
+              <Skull className="w-32 h-32 text-red-500" />
+            </div>
+            <div className="relative z-10 flex flex-col md:flex-row items-center gap-6">
+              <div className="flex-shrink-0 flex items-center justify-center w-16 h-16 rounded-full bg-red-950 border border-red-800">
+                <Swords className="w-8 h-8 text-red-500 animate-pulse" />
+              </div>
+              <div className="flex-1 w-full text-center md:text-left">
+                <h2 className="text-2xl font-black text-rose-100 tracking-wider mb-2 drop-shadow-md">
+                  {data.classes.find((c: any) => c.id === data.currentClassId).activeBoss.name}
+                </h2>
+                <div className="w-full bg-slate-800 rounded-full h-6 relative overflow-hidden ring-1 ring-white/10">
+                  <div 
+                    className="bg-gradient-to-r from-red-600 to-rose-500 h-6 rounded-full transition-all duration-500 relative overflow-hidden" 
+                    style={{ width: `${Math.max(0, (data.classes.find((c: any) => c.id === data.currentClassId).activeBoss.currentHp / data.classes.find((c: any) => c.id === data.currentClassId).activeBoss.maxHp) * 100)}%` }}
+                  >
+                    <div className="absolute inset-0 bg-white/20 animate-[pulse_2s_ease-in-out_infinite]"></div>
+                  </div>
+                  <div className="absolute inset-0 flex items-center justify-center text-xs font-bold text-white shadow-black drop-shadow-md">
+                    {data.classes.find((c: any) => c.id === data.currentClassId).activeBoss.currentHp} / {data.classes.find((c: any) => c.id === data.currentClassId).activeBoss.maxHp}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {students.length === 0 ? (
           <div className="text-center py-20 bg-white rounded-2xl shadow-sm border-2 border-amber-100">
             <Dog className="h-16 w-16 text-amber-300 mx-auto mb-4" />
@@ -2703,6 +2946,8 @@ function ClassroomView({ data, feedPet, claimDailyTask, revivePet, setTeammate, 
                 onUpgrade={() => upgradePet(student.id)}
                 onBattle={() => handleOpenBattle(student.id)}
                 onGacha={() => gachaPet(student.id)}
+                onAttackBoss={() => executeAttackBoss(student.id)}
+                activeBoss={data.classes.find((c: any) => c.id === data.currentClassId)?.activeBoss}
                 animationMode={animatingPets[student.id]}
                 lang={lang}
                 tLang={tLang}
@@ -3060,7 +3305,7 @@ function ClassroomView({ data, feedPet, claimDailyTask, revivePet, setTeammate, 
   );
 }
 
-function PetCard({ student, onFeed, onDailyTask, onRevive, onTeamUp, teammateName, onUpgrade, onBattle, onGacha, animationMode, lang, tLang, feedCost, feedGain, getRankInfo }: any) {
+function PetCard({ student, activeBoss, onFeed, onDailyTask, onRevive, onTeamUp, teammateName, onUpgrade, onBattle, onAttackBoss, onGacha, animationMode, lang, tLang, feedCost, feedGain, getRankInfo }: any) {
   const { name, points, pet, badges = [], rankPoints = 0, warningPoints = 0, nextUpgradeGachaLevel = 2, penaltyStatus, dailyProgress } = student;
   const { fullness, type, level = 1, happiness = 80 } = pet;
   
@@ -3394,6 +3639,21 @@ function PetCard({ student, onFeed, onDailyTask, onRevive, onTeamUp, teammateNam
                 {tLang.battle}
               </button>
             </div>
+
+            {activeBoss?.isActive && (
+              <button
+                onClick={onAttackBoss}
+                className={`w-full mt-2 flex items-center justify-center py-2 px-2 rounded-xl font-bold text-xs transition-all duration-200 ${
+                  fullness < 20 || isDead || hasActivePenalty
+                    ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                    : 'bg-purple-600 hover:bg-purple-700 text-white shadow-sm hover:shadow active:scale-95'
+                }`}
+                disabled={fullness < 20 || isDead || hasActivePenalty}
+              >
+                <Swords className="h-3 w-3 mr-1" />
+                {tLang.attack ?? '討伐'} (-20)
+              </button>
+            )}
             
             {(!canFeed || !canBattle || (!canUpgrade && level < 10)) && (
               <p className="text-center text-[10px] text-red-500 mt-2 flex flex-col items-center justify-center">

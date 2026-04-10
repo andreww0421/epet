@@ -60,6 +60,16 @@ export type PenaltyAmounts = {
   rankPoints: number;
 };
 
+export type WorldBoss = {
+  id: string;
+  name: string;
+  maxHp: number;
+  currentHp: number;
+  rewardPoints: number;
+  rewardHappiness: number;
+  isActive: boolean;
+};
+
 export type BattleOutcome = 'win' | 'loss' | 'draw';
 
 export type TeamBattleMember<TStudent extends StudentRuleState> = {
@@ -101,6 +111,7 @@ export const TEAM_BATTLE_LOSS_FULLNESS_COST = 35;
 export const TEAM_BATTLE_DRAW_FULLNESS_COST = 20;
 export const TEAM_BATTLE_TEAM_BONUS_POINTS = 10;
 export const TEAM_BATTLE_TEAM_BONUS_HAPPINESS = 6;
+export const BOSS_ATTACK_FULLNESS_COST = 20;
 
 export const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
@@ -569,4 +580,69 @@ export const claimDailyTaskForStudent = <T extends StudentRuleState>(student: T,
       },
     },
   };
+};
+
+export const attackWorldBoss = <T extends StudentRuleState>(
+  student: T,
+  boss: WorldBoss,
+  now = Date.now(),
+) => {
+  if (isPetDead(student.pet)) {
+    return { blocked: 'dead' as const };
+  }
+  if (student.pet.fullness < BOSS_ATTACK_FULLNESS_COST) {
+    return { blocked: 'fullness' as const };
+  }
+
+  const updatedStudent = {
+    ...student,
+    pet: syncPetLifeState(
+      {
+        ...student.pet,
+        fullness: clamp(student.pet.fullness - BOSS_ATTACK_FULLNESS_COST, 0, 100),
+      },
+      now,
+    ),
+  };
+
+  const damageDealt = student.pet.level * 10 + Math.floor(Math.random() * 10) + 1;
+  const newHp = Math.max(0, boss.currentHp - damageDealt);
+  
+  const updatedBoss = {
+    ...boss,
+    currentHp: newHp,
+    isActive: newHp > 0,
+  };
+
+  return {
+    blocked: null,
+    updatedStudent,
+    updatedBoss,
+    damageDealt,
+    isDefeated: newHp <= 0,
+  };
+};
+
+export const applyBossDefeatRewards = <T extends StudentRuleState>(
+  students: T[],
+  rewardPoints: number,
+  rewardHappiness: number,
+  now = Date.now(),
+) => {
+  return students.map((student) => {
+    if (isPetDead(student.pet)) {
+      return student;
+    }
+    return {
+      ...student,
+      points: clamp(student.points + rewardPoints, 0, 700),
+      pet: syncPetLifeState(
+        {
+          ...student.pet,
+          happiness: clamp(student.pet.happiness + rewardHappiness, 0, 100),
+        },
+        now,
+      ),
+    };
+  });
 };
