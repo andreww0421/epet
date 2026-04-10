@@ -231,9 +231,10 @@ export const applyPointAdjustmentToStudent = <T extends StudentRuleState>(
   student: T,
   amount: number,
   record: PointAdjustmentRecord,
+  maxPoints = 700
 ) => ({
   ...student,
-  points: clamp(student.points + amount, 0, 700),
+  points: clamp(student.points + amount, 0, maxPoints),
   pointAdjustmentRecords: appendRecord(student.pointAdjustmentRecords, record),
 });
 
@@ -242,6 +243,7 @@ export const applyFeedToStudent = <T extends StudentRuleState>(
   feedCost: number,
   feedGain: number,
   now = Date.now(),
+  maxPoints = 700
 ) => {
   if (isPetDead(student.pet)) {
     return student;
@@ -249,7 +251,7 @@ export const applyFeedToStudent = <T extends StudentRuleState>(
 
   return {
     ...student,
-    points: student.points - feedCost,
+    points: clamp(student.points - feedCost, 0, maxPoints),
     pet: syncPetLifeState(
       {
         ...student.pet,
@@ -266,6 +268,7 @@ export const applyPlayWithPet = <T extends StudentRuleState>(
   playCost: number,
   playGain: number,
   now = Date.now(),
+  maxPoints = 700
 ) => {
   if (isPetDead(student.pet)) {
     return student;
@@ -273,7 +276,7 @@ export const applyPlayWithPet = <T extends StudentRuleState>(
 
   return {
     ...student,
-    points: student.points - playCost,
+    points: clamp(student.points - playCost, 0, maxPoints),
     pet: syncPetLifeState(
       {
         ...student.pet,
@@ -293,9 +296,10 @@ export const applyPenaltyToStudent = <T extends StudentRuleState>(
     now?: number;
     source?: PenaltyStatusSource;
   } = {},
+  maxPoints = 700
 ) => ({
   ...student,
-  points: clamp(student.points - penalty.points, 0, 700),
+  points: clamp(student.points - penalty.points, 0, maxPoints),
   pet: syncPetLifeState(
     {
       ...student.pet,
@@ -318,6 +322,7 @@ export const resolveBattle = <
   defender: TDefender,
   randomRolls: { attacker: number; defender: number },
   now = Date.now(),
+  maxPoints = 700
 ) => {
   if (isPetDead(attacker.pet) || isPetDead(defender.pet)) {
     return { blocked: 'dead' as const };
@@ -387,7 +392,7 @@ export const resolveBattle = <
     defenderScore,
     attacker: {
       ...attacker,
-      points: clamp(attacker.points + (attackerWon ? 50 : -60), 0, 700),
+      points: clamp(attacker.points + (attackerWon ? 50 : -60), 0, maxPoints),
       pet: syncPetLifeState(
         {
           ...attacker.pet,
@@ -404,7 +409,7 @@ export const resolveBattle = <
     },
     defender: {
       ...defender,
-      points: clamp(defender.points + (attackerWon ? -50 : 20), 0, 700),
+      points: clamp(defender.points + (attackerWon ? -50 : 20), 0, maxPoints),
       pet: syncPetLifeState(
         {
           ...defender.pet,
@@ -430,6 +435,7 @@ export const resolveTeamBattle = <
   defenders: Array<TeamBattleMember<TDefender>>,
   randomRolls: { attackers: number[]; defenders: number[] },
   now = Date.now(),
+  maxPoints = 700
 ) => {
   const attackerLeader = attackers[0]?.student;
   const defenderLeader = defenders[0]?.student;
@@ -487,7 +493,7 @@ export const resolveTeamBattle = <
       points: clamp(
         member.student.points + (sideWon ? TEAM_BATTLE_WIN_POINTS + bonusPoints : -TEAM_BATTLE_LOSS_POINTS),
         0,
-        700,
+        maxPoints,
       ),
       pet: syncPetLifeState(
         {
@@ -575,9 +581,9 @@ export const applyDecayToStudent = <T extends StudentRuleState>(student: T, deca
   };
 };
 
-export const reviveStudentPet = <T extends StudentRuleState>(student: T) => ({
+export const reviveStudentPet = <T extends StudentRuleState>(student: T, maxPoints = 700) => ({
   ...student,
-  points: clamp(student.points - REVIVE_COST, 0, 700),
+  points: clamp(student.points - REVIVE_COST, 0, maxPoints),
   pet: {
     ...student.pet,
     fullness: 40,
@@ -587,7 +593,7 @@ export const reviveStudentPet = <T extends StudentRuleState>(student: T) => ({
   },
 });
 
-export const claimDailyTaskForStudent = <T extends StudentRuleState>(student: T, now = Date.now()) => {
+export const claimDailyTaskForStudent = <T extends StudentRuleState>(student: T, now = Date.now(), maxPoints = 700) => {
   const today = getDateKey(now);
   const yesterday = getDateKey(now - 1000 * 60 * 60 * 24);
   const lastClaimDate = student.dailyProgress?.lastClaimDate;
@@ -606,11 +612,14 @@ export const claimDailyTaskForStudent = <T extends StudentRuleState>(student: T,
     streak: nextStreak,
     student: {
       ...student,
-      points: clamp(student.points + DAILY_TASK_REWARD_POINTS + streakBonus, 0, 700),
-      pet: {
-        ...student.pet,
-        happiness: clamp(student.pet.happiness + DAILY_TASK_REWARD_HAPPINESS, 0, 100),
-      },
+      points: clamp(student.points + DAILY_TASK_REWARD_POINTS + streakBonus, 0, maxPoints),
+      pet: syncPetLifeState(
+        {
+          ...student.pet,
+          happiness: clamp(student.pet.happiness + DAILY_TASK_REWARD_HAPPINESS, 0, 100),
+        },
+        now,
+      ),
       dailyProgress: {
         lastClaimDate: today,
         streak: nextStreak,
@@ -665,18 +674,18 @@ export const applyBossDefeatRewards = <T extends StudentRuleState>(
   rewardPoints: number,
   rewardHappiness: number,
   now = Date.now(),
-) => {
-  return students.map((student) => {
-    if (isPetDead(student.pet)) {
-      return student;
-    }
+  maxPoints = 700
+): T[] => {
+  return students.map((s) => {
+    if (isPetDead(s.pet)) return s;
+
     return {
-      ...student,
-      points: clamp(student.points + rewardPoints, 0, 700),
+      ...s,
+      points: clamp(s.points + rewardPoints, 0, maxPoints),
       pet: syncPetLifeState(
         {
-          ...student.pet,
-          happiness: clamp(student.pet.happiness + rewardHappiness, 0, 100),
+          ...s.pet,
+          happiness: clamp(s.pet.happiness + rewardHappiness, 0, 100),
         },
         now,
       ),

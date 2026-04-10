@@ -115,6 +115,7 @@ type AppData = {
     playGain?: number;
     battleMode?: BattleMode;
     maxTeamSize?: number;
+    maxPoints?: number;
   };
 };
 
@@ -169,6 +170,7 @@ const translations = {
     hourly: '每小時',
     daily: '每天',
     decayAmount: '扣除量',
+    maxPoints: '總積分上限',
     feedCost: '餵食所需積分',
     saveSettings: '儲存設定',
     manualAdjustTitle: '手動調整積分',
@@ -345,6 +347,7 @@ const translations = {
     hourly: 'Hourly',
     daily: 'Daily',
     decayAmount: 'Decay Amount',
+    maxPoints: 'Max Points Limit',
     feedCost: 'Feeding Cost (Points)',
     saveSettings: 'Save Settings',
     manualAdjustTitle: 'Manual Points Adjustment',
@@ -609,6 +612,7 @@ const createInitialData = (now = Date.now()): AppData => ({
     playGain: 15,
     battleMode: DEFAULT_BATTLE_MODE,
     maxTeamSize: DEFAULT_MAX_TEAM_SIZE,
+    maxPoints: 700,
   },
 });
 
@@ -751,6 +755,7 @@ const normalizeAppData = (raw: any, now = Date.now()): AppData => {
       playGain: Math.max(1, toFiniteNumber(rawSettings?.playGain, initialData.settings?.playGain ?? 15)),
       battleMode: rawSettings?.battleMode === 'solo' || rawSettings?.battleMode === 'team' ? rawSettings.battleMode : DEFAULT_BATTLE_MODE,
       maxTeamSize: clampTeamSize(rawSettings?.maxTeamSize),
+      maxPoints: Math.max(100, toFiniteNumber(rawSettings?.maxPoints, initialData.settings?.maxPoints ?? 700)),
     },
   };
 };
@@ -931,7 +936,7 @@ export default function App() {
              const latestClass = prev.classes.find(c => c.id === prev.currentClassId);
              if (!latestClass || !latestClass.activeBoss) return prev;
 
-             const rewardedStudents = applyBossDefeatRewards(latestClass.students, latestClass.activeBoss.rewardPoints, latestClass.activeBoss.rewardHappiness, Date.now());
+             const rewardedStudents = applyBossDefeatRewards(latestClass.students, latestClass.activeBoss.rewardPoints, latestClass.activeBoss.rewardHappiness, Date.now(), data.settings?.maxPoints ?? 700);
              
              const updatedClasses = prev.classes.map(c => 
                c.id === prev.currentClassId ? {
@@ -1006,7 +1011,7 @@ export default function App() {
     const now = Date.now();
     updateCurrentClassStudents(currentClass.students.map(s =>
       s.id === studentId
-        ? applyPointAdjustmentToStudent(s, pointsToAdd, createPointAdjustmentRecord(pointsToAdd, source, reason, now))
+        ? applyPointAdjustmentToStudent(s, pointsToAdd, createPointAdjustmentRecord(pointsToAdd, source, reason, now), data.settings?.maxPoints ?? 700)
         : s,
     ));
   };
@@ -1102,6 +1107,7 @@ export default function App() {
               now,
               source: 'autoPenalty',
             },
+            data.settings?.maxPoints ?? 700
           );
         }
         return {
@@ -1202,7 +1208,7 @@ export default function App() {
               record: disciplineRecord,
               now,
               source: 'discipline',
-            })
+            }, data.settings?.maxPoints ?? 700)
           : student,
       ),
     );
@@ -1305,7 +1311,7 @@ export default function App() {
 
     updateCurrentClassStudents(currentClass.students.map(s => {
       if (s.id === studentId && s.points >= feedCost) {
-        return applyFeedToStudent(s, feedCost, feedGain, now);
+        return applyFeedToStudent(s, feedCost, feedGain, now, data.settings?.maxPoints ?? 700);
       }
       return s;
     }));
@@ -1324,7 +1330,7 @@ export default function App() {
 
     updateCurrentClassStudents(currentClass.students.map(s => {
       if (s.id === studentId && s.points >= playCost) {
-        return applyPlayWithPet(s, playCost, playGain, now);
+        return applyPlayWithPet(s, playCost, playGain, now, data.settings?.maxPoints ?? 700);
       }
       return s;
     }));
@@ -1338,7 +1344,7 @@ export default function App() {
     const targetStudent = currentClass.students.find((student) => student.id === studentId);
     if (!targetStudent) return;
 
-    const result = claimDailyTaskForStudent(targetStudent, Date.now());
+    const result = claimDailyTaskForStudent(targetStudent, Date.now(), data.settings?.maxPoints ?? 700);
     if (!result.claimed) {
       showToast(tLang.dailyTaskDone ?? '今日已完成', 'error');
       return;
@@ -1369,7 +1375,7 @@ export default function App() {
     }
 
     updateCurrentClassStudents(
-      currentClass.students.map((student) => (student.id === studentId ? reviveStudentPet(student) : student)),
+      currentClass.students.map((student) => (student.id === studentId ? reviveStudentPet(student, data.settings?.maxPoints ?? 700) : student)),
     );
 
     showToast(
@@ -1543,6 +1549,7 @@ export default function App() {
     playGain: number,
     battleMode: BattleMode,
     maxTeamSize: number,
+    maxPoints: number
   ) => {
     if (!data) return;
     const safeDecayAmount = Math.max(0, Number.isFinite(decayAmount) ? decayAmount : 2);
@@ -1564,6 +1571,7 @@ export default function App() {
         playGain: safePlayGain,
         battleMode,
         maxTeamSize: safeMaxTeamSize,
+        maxPoints: Math.max(10, Number.isFinite(maxPoints) ? maxPoints : 700),
       }
     };
     saveData({
@@ -1617,6 +1625,7 @@ export default function App() {
                 defender: Math.floor(Math.random() * 20),
               },
               now,
+              data.settings?.maxPoints ?? 700
             );
 
             if (singleResult.blocked) return singleResult;
@@ -1639,6 +1648,7 @@ export default function App() {
                 defenders: defenderMembers.map(() => Math.floor(Math.random() * 20)),
               },
               now,
+              data.settings?.maxPoints ?? 700
             ),
             mode: 'team' as const,
           };
@@ -1884,6 +1894,7 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
   const [recordView, setRecordView] = useState<'discipline' | 'points'>('discipline');
   const [decayAmount, setDecayAmount] = useState(data.settings?.decayAmount ?? data.settings?.hourlyDecay ?? 2);
   const [decayType, setDecayType] = useState<'hourly' | 'daily'>(data.settings?.decayType ?? 'hourly');
+  const [maxPoints, setMaxPoints] = useState(data.settings?.maxPoints ?? 700);
   const [feedCost, setFeedCost] = useState(data.settings?.feedCost ?? 10);
   const [feedGain, setFeedGain] = useState(data.settings?.feedGain ?? 20);
   const [playCost, setPlayCost] = useState(data.settings?.playCost ?? 5);
@@ -2000,6 +2011,7 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
       Number(playGain),
       battleMode,
       Number(maxTeamSize),
+      Number(maxPoints),
     );
   };
 
@@ -2570,119 +2582,154 @@ function DashboardView({ data, addPoints, addStudent, deleteStudent, exportData,
 
       {/* System Settings */}
       <div className="bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200 mt-6 p-5">
-        <h3 className="text-lg font-medium text-slate-900 mb-4 flex items-center">
+        <h3 className="text-lg font-medium text-slate-900 mb-6 flex items-center">
           <Settings className="h-5 w-5 mr-2 text-indigo-500" />
           {tLang.systemSettings}
         </h3>
-        <div className="flex flex-col sm:flex-row gap-4 items-end">
-          <div className="flex-1 w-full">
-            <label htmlFor="language" className="block text-sm font-medium text-slate-700 mb-1">{tLang.language}</label>
-            <select
-              id="language"
-              value={currentLang}
-              onChange={(e) => setCurrentLang(e.target.value as Language)}
-              className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
-            >
-              <option value="zh">中文</option>
-              <option value="en">English</option>
-            </select>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-6">
+          {/* 基本規則 */}
+          <div className="space-y-4 bg-slate-50 p-4 rounded-xl border border-slate-200">
+            <h4 className="text-sm font-bold text-slate-700 pb-2 border-b border-slate-200">
+              {lang === 'en' ? 'General Rules' : '基本規則'}
+            </h4>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="language" className="text-sm font-medium text-slate-700">{tLang.language}</label>
+              <select
+                id="language"
+                value={currentLang}
+                onChange={(e) => setCurrentLang(e.target.value as Language)}
+                className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
+              >
+                <option value="zh">中文</option>
+                <option value="en">English</option>
+              </select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="maxPoints" className="text-sm font-medium text-slate-700">{tLang.maxPoints ?? '總積分上限'}</label>
+              <input
+                type="number"
+                id="maxPoints"
+                min="0"
+                value={maxPoints}
+                onChange={(e) => setMaxPoints(Number(e.target.value))}
+                className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="decayType" className="text-sm font-medium text-slate-700">{tLang.decayFrequency}</label>
+              <select
+                id="decayType"
+                value={decayType}
+                onChange={(e) => setDecayType(e.target.value as 'hourly' | 'daily')}
+                className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
+              >
+                <option value="hourly">{tLang.hourly}</option>
+                <option value="daily">{tLang.daily}</option>
+              </select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="decayAmount" className="text-sm font-medium text-slate-700">{tLang.decayAmount}</label>
+              <input 
+                type="number" 
+                id="decayAmount"
+                min="0"
+                value={decayAmount}
+                onChange={(e) => setDecayAmount(Number(e.target.value))}
+                className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
+              />
+            </div>
           </div>
-          <div className="flex-1 w-full">
-            <label htmlFor="decayType" className="block text-sm font-medium text-slate-700 mb-1">{tLang.decayFrequency}</label>
-            <select
-              id="decayType"
-              value={decayType}
-              onChange={(e) => setDecayType(e.target.value as 'hourly' | 'daily')}
-              className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
-            >
-              <option value="hourly">{tLang.hourly}</option>
-              <option value="daily">{tLang.daily}</option>
-            </select>
+
+          {/* 互動設定 */}
+          <div className="space-y-4 bg-slate-50 p-4 rounded-xl border border-slate-200">
+            <h4 className="text-sm font-bold text-slate-700 pb-2 border-b border-slate-200">
+              {lang === 'en' ? 'Economy & Interactions' : '經濟與互動數值'}
+            </h4>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="feedCost" className="text-sm font-medium text-slate-700">{tLang.feedCost}</label>
+              <input 
+                type="number" 
+                id="feedCost"
+                min="1"
+                value={feedCost}
+                onChange={(e) => setFeedCost(Number(e.target.value))}
+                className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="feedGain" className="text-sm font-medium text-slate-700">{tLang.feedGain ?? '餵食回復飽食度'}</label>
+              <input 
+                type="number" 
+                id="feedGain"
+                min="1"
+                value={feedGain}
+                onChange={(e) => setFeedGain(Number(e.target.value))}
+                className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="playCost" className="text-sm font-medium text-slate-700">{tLang.playCost ?? '玩耍所需積分'}</label>
+              <input 
+                type="number" 
+                id="playCost"
+                min="1"
+                value={playCost}
+                onChange={(e) => setPlayCost(Number(e.target.value))}
+                className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="playGain" className="text-sm font-medium text-slate-700">{tLang.playGain ?? '玩耍回復心情'}</label>
+              <input 
+                type="number" 
+                id="playGain"
+                min="1"
+                value={playGain}
+                onChange={(e) => setPlayGain(Number(e.target.value))}
+                className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
+              />
+            </div>
           </div>
-          <div className="flex-1 w-full">
-            <label htmlFor="decayAmount" className="block text-sm font-medium text-slate-700 mb-1">{tLang.decayAmount}</label>
-            <input 
-              type="number" 
-              id="decayAmount"
-              min="0"
-              value={decayAmount}
-              onChange={(e) => setDecayAmount(Number(e.target.value))}
-              className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
-            />
+
+          {/* 對戰設定 */}
+          <div className="space-y-4 bg-slate-50 p-4 rounded-xl border border-slate-200">
+            <h4 className="text-sm font-bold text-slate-700 pb-2 border-b border-slate-200">
+              {lang === 'en' ? 'Battle Settings' : '對戰與組隊設定'}
+            </h4>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="battleMode" className="text-sm font-medium text-slate-700">
+                {lang === 'en' ? 'Battle Mode' : '支援對戰模式'}
+              </label>
+              <select
+                id="battleMode"
+                value={battleMode}
+                onChange={(e) => setBattleMode(e.target.value as BattleMode)}
+                className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
+              >
+                <option value="both">{lang === 'en' ? 'Solo + Team' : '個人賽 + 隊伍賽'}</option>
+                <option value="solo">{lang === 'en' ? 'Solo Only' : '僅個人賽'}</option>
+                <option value="team">{lang === 'en' ? 'Team Only' : '僅隊伍賽'}</option>
+              </select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="maxTeamSize" className="text-sm font-medium text-slate-700">
+                {lang === 'en' ? 'Max Team Size' : '隊伍上限人數'}
+              </label>
+              <input
+                type="number"
+                id="maxTeamSize"
+                min="2"
+                max="6"
+                value={maxTeamSize}
+                onChange={(e) => setMaxTeamSize(Number(e.target.value))}
+                className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
+              />
+            </div>
           </div>
-          <div className="flex-1 w-full">
-            <label htmlFor="feedCost" className="block text-sm font-medium text-slate-700 mb-1">{tLang.feedCost}</label>
-            <input 
-              type="number" 
-              id="feedCost"
-              min="1"
-              value={feedCost}
-              onChange={(e) => setFeedCost(Number(e.target.value))}
-              className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
-            />
-          </div>
-          <div className="flex-1 w-full">
-            <label htmlFor="feedGain" className="block text-sm font-medium text-slate-700 mb-1">{tLang.feedGain ?? '餵食回復飽食度'}</label>
-            <input 
-              type="number" 
-              id="feedGain"
-              min="1"
-              value={feedGain}
-              onChange={(e) => setFeedGain(Number(e.target.value))}
-              className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
-            />
-          </div>
-          <div className="flex-1 w-full">
-            <label htmlFor="playCost" className="block text-sm font-medium text-slate-700 mb-1">{tLang.playCost ?? '玩耍所需積分'}</label>
-            <input 
-              type="number" 
-              id="playCost"
-              min="1"
-              value={playCost}
-              onChange={(e) => setPlayCost(Number(e.target.value))}
-              className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
-            />
-          </div>
-          <div className="flex-1 w-full">
-            <label htmlFor="playGain" className="block text-sm font-medium text-slate-700 mb-1">{tLang.playGain ?? '玩耍回復心情'}</label>
-            <input 
-              type="number" 
-              id="playGain"
-              min="1"
-              value={playGain}
-              onChange={(e) => setPlayGain(Number(e.target.value))}
-              className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
-            />
-          </div>
-          <div className="flex-1 w-full">
-            <label htmlFor="battleMode" className="block text-sm font-medium text-slate-700 mb-1">
-              {lang === 'en' ? 'Battle Mode' : '對戰模式'}
-            </label>
-            <select
-              id="battleMode"
-              value={battleMode}
-              onChange={(e) => setBattleMode(e.target.value as BattleMode)}
-              className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
-            >
-              <option value="both">{lang === 'en' ? 'Solo + Team' : '個人賽 + 隊伍賽'}</option>
-              <option value="solo">{lang === 'en' ? 'Solo Only' : '僅個人賽'}</option>
-              <option value="team">{lang === 'en' ? 'Team Only' : '僅隊伍賽'}</option>
-            </select>
-          </div>
-          <div className="flex-1 w-full">
-            <label htmlFor="maxTeamSize" className="block text-sm font-medium text-slate-700 mb-1">
-              {lang === 'en' ? 'Max Team Size' : '隊伍上限人數'}
-            </label>
-            <input
-              type="number"
-              id="maxTeamSize"
-              min="2"
-              max="6"
-              value={maxTeamSize}
-              onChange={(e) => setMaxTeamSize(Number(e.target.value))}
-              className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
-            />
-          </div>
+        </div>
+
+        <div className="border-t border-slate-200 pt-5">
           <button
             onClick={handleSaveSettings}
             className="w-full sm:w-auto inline-flex items-center justify-center px-6 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors"
