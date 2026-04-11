@@ -143,7 +143,7 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
   const rankInfo = getRankInfo(rankPoints);
 
   return (
-    <div className={`relative bg-white rounded-2xl shadow-sm hover:shadow-md transition-shadow duration-300 overflow-hidden border-2 ${borderColor}`}>
+    <div className={`relative bg-white rounded-2xl shadow-sm hover:shadow-md transition-shadow duration-300 border-2 ${borderColor}`}>
       {/* Header */}
       <div className={`px-4 py-3 border-b ${borderColor} ${bgColor} flex justify-between items-center`}>
         <div className="flex flex-col">
@@ -201,7 +201,7 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
       )}
 
       {/* Pet Visual Area */}
-      <div className={`p-6 flex flex-col items-center justify-center relative h-48 transition-colors duration-500 ${
+      <div className={`px-6 pt-14 pb-4 flex flex-col items-center justify-end relative h-64 transition-colors duration-500 ${
         isDead 
           ? 'bg-gradient-to-b from-slate-200/50 to-slate-400/30' 
           : 'bg-gradient-to-b from-white to-amber-50/30'
@@ -259,7 +259,7 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
 
         {/* Epic Aura for Stage 3 */}
         {!isDead && evolutionStage >= 3 && (
-          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-36 w-36 rounded-full border-[4px] border-yellow-300/20 border-t-yellow-400 border-b-yellow-400 animate-[spin_4s_linear_infinite] shadow-[0_0_30px_rgba(250,204,21,0.6)] z-0 pointer-events-none" />
+          <div className="absolute bottom-16 left-1/2 -translate-x-1/2 h-36 w-36 rounded-full border-[4px] border-yellow-300/20 border-t-yellow-400 border-b-yellow-400 animate-[spin_4s_linear_infinite] shadow-[0_0_30px_rgba(250,204,21,0.6)] z-0 pointer-events-none" />
         )}
 
         {/* Pet Character Container */}
