@@ -321,6 +321,7 @@ export const resolveBattle = <
   attacker: TAttacker,
   defender: TDefender,
   randomRolls: { attacker: number; defender: number },
+  options?: { battleRankPointsWin?: number; battleRankPointsLoss?: number },
   now = Date.now(),
   maxPoints = 700
 ) => {
@@ -405,7 +406,9 @@ export const resolveBattle = <
         wins: attackerWon ? attackerStats.wins + 1 : attackerStats.wins,
         losses: attackerWon ? attackerStats.losses : attackerStats.losses + 1,
       },
-      rankPoints: attackerWon ? attackerRankPoints + 20 : Math.max(0, attackerRankPoints - 10),
+      rankPoints: attackerWon 
+        ? attackerRankPoints + (options?.battleRankPointsWin ?? 20) 
+        : Math.max(0, attackerRankPoints - (options?.battleRankPointsLoss ?? 10)),
     },
     defender: {
       ...defender,
@@ -422,7 +425,9 @@ export const resolveBattle = <
         wins: attackerWon ? defenderStats.wins : defenderStats.wins + 1,
         losses: attackerWon ? defenderStats.losses + 1 : defenderStats.losses,
       },
-      rankPoints: attackerWon ? Math.max(0, defenderRankPoints - 10) : defenderRankPoints + 20,
+      rankPoints: attackerWon 
+        ? Math.max(0, defenderRankPoints - (options?.battleRankPointsLoss ?? 10)) 
+        : defenderRankPoints + (options?.battleRankPointsWin ?? 20),
     },
   };
 };
@@ -434,6 +439,7 @@ export const resolveTeamBattle = <
   attackers: Array<TeamBattleMember<TAttacker>>,
   defenders: Array<TeamBattleMember<TDefender>>,
   randomRolls: { attackers: number[]; defenders: number[] },
+  options?: { battleRankPointsWin?: number; battleRankPointsLoss?: number },
   now = Date.now(),
   maxPoints = 700
 ) => {
@@ -516,8 +522,8 @@ export const resolveTeamBattle = <
         losses: sideWon ? stats.losses : stats.losses + 1,
       },
       rankPoints: sideWon
-        ? rankPoints + TEAM_BATTLE_WIN_RANK_POINTS
-        : Math.max(0, rankPoints - TEAM_BATTLE_LOSS_RANK_POINTS),
+        ? rankPoints + (options?.battleRankPointsWin ?? TEAM_BATTLE_WIN_RANK_POINTS)
+        : Math.max(0, rankPoints - (options?.battleRankPointsLoss ?? TEAM_BATTLE_LOSS_RANK_POINTS)),
     };
   };
 
@@ -581,9 +587,9 @@ export const applyDecayToStudent = <T extends StudentRuleState>(student: T, deca
   };
 };
 
-export const reviveStudentPet = <T extends StudentRuleState>(student: T, maxPoints = 700) => ({
+export const reviveStudentPet = <T extends StudentRuleState>(student: T, reviveCost = REVIVE_COST, maxPoints = 700) => ({
   ...student,
-  points: clamp(student.points - REVIVE_COST, 0, maxPoints),
+  points: clamp(student.points - reviveCost, 0, maxPoints),
   pet: {
     ...student.pet,
     fullness: 40,

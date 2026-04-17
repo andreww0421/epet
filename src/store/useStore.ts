@@ -43,11 +43,7 @@ type StoreState = {
   addClass: (name: string) => void;
   deleteClass: (classId: string) => void;
   importData: (importedData: any, now?: number) => void;
-  updateSettings: (
-    decayAmount: number, decayType: 'hourly' | 'daily', language: Language, 
-    feedCost: number, feedGain: number, playCost: number, playGain: number, 
-    battleMode: BattleMode, maxTeamSize: number, maxPoints: number
-  ) => void;
+  updateSettings: (settings: Partial<NonNullable<AppData['settings']>>) => void;
 
   // Student CRUD
   addStudent: (student: Student) => void;
@@ -149,25 +145,27 @@ export const useStore = create<StoreState>()(
         return { data: hydratedData };
       }),
 
-      updateSettings: (decayAmount, decayType, language, feedCost, feedGain, playCost, playGain, battleMode, maxTeamSize, maxPoints) => set((state) => {
-        const safeMaxTeamSize = Math.max(2, Math.min(6, maxTeamSize || DEFAULT_MAX_TEAM_SIZE));
+      updateSettings: (newSettings) => set((state) => {
+        const merged = { ...state.data.settings, ...newSettings };
+        const safeMaxTeamSize = Math.max(2, Math.min(6, merged.maxTeamSize || DEFAULT_MAX_TEAM_SIZE));
+        
         const newData = {
           ...state.data,
           settings: {
-            ...state.data.settings,
-            decayAmount: Math.max(0, decayAmount || 2),
-            decayType,
-            language,
-            feedCost: Math.max(1, feedCost || 10),
-            feedGain: Math.max(1, feedGain || 20),
-            playCost: Math.max(1, playCost || 5),
-            playGain: Math.max(1, playGain || 15),
-            battleMode,
+            ...merged,
+            decayAmount: Math.max(0, merged.decayAmount || 2),
+            feedCost: Math.max(1, merged.feedCost || 10),
+            feedGain: Math.max(1, merged.feedGain || 20),
+            playCost: Math.max(1, merged.playCost || 5),
+            playGain: Math.max(1, merged.playGain || 15),
             maxTeamSize: safeMaxTeamSize,
-            maxPoints: Math.max(10, maxPoints || 700),
+            maxPoints: Math.max(10, merged.maxPoints || 700),
+            reviveCost: Math.max(0, merged.reviveCost || 120),
+            battleRankPointsWin: Math.max(0, merged.battleRankPointsWin || 20),
+            battleRankPointsLoss: Math.max(0, merged.battleRankPointsLoss || 10),
           }
         };
-        get().showToast(translations[language || 'zh'].settingsSaved, 'success');
+        get().showToast(translations[newData.settings.language || 'zh'].settingsSaved, 'success');
         return {
           data: {
             ...newData,
@@ -188,7 +186,7 @@ export const useStore = create<StoreState>()(
           points: 200,
           pet: { ...student.pet, type: 'egg' },
           stats: { wins: 0, losses: 0 },
-          rankPoints: 1000,
+          rankPoints: 0,
           warningPoints: 0,
           nextUpgradeGachaLevel: 2,
           penaltyStatus: undefined,
@@ -399,12 +397,47 @@ export const useStore = create<StoreState>()(
         const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
         if (currentClassIndex === -1) return state;
 
+        const settings = state.data.settings;
+        const enableRewards = settings?.enableSeasonResetRewards ?? false;
+        const rewards = settings?.seasonResetRewards ?? { diamond: 500, platinum: 400, gold: 300, silver: 200, bronze: 100 };
+        const brackets = settings?.rankBrackets ?? { diamond: 400, platinum: 300, gold: 200, silver: 100 };
+        const maxPoints = settings?.maxPoints ?? 700;
+        const now = Date.now();
+
+        const getRewardForRank = (rp: number) => {
+          if (rp >= brackets.diamond) return rewards.diamond;
+          if (rp >= brackets.platinum) return rewards.platinum;
+          if (rp >= brackets.gold) return rewards.gold;
+          if (rp >= brackets.silver) return rewards.silver;
+          return rewards.bronze;
+        };
+
         const nextClasses = [...state.data.classes];
         nextClasses[currentClassIndex] = {
           ...nextClasses[currentClassIndex],
-          students: nextClasses[currentClassIndex].students.map(s => ({
-            ...s, stats: { wins: 0, losses: 0 }, rankPoints: 1000, warningPoints: 0, penaltyStatus: undefined
-          }))
+          students: nextClasses[currentClassIndex].students.map(s => {
+            let nextStudent = s;
+
+            if (enableRewards) {
+              const rewardAmount = getRewardForRank(s.rankPoints ?? 0);
+              if (rewardAmount > 0) {
+                nextStudent = applyPointAdjustmentToStudent(
+                  nextStudent, 
+                  rewardAmount, 
+                  createPointAdjustmentRecord(rewardAmount, 'manual', { id: 'season-reset', label: '賽季結算獎勵' }, now), 
+                  maxPoints
+                );
+              }
+            }
+
+            return {
+              ...nextStudent,
+              stats: { wins: 0, losses: 0 }, 
+              rankPoints: 0, 
+              warningPoints: 0, 
+              penaltyStatus: undefined
+            };
+          })
         };
         get().showToast(translations[state.data.settings?.language || 'zh'].resetSeason, 'success');
         return { data: { ...state.data, classes: nextClasses } };
@@ -490,16 +523,17 @@ export const useStore = create<StoreState>()(
         if (!targetStudent) return state;
 
         const tLang = translations[state.data.settings?.language || 'zh'];
+        const reviveCost = state.data.settings?.reviveCost ?? 120;
 
-        if (targetStudent.points < REVIVE_COST) {
-          get().showToast(tLang.reviveNeedPoints ?? '復活需要 120 積分', 'error');
+        if (targetStudent.points < reviveCost) {
+          get().showToast(state.data.settings?.language === 'en' ? `Need ${reviveCost} points to revive` : `復活需要 ${reviveCost} 積分`, 'error');
           return state;
         }
 
         const nextClasses = [...state.data.classes];
         nextClasses[currentClassIndex] = {
           ...nextClasses[currentClassIndex],
-          students: nextClasses[currentClassIndex].students.map(s => s.id === studentId ? reviveStudentPet(s, state.data.settings?.maxPoints ?? 700) : s)
+          students: nextClasses[currentClassIndex].students.map(s => s.id === studentId ? reviveStudentPet(s, reviveCost, state.data.settings?.maxPoints ?? 700) : s)
         };
 
         get().showToast((tLang.reviveSuccess ?? '{name} 的寵物已復活').replace('{name}', targetStudent.name), 'success');
@@ -674,13 +708,18 @@ export const useStore = create<StoreState>()(
         }
 
         const maxPoints = state.data.settings?.maxPoints ?? 700;
+        const battleOptions = { 
+          battleRankPointsWin: state.data.settings?.battleRankPointsWin,
+          battleRankPointsLoss: state.data.settings?.battleRankPointsLoss
+        };
+        
         const battleResult = !shouldUseTeamBattle && !shouldForceTeamBattle
           ? (() => {
-              const singleResult = resolveBattle(attacker, defender, { attacker: Math.floor(Math.random() * 20), defender: Math.floor(Math.random() * 20) }, now, maxPoints);
+              const singleResult = resolveBattle(attacker, defender, { attacker: Math.floor(Math.random() * 20), defender: Math.floor(Math.random() * 20) }, battleOptions, now, maxPoints);
               if (singleResult.blocked) return singleResult;
               return { ...singleResult, mode: 'solo' as const, updated: { [attacker.id]: singleResult.attacker, [defender.id]: singleResult.defender } };
             })()
-          : { ...resolveTeamBattle(attackerMembers, defenderMembers, { attackers: attackerMembers.map(() => Math.floor(Math.random() * 20)), defenders: defenderMembers.map(() => Math.floor(Math.random() * 20)) }, now, maxPoints), mode: 'team' as const };
+          : { ...resolveTeamBattle(attackerMembers, defenderMembers, { attackers: attackerMembers.map(() => Math.floor(Math.random() * 20)), defenders: defenderMembers.map(() => Math.floor(Math.random() * 20)) }, battleOptions, now, maxPoints), mode: 'team' as const };
 
         if (battleResult.blocked === 'penalty') { get().showToast(tLang.battleBlockedByPenalty, 'error'); return state; }
         if (battleResult.blocked === 'dead') { get().showToast(tLang.battleBlockedByDeath ?? '寵物已死亡，必須先復活', 'error'); return state; }

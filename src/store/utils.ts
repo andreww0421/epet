@@ -112,7 +112,7 @@ export const normalizeStudent = (student: any, fallbackIndex: number, now = Date
       wins: Math.max(0, Math.floor(toFiniteNumber(student?.stats?.wins, 0))),
       losses: Math.max(0, Math.floor(toFiniteNumber(student?.stats?.losses, 0))),
     },
-    rankPoints: Math.max(0, Math.floor(toFiniteNumber(student?.rankPoints, 1000))),
+    rankPoints: Math.max(0, Math.floor(toFiniteNumber(student?.rankPoints, 0))),
     warningPoints: Math.max(0, Math.floor(toFiniteNumber(student?.warningPoints, 0))),
     activeWarningTimestamps: Array.isArray(student?.activeWarningTimestamps) 
       ? student.activeWarningTimestamps.map(Number)
@@ -232,6 +232,12 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
       battleMode: rawSettings?.battleMode === 'solo' || rawSettings?.battleMode === 'team' ? rawSettings.battleMode : DEFAULT_BATTLE_MODE,
       maxTeamSize: clampTeamSize(rawSettings?.maxTeamSize),
       maxPoints: Math.max(100, toFiniteNumber(rawSettings?.maxPoints, initialData.settings?.maxPoints ?? 700)),
+      rankBrackets: rawSettings?.rankBrackets ?? { diamond: 400, platinum: 300, gold: 200, silver: 100 },
+      battleRankPointsWin: Math.max(0, toFiniteNumber(rawSettings?.battleRankPointsWin, 20)),
+      battleRankPointsLoss: Math.max(0, toFiniteNumber(rawSettings?.battleRankPointsLoss, 10)),
+      enableSeasonResetRewards: Boolean(rawSettings?.enableSeasonResetRewards),
+      seasonResetRewards: rawSettings?.seasonResetRewards ?? { diamond: 500, platinum: 400, gold: 300, silver: 200, bronze: 100 },
+      reviveCost: Math.max(0, toFiniteNumber(rawSettings?.reviveCost, 120)),
     },
   };
 };

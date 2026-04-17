@@ -147,14 +147,8 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
       {/* Header */}
       <div className={`px-4 py-3 border-b ${borderColor} ${bgColor} flex justify-between items-center`}>
         <div className="flex flex-col">
-          <span className="font-bold text-gray-800 text-lg flex items-center">
+          <span className="font-bold text-gray-800 text-lg">
             {name}
-            {rankInfo && (
-              <span className={`ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold ${rankInfo.bg} ${rankInfo.color}`} title={rankInfo.name}>
-                <rankInfo.icon className="h-3 w-3 mr-0.5" />
-                {rankPoints}
-              </span>
-            )}
           </span>
           <span className="text-xs font-bold text-amber-600 flex items-center">
             <Star className="h-3 w-3 mr-1 fill-amber-500" /> Lv. {level}
@@ -206,6 +200,15 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
           ? 'bg-gradient-to-b from-slate-200/50 to-slate-400/30' 
           : 'bg-gradient-to-b from-white to-amber-50/30'
       }`}>
+
+        {/* Floating Rank Badge */}
+        <div className={`absolute top-3 left-3 z-30 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg shadow-md border border-white/50 backdrop-blur-sm ${rankInfo.bg}`}>
+          <rankInfo.icon className={`h-5 w-5 ${rankInfo.color}`} />
+          <div className="flex flex-col leading-none">
+            <span className={`font-black text-sm tracking-widest ${rankInfo.color}`}>{rankInfo.name}</span>
+            <span className={`text-[10px] font-bold opacity-70 ${rankInfo.color}`}>{rankPoints} RP</span>
+          </div>
+        </div>
         
         {/* Floating Hearts Animation */}
         {isAnimating && (
@@ -257,10 +260,7 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
           </div>
         )}
 
-        {/* Epic Aura for Stage 3 */}
-        {!isDead && evolutionStage >= 3 && (
-          <div className="absolute bottom-16 left-1/2 -translate-x-1/2 h-36 w-36 rounded-full border-[4px] border-yellow-300/20 border-t-yellow-400 border-b-yellow-400 animate-[spin_4s_linear_infinite] shadow-[0_0_30px_rgba(250,204,21,0.6)] z-0 pointer-events-none" />
-        )}
+
 
         {/* Pet Character Container */}
         <div className={`relative transition-all duration-300 z-10 ${
@@ -292,6 +292,11 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
                   : ''
             } ${evolutionStage >= 3 ? 'shadow-[0_0_25px_rgba(167,139,250,0.8)]' : ''}`}>
               
+              {/* Epic Aura — inside Pet Circle Base so it's always centered */}
+              {!isDead && evolutionStage >= 3 && (
+                <div className="absolute -inset-6 rounded-full border-[4px] border-yellow-300/20 border-t-yellow-400 border-b-yellow-400 animate-[spin_4s_linear_infinite] shadow-[0_0_30px_rgba(250,204,21,0.6)] z-0 pointer-events-none" />
+              )}
+
               {evolutionStage >= 3 && (
                 <Crown className="h-10 w-10 text-yellow-400 fill-yellow-400 absolute -top-6 left-1/2 transform -translate-x-1/2 z-20 drop-shadow-[0_0_10px_rgba(250,204,21,0.8)] animate-[pulse_2s_ease-in-out_infinite]" />
               )}

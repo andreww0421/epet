@@ -43,7 +43,7 @@ test('resolveBattle returns draw when scores are equal', () => {
   const attacker = createStudent();
   const defender = createStudent();
 
-  const result = resolveBattle(attacker, defender, { attacker: 5, defender: 5 }, 1000);
+  const result = resolveBattle(attacker, defender, { attacker: 5, defender: 5 }, undefined, 1000);
 
   assert.equal(result.blocked, null);
   assert.equal(result.outcome, 'draw');
@@ -156,6 +156,7 @@ test('resolveTeamBattle updates all active team members', () => {
       attackers: [10, 12],
       defenders: [0, 1],
     },
+    undefined,
     1000,
   );
 

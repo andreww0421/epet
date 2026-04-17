@@ -103,10 +103,11 @@ export const ClassroomView: React.FC = () => {
     );
 
   const getRankInfo = (rp: number = 0) => {
-    if (rp >= 400) return { name: tLang.diamond, color: 'text-cyan-500', bg: 'bg-cyan-100', icon: Crown };
-    if (rp >= 300) return { name: tLang.platinum, color: 'text-teal-500', bg: 'bg-teal-100', icon: Sparkles };
-    if (rp >= 200) return { name: tLang.gold, color: 'text-yellow-500', bg: 'bg-yellow-100', icon: Medal };
-    if (rp >= 100) return { name: tLang.silver, color: 'text-gray-400', bg: 'bg-gray-100', icon: Award };
+    const brackets = data.settings?.rankBrackets ?? { diamond: 400, platinum: 300, gold: 200, silver: 100 };
+    if (rp >= brackets.diamond) return { name: tLang.diamond, color: 'text-cyan-500', bg: 'bg-cyan-100', icon: Crown };
+    if (rp >= brackets.platinum) return { name: tLang.platinum, color: 'text-teal-500', bg: 'bg-teal-100', icon: Sparkles };
+    if (rp >= brackets.gold) return { name: tLang.gold, color: 'text-yellow-500', bg: 'bg-yellow-100', icon: Medal };
+    if (rp >= brackets.silver) return { name: tLang.silver, color: 'text-gray-400', bg: 'bg-gray-100', icon: Award };
     return { name: tLang.bronze, color: 'text-amber-700', bg: 'bg-amber-100', icon: Shield };
   };
 

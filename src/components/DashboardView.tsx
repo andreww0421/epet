@@ -35,6 +35,25 @@ export const DashboardView: React.FC = () => {
   const [battleMode, setBattleMode] = useState<BattleMode>(data.settings?.battleMode ?? DEFAULT_BATTLE_MODE);
   const [maxTeamSize, setMaxTeamSize] = useState(data.settings?.maxTeamSize ?? DEFAULT_MAX_TEAM_SIZE);
   const [currentLang, setCurrentLang] = useState<Language>(lang);
+  const [reviveCost, setReviveCost] = useState(data.settings?.reviveCost ?? 120);
+
+  const defaultBrackets = data.settings?.rankBrackets ?? { diamond: 400, platinum: 300, gold: 200, silver: 100 };
+  const [bracketDiamond, setBracketDiamond] = useState(defaultBrackets.diamond);
+  const [bracketPlatinum, setBracketPlatinum] = useState(defaultBrackets.platinum);
+  const [bracketGold, setBracketGold] = useState(defaultBrackets.gold);
+  const [bracketSilver, setBracketSilver] = useState(defaultBrackets.silver);
+
+  const [battleRankPointsWin, setBattleRankPointsWin] = useState(data.settings?.battleRankPointsWin ?? 20);
+  const [battleRankPointsLoss, setBattleRankPointsLoss] = useState(data.settings?.battleRankPointsLoss ?? 10);
+  const [enableSeasonResetRewards, setEnableSeasonResetRewards] = useState(data.settings?.enableSeasonResetRewards ?? false);
+
+  const defaultRewards = data.settings?.seasonResetRewards ?? { diamond: 500, platinum: 400, gold: 300, silver: 200, bronze: 100 };
+  const [rewardDiamond, setRewardDiamond] = useState(defaultRewards.diamond);
+  const [rewardPlatinum, setRewardPlatinum] = useState(defaultRewards.platinum);
+  const [rewardGold, setRewardGold] = useState(defaultRewards.gold);
+  const [rewardSilver, setRewardSilver] = useState(defaultRewards.silver);
+  const [rewardBronze, setRewardBronze] = useState(defaultRewards.bronze);
+
   const [selectedReasons, setSelectedReasons] = useState<Record<string, string>>({});
   
   const [newClassName, setNewClassName] = useState('');
@@ -134,18 +153,35 @@ export const DashboardView: React.FC = () => {
         ];
 
   const handleSaveSettings = () => {
-    store.updateSettings(
-      Number(decayAmount),
+    store.updateSettings({
+      decayAmount: Number(decayAmount),
       decayType,
-      currentLang,
-      Number(feedCost),
-      Number(feedGain),
-      Number(playCost),
-      Number(playGain),
+      language: currentLang,
+      feedCost: Number(feedCost),
+      feedGain: Number(feedGain),
+      playCost: Number(playCost),
+      playGain: Number(playGain),
       battleMode,
-      Number(maxTeamSize),
-      Number(maxPoints),
-    );
+      maxTeamSize: Number(maxTeamSize),
+      maxPoints: Number(maxPoints),
+      reviveCost: Number(reviveCost),
+      rankBrackets: {
+        diamond: Number(bracketDiamond),
+        platinum: Number(bracketPlatinum),
+        gold: Number(bracketGold),
+        silver: Number(bracketSilver),
+      },
+      battleRankPointsWin: Number(battleRankPointsWin),
+      battleRankPointsLoss: Number(battleRankPointsLoss),
+      enableSeasonResetRewards,
+      seasonResetRewards: {
+        diamond: Number(rewardDiamond),
+        platinum: Number(rewardPlatinum),
+        gold: Number(rewardGold),
+        silver: Number(rewardSilver),
+        bronze: Number(rewardBronze),
+      }
+    });
   };
 
   const handleAddClass = () => {
@@ -168,7 +204,7 @@ export const DashboardView: React.FC = () => {
         level: 1
       },
       stats: { wins: 0, losses: 0 },
-      rankPoints: 1000,
+      rankPoints: 0,
       warningPoints: 0,
       nextUpgradeGachaLevel: 2,
       penaltyStatus: undefined,
@@ -836,6 +872,10 @@ export const DashboardView: React.FC = () => {
               <label htmlFor="playGain" className="text-sm font-medium text-slate-700">{tLang.playGain ?? '玩耍回復心情'}</label>
               <input type="number" id="playGain" min="1" value={playGain} onChange={(e) => setPlayGain(Number(e.target.value))} className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2" />
             </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="reviveCost" className="text-sm font-medium text-slate-700">{lang === 'en' ? 'Revive Cost' : '復活需要積分'}</label>
+              <input type="number" id="reviveCost" min="0" value={reviveCost} onChange={(e) => setReviveCost(Number(e.target.value))} className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2" />
+            </div>
           </div>
 
           {/* 對戰設定 */}
@@ -871,6 +911,48 @@ export const DashboardView: React.FC = () => {
                 onChange={(e) => setMaxTeamSize(Number(e.target.value))}
                 className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
               />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="battleRankPointsWin" className="text-sm font-medium text-slate-700">{lang === 'en' ? 'Battle Win RP' : '對戰獲勝加分 (RP)'}</label>
+              <input type="number" id="battleRankPointsWin" min="0" value={battleRankPointsWin} onChange={(e) => setBattleRankPointsWin(Number(e.target.value))} className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2" />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="battleRankPointsLoss" className="text-sm font-medium text-slate-700">{lang === 'en' ? 'Battle Loss RP' : '落敗扣分 (RP)'}</label>
+              <input type="number" id="battleRankPointsLoss" min="0" value={battleRankPointsLoss} onChange={(e) => setBattleRankPointsLoss(Number(e.target.value))} className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2" />
+            </div>
+          </div>
+
+          {/* 段位與賽季設定 */}
+          <div className="space-y-4 bg-slate-50 p-4 rounded-xl border border-slate-200">
+            <h4 className="text-sm font-bold text-slate-700 pb-2 border-b border-slate-200">
+              {lang === 'en' ? 'Rank & Season Settings' : '段位與賽季設定'}
+            </h4>
+            
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-slate-700">{lang === 'en' ? 'Rank Thresholds' : '排位門檻 (RP)'}</label>
+              <div className="grid grid-cols-2 gap-2 mt-1">
+                <label className="flex items-center text-xs text-slate-600 gap-2"><span className="w-12">{tLang.diamond}</span><input type="number" value={bracketDiamond} onChange={(e) => setBracketDiamond(Number(e.target.value))} className="w-full min-w-0 rounded border-slate-300 px-2 py-1 border" /></label>
+                <label className="flex items-center text-xs text-slate-600 gap-2"><span className="w-12">{tLang.platinum}</span><input type="number" value={bracketPlatinum} onChange={(e) => setBracketPlatinum(Number(e.target.value))} className="w-full min-w-0 rounded border-slate-300 px-2 py-1 border" /></label>
+                <label className="flex items-center text-xs text-slate-600 gap-2"><span className="w-12">{tLang.gold}</span><input type="number" value={bracketGold} onChange={(e) => setBracketGold(Number(e.target.value))} className="w-full min-w-0 rounded border-slate-300 px-2 py-1 border" /></label>
+                <label className="flex items-center text-xs text-slate-600 gap-2"><span className="w-12">{tLang.silver}</span><input type="number" value={bracketSilver} onChange={(e) => setBracketSilver(Number(e.target.value))} className="w-full min-w-0 rounded border-slate-300 px-2 py-1 border" /></label>
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-slate-200 mt-2">
+              <label className="flex items-center gap-2 mb-2">
+                <input type="checkbox" checked={enableSeasonResetRewards} onChange={(e) => setEnableSeasonResetRewards(e.target.checked)} className="rounded text-indigo-600 focus:ring-indigo-500" />
+                <span className="text-sm font-medium text-slate-700">{lang === 'en' ? 'Enable Season Reset Rewards' : '啟用賽季結算獎勵'}</span>
+              </label>
+              
+              {enableSeasonResetRewards && (
+                <div className="grid grid-cols-2 gap-2 mt-2">
+                  <label className="flex items-center text-xs text-slate-600 gap-2"><span className="w-12">{tLang.diamond}</span><input type="number" value={rewardDiamond} onChange={(e) => setRewardDiamond(Number(e.target.value))} className="w-full min-w-0 rounded border-slate-300 px-2 py-1 border shadow-sm" /></label>
+                  <label className="flex items-center text-xs text-slate-600 gap-2"><span className="w-12">{tLang.platinum}</span><input type="number" value={rewardPlatinum} onChange={(e) => setRewardPlatinum(Number(e.target.value))} className="w-full min-w-0 rounded border-slate-300 px-2 py-1 border shadow-sm" /></label>
+                  <label className="flex items-center text-xs text-slate-600 gap-2"><span className="w-12">{tLang.gold}</span><input type="number" value={rewardGold} onChange={(e) => setRewardGold(Number(e.target.value))} className="w-full min-w-0 rounded border-slate-300 px-2 py-1 border shadow-sm" /></label>
+                  <label className="flex items-center text-xs text-slate-600 gap-2"><span className="w-12">{tLang.silver}</span><input type="number" value={rewardSilver} onChange={(e) => setRewardSilver(Number(e.target.value))} className="w-full min-w-0 rounded border-slate-300 px-2 py-1 border shadow-sm" /></label>
+                  <label className="flex items-center text-xs text-slate-600 gap-2"><span className="w-12">{tLang.bronze}</span><input type="number" value={rewardBronze} onChange={(e) => setRewardBronze(Number(e.target.value))} className="w-full min-w-0 rounded border-slate-300 px-2 py-1 border shadow-sm" /></label>
+                </div>
+              )}
             </div>
           </div>
         </div>

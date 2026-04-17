@@ -68,6 +68,12 @@ export type AppData = {
     battleMode?: BattleMode;
     maxTeamSize?: number;
     maxPoints?: number;
+    rankBrackets?: { diamond: number, platinum: number, gold: number, silver: number };
+    battleRankPointsWin?: number;
+    battleRankPointsLoss?: number;
+    enableSeasonResetRewards?: boolean;
+    seasonResetRewards?: { diamond: number, platinum: number, gold: number, silver: number, bronze: number };
+    reviveCost?: number;
   };
 };
 
