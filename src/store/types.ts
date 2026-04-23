@@ -71,6 +71,11 @@ export type AppData = {
     rankBrackets?: { diamond: number, platinum: number, gold: number, silver: number };
     battleRankPointsWin?: number;
     battleRankPointsLoss?: number;
+    soloBattleFullnessCost?: number;
+    soloBattleWinPoints?: number;
+    soloBattleLossPoints?: number;
+    teamBattleMinFullnessEnabled?: boolean;
+    teamBattleMinFullness?: number;
     enableSeasonResetRewards?: boolean;
     seasonResetRewards?: { diamond: number, platinum: number, gold: number, silver: number, bronze: number };
     reviveCost?: number;

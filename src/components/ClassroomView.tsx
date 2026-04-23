@@ -7,7 +7,11 @@ import { translations } from '../i18n/translations';
 import { PET_TYPES, DEFAULT_BATTLE_MODE, DEFAULT_MAX_TEAM_SIZE } from '../store/constants';
 import { Language } from '../store/types';
 import { getTeamMembers } from '../store/utils';
-import { isBattleReady } from '../gameRules';
+import {
+  isBattleReady, SOLO_BATTLE_MIN_FULLNESS, SOLO_BATTLE_FULLNESS_COST,
+  SOLO_BATTLE_WIN_POINTS, SOLO_BATTLE_LOSS_POINTS, TEAM_BATTLE_MIN_FULLNESS,
+  TEAM_BATTLE_MIN_FULLNESS_ENABLED
+} from '../gameRules';
 import { PetCard } from './PetCard';
 
 export const ClassroomView: React.FC = () => {
@@ -29,9 +33,20 @@ export const ClassroomView: React.FC = () => {
   const renderNow = Date.now();
   const currentBattleMode = data.settings?.battleMode ?? DEFAULT_BATTLE_MODE;
   const currentMaxTeamSize = data.settings?.maxTeamSize ?? DEFAULT_MAX_TEAM_SIZE;
+  const currentSoloBattleFullnessCost = data.settings?.soloBattleFullnessCost ?? SOLO_BATTLE_FULLNESS_COST;
+  const currentSoloBattleWinPoints = data.settings?.soloBattleWinPoints ?? SOLO_BATTLE_WIN_POINTS;
+  const currentSoloBattleLossPoints = data.settings?.soloBattleLossPoints ?? SOLO_BATTLE_LOSS_POINTS;
+  const currentTeamBattleMinFullnessEnabled = data.settings?.teamBattleMinFullnessEnabled ?? TEAM_BATTLE_MIN_FULLNESS_ENABLED;
+  const currentTeamBattleMinFullness = data.settings?.teamBattleMinFullness ?? TEAM_BATTLE_MIN_FULLNESS;
+  const soloBattleReadyOptions = { minimumFullness: SOLO_BATTLE_MIN_FULLNESS };
+  const teamBattleReadyOptions = {
+    minimumFullness: currentTeamBattleMinFullness,
+    ignoreFullness: !currentTeamBattleMinFullnessEnabled,
+  };
 
   const handleOpenBattle = (id: string) => {
     setAttackerId(id);
+    setDefenderId(null);
     setBattleModalOpen(true);
   };
 
@@ -53,8 +68,26 @@ export const ClassroomView: React.FC = () => {
   const availableTeammates = teamModalStudent
     ? students.filter((candidate: any) => candidate.id !== teamModalStudent.id)
     : [];
+  const getEligibleTeamBattleMembers = (student: any) =>
+    getTeamMembers(students, student, currentMaxTeamSize).filter((member) => isBattleReady(member, renderNow, teamBattleReadyOptions));
+  const attackerTeamReadyCount = attackerStudent ? getEligibleTeamBattleMembers(attackerStudent).length : 0;
   const availableOpponents = students.filter(
-    (student: any) => student.id !== attackerId && (!attackerStudent?.teamId || student.teamId !== attackerStudent.teamId),
+    (student: any) => {
+      if (student.id === attackerId) return false;
+      if (attackerStudent?.teamId && student.teamId === attackerStudent.teamId) return false;
+      if (!attackerStudent) return false;
+
+      const canSoloBattle =
+        isBattleReady(attackerStudent, renderNow, soloBattleReadyOptions) &&
+        isBattleReady(student, renderNow, soloBattleReadyOptions);
+      const canTeamBattle =
+        attackerTeamReadyCount >= 2 &&
+        getEligibleTeamBattleMembers(student).length >= 2;
+
+      if (currentBattleMode === 'solo') return canSoloBattle;
+      if (currentBattleMode === 'team') return canTeamBattle;
+      return canSoloBattle || canTeamBattle;
+    },
   );
 
   useEffect(() => {
@@ -76,7 +109,7 @@ export const ClassroomView: React.FC = () => {
       const totalBattles = wins + losses;
       const totalRankPoints = members.reduce((total: number, member: any) => total + (member.rankPoints || 0), 0);
       const averageLevel = members.reduce((total: number, member: any) => total + (member.pet.level || 1), 0) / members.length;
-      const readyMembers = members.filter((member: any) => isBattleReady(member, renderNow)).length;
+      const readyMembers = members.filter((member: any) => isBattleReady(member, renderNow, teamBattleReadyOptions)).length;
       const averageMood = Math.round(
         members.reduce((total: number, member: any) => total + (member.pet.happiness || 0), 0) / members.length,
       );
@@ -367,7 +400,7 @@ export const ClassroomView: React.FC = () => {
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
                             <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${
-                              team.readyMembers === 2 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
+                              team.readyMembers === team.members.length ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
                             }`}>
                               {team.readyMembers}/{team.members.length}
                             </span>
@@ -400,11 +433,32 @@ export const ClassroomView: React.FC = () => {
             </div>
             <div className="p-6">
               <div className="mb-4 space-y-2 text-sm text-gray-600">
-                <p>{tLang.battleRules}</p>
-                <p className="rounded-xl bg-sky-50 px-3 py-2 text-sky-800">
+                <p>
                   {lang === 'en'
-                    ? `If battle mode allows teams and both sides have ready members, this fight switches to team mode. Teams can include up to ${currentMaxTeamSize} members.`
-                    : `若目前設定允許隊伍賽，且雙方都有可出戰隊員，這場對戰會切換為隊伍模式；每隊最多 ${currentMaxTeamSize} 人。`}
+                    ? `Solo battles cost ${currentSoloBattleFullnessCost} fullness per side. Winner +${currentSoloBattleWinPoints} points, loser -${currentSoloBattleLossPoints} points.`
+                    : `個人賽雙方各消耗 ${currentSoloBattleFullnessCost} 飽食度。勝方 +${currentSoloBattleWinPoints} 積分，敗方 -${currentSoloBattleLossPoints} 積分。`}
+                </p>
+                <p className="rounded-xl bg-sky-50 px-3 py-2 text-sky-800">
+                  {currentBattleMode === 'solo'
+                    ? (lang === 'en'
+                        ? 'Current mode is solo only.'
+                        : '目前模式為僅個人賽。')
+                    : currentBattleMode === 'team'
+                      ? (lang === 'en'
+                          ? `Current mode is team only. Each side needs at least 2 eligible members, and teams can include up to ${currentMaxTeamSize} members.`
+                          : `目前模式為僅隊伍賽。雙方都需至少 2 位符合條件的成員，每隊最多 ${currentMaxTeamSize} 人。`)
+                      : (lang === 'en'
+                          ? `If both sides have at least 2 eligible members, this match becomes a team battle; otherwise it falls back to solo. Teams can include up to ${currentMaxTeamSize} members.`
+                          : `若雙方都至少有 2 位符合條件的成員，這場對戰會切換為隊伍賽；否則會回到個人賽。每隊最多 ${currentMaxTeamSize} 人。`)}
+                </p>
+                <p className="rounded-xl bg-amber-50 px-3 py-2 text-amber-800">
+                  {currentTeamBattleMinFullnessEnabled
+                    ? (lang === 'en'
+                        ? `Team battles require each participant to have at least ${currentTeamBattleMinFullness} fullness.`
+                        : `隊伍賽出戰成員需至少 ${currentTeamBattleMinFullness} 飽食度。`)
+                    : (lang === 'en'
+                        ? 'Team battles currently ignore the minimum fullness gate.'
+                        : '隊伍賽目前已關閉最低飽食度限制。')}
                 </p>
               </div>
               <div className="space-y-2 max-h-60 overflow-y-auto">

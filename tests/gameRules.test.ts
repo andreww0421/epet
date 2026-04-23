@@ -47,8 +47,32 @@ test('resolveBattle returns draw when scores are equal', () => {
 
   assert.equal(result.blocked, null);
   assert.equal(result.outcome, 'draw');
-  assert.equal(result.attacker.pet.fullness, 50);
-  assert.equal(result.defender.pet.fullness, 50);
+  assert.equal(result.attacker.pet.fullness, 30);
+  assert.equal(result.defender.pet.fullness, 30);
+});
+
+test('resolveBattle uses configurable solo cost and point settings symmetrically', () => {
+  const attacker = createStudent();
+  const defender = createStudent();
+
+  const result = resolveBattle(
+    attacker,
+    defender,
+    { attacker: 12, defender: 0 },
+    {
+      soloBattleFullnessCost: 22,
+      soloBattleWinPoints: 35,
+      soloBattleLossPoints: 18,
+    },
+    1000,
+  );
+
+  assert.equal(result.blocked, null);
+  assert.equal(result.outcome, 'win');
+  assert.equal(result.attacker.points, 235);
+  assert.equal(result.defender.points, 182);
+  assert.equal(result.attacker.pet.fullness, 58);
+  assert.equal(result.defender.pet.fullness, 58);
 });
 
 test('applyFeedToStudent uses custom feed gain and reduced mood under penalty', () => {
@@ -172,6 +196,68 @@ test('resolveTeamBattle updates all active team members', () => {
   assert.equal(result.updated.a2.stats?.wins, 1);
   assert.equal(result.updated.d1.points, 185);
   assert.equal(result.updated.d2.rankPoints, 94);
+});
+
+test('resolveTeamBattle can disable the minimum fullness gate', () => {
+  const lowFullnessLeader = {
+    ...createStudent(),
+    pet: {
+      ...createStudent().pet,
+      fullness: 25,
+    },
+  };
+  const lowFullnessSupport = {
+    ...createStudent(),
+    pet: {
+      ...createStudent().pet,
+      fullness: 20,
+    },
+  };
+
+  const blocked = resolveTeamBattle(
+    [
+      { id: 'a1', student: lowFullnessLeader },
+      { id: 'a2', student: lowFullnessSupport },
+    ],
+    [
+      { id: 'd1', student: createStudent() },
+      { id: 'd2', student: createStudent() },
+    ],
+    {
+      attackers: [5, 5],
+      defenders: [1, 1],
+    },
+    {
+      teamBattleMinFullnessEnabled: true,
+      teamBattleMinFullness: 50,
+    },
+    1000,
+  );
+
+  assert.equal(blocked.blocked, 'fullness');
+
+  const allowed = resolveTeamBattle(
+    [
+      { id: 'a1', student: lowFullnessLeader },
+      { id: 'a2', student: lowFullnessSupport },
+    ],
+    [
+      { id: 'd1', student: createStudent() },
+      { id: 'd2', student: createStudent() },
+    ],
+    {
+      attackers: [8, 8],
+      defenders: [0, 0],
+    },
+    {
+      teamBattleMinFullnessEnabled: false,
+      teamBattleMinFullness: 50,
+    },
+    1000,
+  );
+
+  assert.equal(allowed.blocked, null);
+  assert.ok(allowed.outcome === 'win' || allowed.outcome === 'loss' || allowed.outcome === 'draw');
 });
 
 let failures = 0;

@@ -83,6 +83,21 @@ export type TeamBattleReward = {
   bonusHappiness: number;
 };
 
+export type BattleReadyOptions = {
+  minimumFullness?: number;
+  ignoreFullness?: boolean;
+};
+
+export type BattleResolutionOptions = {
+  battleRankPointsWin?: number;
+  battleRankPointsLoss?: number;
+  soloBattleFullnessCost?: number;
+  soloBattleWinPoints?: number;
+  soloBattleLossPoints?: number;
+  teamBattleMinFullnessEnabled?: boolean;
+  teamBattleMinFullness?: number;
+};
+
 export const UPGRADE_GACHA_LEVEL_SEQUENCE = [2, 4, 6, 8] as const;
 export const UPGRADE_GACHA_LEVELS = new Set<number>(UPGRADE_GACHA_LEVEL_SEQUENCE);
 export const UPGRADE_REWARD_LEVEL = 2;
@@ -100,12 +115,18 @@ export const PET_DEATH_DELAY_MS = 1000 * 60 * 60 * 24;
 export const REVIVE_COST = 120;
 export const DAILY_TASK_REWARD_POINTS = 30;
 export const DAILY_TASK_REWARD_HAPPINESS = 8;
+export const SOLO_BATTLE_MIN_FULLNESS = 50;
+export const SOLO_BATTLE_FULLNESS_COST = 50;
+export const SOLO_BATTLE_WIN_POINTS = 50;
+export const SOLO_BATTLE_LOSS_POINTS = 60;
 export const TEAM_BATTLE_SUPPORT_WEIGHT = 0.65;
 export const TEAM_BATTLE_SYNERGY_BONUS = 12;
 export const TEAM_BATTLE_WIN_POINTS = 30;
 export const TEAM_BATTLE_LOSS_POINTS = 15;
 export const TEAM_BATTLE_WIN_RANK_POINTS = 12;
 export const TEAM_BATTLE_LOSS_RANK_POINTS = 6;
+export const TEAM_BATTLE_MIN_FULLNESS_ENABLED = true;
+export const TEAM_BATTLE_MIN_FULLNESS = 50;
 export const TEAM_BATTLE_WIN_FULLNESS_COST = 30;
 export const TEAM_BATTLE_LOSS_FULLNESS_COST = 35;
 export const TEAM_BATTLE_DRAW_FULLNESS_COST = 20;
@@ -172,11 +193,33 @@ export const normalizePenaltyStatus = (raw: unknown, now = Date.now()): PenaltyS
 export const isPenaltyActive = (penaltyStatus: PenaltyStatus | undefined, now = Date.now()) =>
   Boolean(penaltyStatus && penaltyStatus.until > now);
 
-export const isBattleReady = <T extends StudentRuleState>(student: T, now = Date.now()) => {
-  if (isPetDead(student.pet)) return false;
-  if (isPenaltyActive(student.penaltyStatus, now)) return false;
-  if (student.pet.happiness < 30) return false;
-  return student.pet.fullness >= 50;
+export const getBattleBlockedReason = <T extends StudentRuleState>(
+  student: T,
+  now = Date.now(),
+  options: BattleReadyOptions = {},
+) => {
+  if (isPetDead(student.pet)) return 'dead' as const;
+  if (isPenaltyActive(student.penaltyStatus, now)) return 'penalty' as const;
+  if (student.pet.happiness < 30) return 'happiness' as const;
+  if (!options.ignoreFullness && student.pet.fullness < (options.minimumFullness ?? SOLO_BATTLE_MIN_FULLNESS)) {
+    return 'fullness' as const;
+  }
+  return null;
+};
+
+export const getTeamBattleReadyOptions = (
+  options?: Pick<BattleResolutionOptions, 'teamBattleMinFullnessEnabled' | 'teamBattleMinFullness'>,
+): BattleReadyOptions => ({
+  minimumFullness: Math.max(0, toFiniteNumber(options?.teamBattleMinFullness, TEAM_BATTLE_MIN_FULLNESS)),
+  ignoreFullness: options?.teamBattleMinFullnessEnabled === false,
+});
+
+export const isBattleReady = <T extends StudentRuleState>(
+  student: T,
+  now = Date.now(),
+  options: BattleReadyOptions = {},
+) => {
+  return getBattleBlockedReason(student, now, options) == null;
 };
 
 const getBattlePower = <T extends StudentRuleState>(student: T, roll: number) =>
@@ -321,25 +364,22 @@ export const resolveBattle = <
   attacker: TAttacker,
   defender: TDefender,
   randomRolls: { attacker: number; defender: number },
-  options?: { battleRankPointsWin?: number; battleRankPointsLoss?: number },
+  options?: BattleResolutionOptions,
   now = Date.now(),
   maxPoints = 700
 ) => {
-  if (isPetDead(attacker.pet) || isPetDead(defender.pet)) {
-    return { blocked: 'dead' as const };
-  }
+  const attackerBlocked = getBattleBlockedReason(attacker, now, { minimumFullness: SOLO_BATTLE_MIN_FULLNESS });
+  if (attackerBlocked) return { blocked: attackerBlocked };
 
-  if (isPenaltyActive(attacker.penaltyStatus, now)) {
-    return { blocked: 'penalty' as const };
-  }
+  const defenderBlocked = getBattleBlockedReason(defender, now, { minimumFullness: SOLO_BATTLE_MIN_FULLNESS });
+  if (defenderBlocked) return { blocked: defenderBlocked };
 
-  if (attacker.pet.fullness < 50) {
-    return { blocked: 'fullness' as const };
-  }
-
-  if (attacker.pet.happiness < 30) {
-    return { blocked: 'happiness' as const };
-  }
+  const soloBattleFullnessCost = Math.max(
+    0,
+    toFiniteNumber(options?.soloBattleFullnessCost, SOLO_BATTLE_FULLNESS_COST),
+  );
+  const soloBattleWinPoints = Math.max(0, toFiniteNumber(options?.soloBattleWinPoints, SOLO_BATTLE_WIN_POINTS));
+  const soloBattleLossPoints = Math.max(0, toFiniteNumber(options?.soloBattleLossPoints, SOLO_BATTLE_LOSS_POINTS));
 
   const attackerScore = attacker.pet.level * 10 + attacker.pet.fullness + randomRolls.attacker;
   const defenderScore = defender.pet.level * 10 + defender.pet.fullness + randomRolls.defender;
@@ -364,7 +404,7 @@ export const resolveBattle = <
         pet: syncPetLifeState(
           {
             ...attacker.pet,
-            fullness: clamp(attacker.pet.fullness - 30, 0, 100),
+            fullness: clamp(attacker.pet.fullness - soloBattleFullnessCost, 0, 100),
             happiness: clamp(attacker.pet.happiness - 5, 0, 100),
           },
           now,
@@ -375,7 +415,7 @@ export const resolveBattle = <
         pet: syncPetLifeState(
           {
             ...defender.pet,
-            fullness: clamp(defender.pet.fullness - 30, 0, 100),
+            fullness: clamp(defender.pet.fullness - soloBattleFullnessCost, 0, 100),
             happiness: clamp(defender.pet.happiness - 5, 0, 100),
           },
           now,
@@ -393,11 +433,11 @@ export const resolveBattle = <
     defenderScore,
     attacker: {
       ...attacker,
-      points: clamp(attacker.points + (attackerWon ? 50 : -60), 0, maxPoints),
+      points: clamp(attacker.points + (attackerWon ? soloBattleWinPoints : -soloBattleLossPoints), 0, maxPoints),
       pet: syncPetLifeState(
         {
           ...attacker.pet,
-          fullness: clamp(attacker.pet.fullness - 50, 0, 100),
+          fullness: clamp(attacker.pet.fullness - soloBattleFullnessCost, 0, 100),
           happiness: clamp(attacker.pet.happiness + (attackerWon ? 15 : -20), 0, 100),
         },
         now,
@@ -412,11 +452,11 @@ export const resolveBattle = <
     },
     defender: {
       ...defender,
-      points: clamp(defender.points + (attackerWon ? -50 : 20), 0, maxPoints),
+      points: clamp(defender.points + (attackerWon ? -soloBattleLossPoints : soloBattleWinPoints), 0, maxPoints),
       pet: syncPetLifeState(
         {
           ...defender.pet,
-          fullness: clamp(defender.pet.fullness - (attackerWon ? 50 : 10), 0, 100),
+          fullness: clamp(defender.pet.fullness - soloBattleFullnessCost, 0, 100),
           happiness: clamp(defender.pet.happiness + (attackerWon ? -20 : 15), 0, 100),
         },
         now,
@@ -439,7 +479,7 @@ export const resolveTeamBattle = <
   attackers: Array<TeamBattleMember<TAttacker>>,
   defenders: Array<TeamBattleMember<TDefender>>,
   randomRolls: { attackers: number[]; defenders: number[] },
-  options?: { battleRankPointsWin?: number; battleRankPointsLoss?: number },
+  options?: BattleResolutionOptions,
   now = Date.now(),
   maxPoints = 700
 ) => {
@@ -450,17 +490,12 @@ export const resolveTeamBattle = <
     return { blocked: 'invalid' as const };
   }
 
-  if (isPetDead(attackerLeader.pet) || isPetDead(defenderLeader.pet)) {
-    return { blocked: 'dead' as const };
-  }
+  const teamBattleReadyOptions = getTeamBattleReadyOptions(options);
+  const attackerLeaderBlocked = getBattleBlockedReason(attackerLeader, now, teamBattleReadyOptions);
+  if (attackerLeaderBlocked) return { blocked: attackerLeaderBlocked };
 
-  if (isPenaltyActive(attackerLeader.penaltyStatus, now)) {
-    return { blocked: 'penalty' as const };
-  }
-
-  if (attackerLeader.pet.fullness < 50) {
-    return { blocked: 'fullness' as const };
-  }
+  const defenderLeaderBlocked = getBattleBlockedReason(defenderLeader, now, teamBattleReadyOptions);
+  if (defenderLeaderBlocked) return { blocked: defenderLeaderBlocked };
 
   const attackerScore = getTeamBattleScore(attackers, randomRolls.attackers);
   const defenderScore = getTeamBattleScore(defenders, randomRolls.defenders);

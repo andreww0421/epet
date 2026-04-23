@@ -1,5 +1,7 @@
 import { 
-  UPGRADE_GACHA_LEVELS, getUpcomingUpgradeGachaLevel, normalizePenaltyStatus, clamp, toFiniteNumber, syncPetLifeState, applyDecayToStudent
+  UPGRADE_GACHA_LEVELS, getUpcomingUpgradeGachaLevel, normalizePenaltyStatus, clamp, toFiniteNumber,
+  syncPetLifeState, applyDecayToStudent, SOLO_BATTLE_FULLNESS_COST, SOLO_BATTLE_WIN_POINTS,
+  SOLO_BATTLE_LOSS_POINTS, TEAM_BATTLE_MIN_FULLNESS, TEAM_BATTLE_MIN_FULLNESS_ENABLED
 } from '../gameRules';
 import { AppData, Student, DisciplineRecord, PointAdjustmentRecord } from './types';
 import { PET_TYPES, DEFAULT_CLASS_NAME, DEFAULT_MAX_TEAM_SIZE, DEFAULT_BATTLE_MODE } from './constants';
@@ -89,6 +91,11 @@ export const createInitialData = (now = Date.now()): AppData => ({
     battleMode: DEFAULT_BATTLE_MODE,
     maxTeamSize: DEFAULT_MAX_TEAM_SIZE,
     maxPoints: 700,
+    soloBattleFullnessCost: SOLO_BATTLE_FULLNESS_COST,
+    soloBattleWinPoints: SOLO_BATTLE_WIN_POINTS,
+    soloBattleLossPoints: SOLO_BATTLE_LOSS_POINTS,
+    teamBattleMinFullnessEnabled: TEAM_BATTLE_MIN_FULLNESS_ENABLED,
+    teamBattleMinFullness: TEAM_BATTLE_MIN_FULLNESS,
   },
 });
 
@@ -229,12 +236,32 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
       feedGain: Math.max(1, toFiniteNumber(rawSettings?.feedGain, initialData.settings?.feedGain ?? 20)),
       playCost: Math.max(1, toFiniteNumber(rawSettings?.playCost, initialData.settings?.playCost ?? 5)),
       playGain: Math.max(1, toFiniteNumber(rawSettings?.playGain, initialData.settings?.playGain ?? 15)),
-      battleMode: rawSettings?.battleMode === 'solo' || rawSettings?.battleMode === 'team' ? rawSettings.battleMode : DEFAULT_BATTLE_MODE,
+      battleMode:
+        rawSettings?.battleMode === 'solo' || rawSettings?.battleMode === 'team' || rawSettings?.battleMode === 'both'
+          ? rawSettings.battleMode
+          : DEFAULT_BATTLE_MODE,
       maxTeamSize: clampTeamSize(rawSettings?.maxTeamSize),
       maxPoints: Math.max(100, toFiniteNumber(rawSettings?.maxPoints, initialData.settings?.maxPoints ?? 700)),
       rankBrackets: rawSettings?.rankBrackets ?? { diamond: 400, platinum: 300, gold: 200, silver: 100 },
       battleRankPointsWin: Math.max(0, toFiniteNumber(rawSettings?.battleRankPointsWin, 20)),
       battleRankPointsLoss: Math.max(0, toFiniteNumber(rawSettings?.battleRankPointsLoss, 10)),
+      soloBattleFullnessCost: Math.max(
+        0,
+        toFiniteNumber(rawSettings?.soloBattleFullnessCost, initialData.settings?.soloBattleFullnessCost ?? SOLO_BATTLE_FULLNESS_COST),
+      ),
+      soloBattleWinPoints: Math.max(
+        0,
+        toFiniteNumber(rawSettings?.soloBattleWinPoints, initialData.settings?.soloBattleWinPoints ?? SOLO_BATTLE_WIN_POINTS),
+      ),
+      soloBattleLossPoints: Math.max(
+        0,
+        toFiniteNumber(rawSettings?.soloBattleLossPoints, initialData.settings?.soloBattleLossPoints ?? SOLO_BATTLE_LOSS_POINTS),
+      ),
+      teamBattleMinFullnessEnabled: rawSettings?.teamBattleMinFullnessEnabled !== false,
+      teamBattleMinFullness: Math.max(
+        0,
+        toFiniteNumber(rawSettings?.teamBattleMinFullness, initialData.settings?.teamBattleMinFullness ?? TEAM_BATTLE_MIN_FULLNESS),
+      ),
       enableSeasonResetRewards: Boolean(rawSettings?.enableSeasonResetRewards),
       seasonResetRewards: rawSettings?.seasonResetRewards ?? { diamond: 500, platinum: 400, gold: 300, silver: 200, bronze: 100 },
       reviveCost: Math.max(0, toFiniteNumber(rawSettings?.reviveCost, 120)),

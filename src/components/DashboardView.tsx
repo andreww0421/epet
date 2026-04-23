@@ -10,7 +10,8 @@ import { normalizeAppData, applyDecay } from '../store/utils';
 import { Student, Language, BattleMode } from '../store/types';
 import { 
   isPenaltyActive, WARNING_THRESHOLD, WARNING_AUTO_PENALTY, DIRECT_DISCIPLINE_PENALTY,
-  type DisciplineRecordType
+  SOLO_BATTLE_FULLNESS_COST, SOLO_BATTLE_WIN_POINTS, SOLO_BATTLE_LOSS_POINTS,
+  TEAM_BATTLE_MIN_FULLNESS, TEAM_BATTLE_MIN_FULLNESS_ENABLED, type DisciplineRecordType
 } from '../gameRules';
 
 export const DashboardView: React.FC = () => {
@@ -45,6 +46,15 @@ export const DashboardView: React.FC = () => {
 
   const [battleRankPointsWin, setBattleRankPointsWin] = useState(data.settings?.battleRankPointsWin ?? 20);
   const [battleRankPointsLoss, setBattleRankPointsLoss] = useState(data.settings?.battleRankPointsLoss ?? 10);
+  const [soloBattleFullnessCost, setSoloBattleFullnessCost] = useState(data.settings?.soloBattleFullnessCost ?? SOLO_BATTLE_FULLNESS_COST);
+  const [soloBattleWinPoints, setSoloBattleWinPoints] = useState(data.settings?.soloBattleWinPoints ?? SOLO_BATTLE_WIN_POINTS);
+  const [soloBattleLossPoints, setSoloBattleLossPoints] = useState(data.settings?.soloBattleLossPoints ?? SOLO_BATTLE_LOSS_POINTS);
+  const [teamBattleMinFullnessEnabled, setTeamBattleMinFullnessEnabled] = useState(
+    data.settings?.teamBattleMinFullnessEnabled ?? TEAM_BATTLE_MIN_FULLNESS_ENABLED,
+  );
+  const [teamBattleMinFullness, setTeamBattleMinFullness] = useState(
+    data.settings?.teamBattleMinFullness ?? TEAM_BATTLE_MIN_FULLNESS,
+  );
   const [enableSeasonResetRewards, setEnableSeasonResetRewards] = useState(data.settings?.enableSeasonResetRewards ?? false);
 
   const defaultRewards = data.settings?.seasonResetRewards ?? { diamond: 500, platinum: 400, gold: 300, silver: 200, bronze: 100 };
@@ -173,6 +183,11 @@ export const DashboardView: React.FC = () => {
       },
       battleRankPointsWin: Number(battleRankPointsWin),
       battleRankPointsLoss: Number(battleRankPointsLoss),
+      soloBattleFullnessCost: Number(soloBattleFullnessCost),
+      soloBattleWinPoints: Number(soloBattleWinPoints),
+      soloBattleLossPoints: Number(soloBattleLossPoints),
+      teamBattleMinFullnessEnabled,
+      teamBattleMinFullness: Number(teamBattleMinFullness),
       enableSeasonResetRewards,
       seasonResetRewards: {
         diamond: Number(rewardDiamond),
@@ -919,6 +934,81 @@ export const DashboardView: React.FC = () => {
             <div className="flex flex-col gap-1">
               <label htmlFor="battleRankPointsLoss" className="text-sm font-medium text-slate-700">{lang === 'en' ? 'Battle Loss RP' : '落敗扣分 (RP)'}</label>
               <input type="number" id="battleRankPointsLoss" min="0" value={battleRankPointsLoss} onChange={(e) => setBattleRankPointsLoss(Number(e.target.value))} className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2" />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="soloBattleFullnessCost" className="text-sm font-medium text-slate-700">
+                {lang === 'en' ? 'Solo Fullness Cost' : '個人賽消耗飽食度'}
+              </label>
+              <input
+                type="number"
+                id="soloBattleFullnessCost"
+                min="0"
+                value={soloBattleFullnessCost}
+                onChange={(e) => setSoloBattleFullnessCost(Number(e.target.value))}
+                className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="soloBattleWinPoints" className="text-sm font-medium text-slate-700">
+                {lang === 'en' ? 'Solo Win Points' : '個人賽勝利積分'}
+              </label>
+              <input
+                type="number"
+                id="soloBattleWinPoints"
+                min="0"
+                value={soloBattleWinPoints}
+                onChange={(e) => setSoloBattleWinPoints(Number(e.target.value))}
+                className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="soloBattleLossPoints" className="text-sm font-medium text-slate-700">
+                {lang === 'en' ? 'Solo Loss Penalty' : '個人賽失敗扣分'}
+              </label>
+              <input
+                type="number"
+                id="soloBattleLossPoints"
+                min="0"
+                value={soloBattleLossPoints}
+                onChange={(e) => setSoloBattleLossPoints(Number(e.target.value))}
+                className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
+              />
+            </div>
+            <div className="pt-2 border-t border-slate-200 mt-2 space-y-3">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={teamBattleMinFullnessEnabled}
+                  onChange={(e) => setTeamBattleMinFullnessEnabled(e.target.checked)}
+                  className="rounded text-indigo-600 focus:ring-indigo-500"
+                />
+                <span className="text-sm font-medium text-slate-700">
+                  {lang === 'en' ? 'Enable team minimum fullness gate' : '隊伍賽啟用最低飽食度限制'}
+                </span>
+              </label>
+              <div className="flex flex-col gap-1">
+                <label htmlFor="teamBattleMinFullness" className="text-sm font-medium text-slate-700">
+                  {lang === 'en' ? 'Team Minimum Fullness' : '隊伍賽最低飽食度'}
+                </label>
+                <input
+                  type="number"
+                  id="teamBattleMinFullness"
+                  min="0"
+                  value={teamBattleMinFullness}
+                  disabled={!teamBattleMinFullnessEnabled}
+                  onChange={(e) => setTeamBattleMinFullness(Number(e.target.value))}
+                  className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 disabled:bg-slate-100 disabled:text-slate-400 sm:text-sm border p-2"
+                />
+              </div>
+              <p className="text-xs text-slate-500">
+                {teamBattleMinFullnessEnabled
+                  ? (lang === 'en'
+                      ? 'Only members meeting this fullness value can enter team battles.'
+                      : '只有達到此飽食度的成員才能參與隊伍賽。')
+                  : (lang === 'en'
+                      ? 'When disabled, team battles ignore the minimum fullness requirement.'
+                      : '關閉後，隊伍賽將忽略最低飽食度限制。')}
+              </p>
             </div>
           </div>
 

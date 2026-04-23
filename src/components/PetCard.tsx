@@ -6,9 +6,12 @@ import {
 import { useStore } from '../store/useStore';
 import { useShallow } from 'zustand/react/shallow';
 import { translations } from '../i18n/translations';
-import { PET_TYPES, REVIVE_COST } from '../store/constants';
+import { PET_TYPES, REVIVE_COST, DEFAULT_BATTLE_MODE } from '../store/constants';
 import { Student, PetAnimationMode } from '../store/types';
-import { isPenaltyActive, isPetDead, clamp, getDateKey } from '../gameRules';
+import {
+  isPenaltyActive, isPetDead, clamp, getDateKey, isBattleReady,
+  SOLO_BATTLE_MIN_FULLNESS, TEAM_BATTLE_MIN_FULLNESS, TEAM_BATTLE_MIN_FULLNESS_ENABLED
+} from '../gameRules';
 import { getTeamMembers } from '../store/utils';
 
 const WARNING_THRESHOLD = 3;
@@ -30,6 +33,9 @@ const selectSettings = (state: any) => ({
   playCost: state.data.settings?.playCost ?? 5,
   maxPoints: state.data.settings?.maxPoints ?? 700,
   maxTeamSize: state.data.settings?.maxTeamSize ?? 6,
+  battleMode: state.data.settings?.battleMode ?? DEFAULT_BATTLE_MODE,
+  teamBattleMinFullnessEnabled: state.data.settings?.teamBattleMinFullnessEnabled ?? TEAM_BATTLE_MIN_FULLNESS_ENABLED,
+  teamBattleMinFullness: state.data.settings?.teamBattleMinFullness ?? TEAM_BATTLE_MIN_FULLNESS,
 });
 
 const selectActiveBoss = (state: any) =>
@@ -79,7 +85,7 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
 
   if (!student) return null;
 
-  const { lang, feedCost, playCost, maxPoints } = settings;
+  const { lang, feedCost, playCost, maxPoints, battleMode, teamBattleMinFullnessEnabled, teamBattleMinFullness } = settings;
   const tLang = translations[lang];
 
   const { name, points, pet, badges = [], rankPoints = 0, warningPoints = 0, nextUpgradeGachaLevel = 2, penaltyStatus, dailyProgress } = student;
@@ -97,7 +103,18 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
   const isDead = isPetDead(pet);
   const canFeed = points >= feedCost && !isDead;
   const canPlay = points >= playCost && !isDead;
-  const canBattle = fullness >= 50 && !hasActivePenalty && !isDead && !isLowMood;
+  const now = Date.now();
+  const soloBattleReady = isBattleReady(student, now, { minimumFullness: SOLO_BATTLE_MIN_FULLNESS });
+  const teamBattleReady = isBattleReady(student, now, {
+    minimumFullness: teamBattleMinFullness,
+    ignoreFullness: !teamBattleMinFullnessEnabled,
+  });
+  const canBattle =
+    battleMode === 'team'
+      ? teamBattleReady
+      : battleMode === 'solo'
+        ? soloBattleReady
+        : soloBattleReady || teamBattleReady;
   const upgradeCost = 100 + (level - 1) * 50;
   const canUpgrade = level < 10 && fullness >= 100 && points >= upgradeCost && happiness >= 40 && !isDead;
   const canGacha = points >= 200 && !isDead;
@@ -112,6 +129,20 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
   const isPlayAnimation = animationMode === 'play';
   const isAttackAnimation = animationMode === 'attack';
   const isAnimating = isFeedAnimation || isPlayAnimation || isRerollAnimation || isGachaAnimation || isAttackAnimation;
+  const battleNeedFullnessText =
+    battleMode === 'team'
+      ? (tLang.battleNeedFullness ?? '').replace('{value}', teamBattleMinFullness.toString())
+      : battleMode === 'both'
+        ? (
+            teamBattleMinFullnessEnabled
+              ? (lang === 'en'
+                  ? `Solo requires ${SOLO_BATTLE_MIN_FULLNESS} fullness; team requires ${teamBattleMinFullness}.`
+                  : `個人賽需 ${SOLO_BATTLE_MIN_FULLNESS} 飽食度；隊伍賽需 ${teamBattleMinFullness} 飽食度。`)
+              : (lang === 'en'
+                  ? `Solo requires ${SOLO_BATTLE_MIN_FULLNESS} fullness; team battle ignores the fullness gate.`
+                  : `個人賽需 ${SOLO_BATTLE_MIN_FULLNESS} 飽食度；隊伍賽不受最低飽食度限制。`)
+          )
+        : (tLang.battleNeedFullness ?? '').replace('{value}', SOLO_BATTLE_MIN_FULLNESS.toString());
 
   let StatusIcon = Smile;
   let statusText = tLang.statusHappy;
@@ -506,7 +537,18 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
                 {!canPlay && happiness < 100 && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.playNeedPoints.replace('{cost}', playCost.toString())}</span>}
                 {!canBattle && hasActivePenalty && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.battleBlockedByPenalty}</span>}
                 {!canBattle && !hasActivePenalty && isLowMood && <span><AlertCircle className="h-3 w-3 inline mr-1" />{lang === 'en' ? 'Mood too low, refusing to battle!' : '心情過低，罷工拒絕出戰！'}</span>}
-                {!canBattle && !hasActivePenalty && !isLowMood && fullness < 50 && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.battleNeedFullness}</span>}
+                {!canBattle && !hasActivePenalty && !isLowMood && !isDead && (
+                  (
+                    battleMode === 'solo' && fullness < SOLO_BATTLE_MIN_FULLNESS
+                  ) || (
+                    battleMode === 'team' && teamBattleMinFullnessEnabled && fullness < teamBattleMinFullness
+                  ) || (
+                    battleMode === 'both' &&
+                    fullness < SOLO_BATTLE_MIN_FULLNESS &&
+                    teamBattleMinFullnessEnabled &&
+                    fullness < teamBattleMinFullness
+                  )
+                ) && <span><AlertCircle className="h-3 w-3 inline mr-1" />{battleNeedFullnessText}</span>}
                 {!canUpgrade && level < 10 && fullness < 100 && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.upgradeNeedFullness}</span>}
                 {!canUpgrade && level < 10 && fullness >= 100 && points < upgradeCost && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.upgradeNeedPoints.replace('{cost}', upgradeCost.toString())}</span>}
                 {!canUpgrade && level < 10 && fullness >= 100 && points >= upgradeCost && happiness < 40 && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.moodLowPenalty}</span>}

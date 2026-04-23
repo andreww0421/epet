@@ -17,10 +17,12 @@ import {
   reviveStudentPet, applyPointAdjustmentToStudent, createPointAdjustmentRecord,
   applyPenaltyToStudent, createDisciplineRecord, getNextUpgradeGachaLevel,
   getUpcomingUpgradeGachaLevel, resolveBattle, resolveTeamBattle,
-  isBattleReady, attackWorldBoss, applyBossDefeatRewards,
+  isBattleReady, attackWorldBoss, applyBossDefeatRewards, toFiniteNumber,
   BOSS_ATTACK_FULLNESS_COST, DIRECT_DISCIPLINE_PENALTY, WARNING_THRESHOLD,
   WARNING_AUTO_PENALTY, MAX_ACTIVITY_RECORDS, UPGRADE_REWARD_LEVEL,
-  UPGRADE_REWARD_FULLNESS, UPGRADE_REWARD_HAPPINESS, DAILY_TASK_REWARD_HAPPINESS
+  UPGRADE_REWARD_FULLNESS, UPGRADE_REWARD_HAPPINESS, DAILY_TASK_REWARD_HAPPINESS,
+  SOLO_BATTLE_MIN_FULLNESS, SOLO_BATTLE_FULLNESS_COST, SOLO_BATTLE_WIN_POINTS,
+  SOLO_BATTLE_LOSS_POINTS, TEAM_BATTLE_MIN_FULLNESS, TEAM_BATTLE_MIN_FULLNESS_ENABLED
 } from '../gameRules';
 
 type StoreState = {
@@ -147,22 +149,31 @@ export const useStore = create<StoreState>()(
 
       updateSettings: (newSettings) => set((state) => {
         const merged = { ...state.data.settings, ...newSettings };
-        const safeMaxTeamSize = Math.max(2, Math.min(6, merged.maxTeamSize || DEFAULT_MAX_TEAM_SIZE));
+        const safeMaxTeamSize = Math.max(2, Math.min(6, Math.floor(toFiniteNumber(merged.maxTeamSize, DEFAULT_MAX_TEAM_SIZE))));
+        const safeTeamBattleMinFullness = Math.max(
+          0,
+          toFiniteNumber(merged.teamBattleMinFullness, TEAM_BATTLE_MIN_FULLNESS),
+        );
         
         const newData = {
           ...state.data,
           settings: {
             ...merged,
-            decayAmount: Math.max(0, merged.decayAmount || 2),
-            feedCost: Math.max(1, merged.feedCost || 10),
-            feedGain: Math.max(1, merged.feedGain || 20),
-            playCost: Math.max(1, merged.playCost || 5),
-            playGain: Math.max(1, merged.playGain || 15),
+            decayAmount: Math.max(0, toFiniteNumber(merged.decayAmount, 2)),
+            feedCost: Math.max(1, toFiniteNumber(merged.feedCost, 10)),
+            feedGain: Math.max(1, toFiniteNumber(merged.feedGain, 20)),
+            playCost: Math.max(1, toFiniteNumber(merged.playCost, 5)),
+            playGain: Math.max(1, toFiniteNumber(merged.playGain, 15)),
             maxTeamSize: safeMaxTeamSize,
-            maxPoints: Math.max(10, merged.maxPoints || 700),
-            reviveCost: Math.max(0, merged.reviveCost || 120),
-            battleRankPointsWin: Math.max(0, merged.battleRankPointsWin || 20),
-            battleRankPointsLoss: Math.max(0, merged.battleRankPointsLoss || 10),
+            maxPoints: Math.max(10, toFiniteNumber(merged.maxPoints, 700)),
+            reviveCost: Math.max(0, toFiniteNumber(merged.reviveCost, 120)),
+            battleRankPointsWin: Math.max(0, toFiniteNumber(merged.battleRankPointsWin, 20)),
+            battleRankPointsLoss: Math.max(0, toFiniteNumber(merged.battleRankPointsLoss, 10)),
+            soloBattleFullnessCost: Math.max(0, toFiniteNumber(merged.soloBattleFullnessCost, SOLO_BATTLE_FULLNESS_COST)),
+            soloBattleWinPoints: Math.max(0, toFiniteNumber(merged.soloBattleWinPoints, SOLO_BATTLE_WIN_POINTS)),
+            soloBattleLossPoints: Math.max(0, toFiniteNumber(merged.soloBattleLossPoints, SOLO_BATTLE_LOSS_POINTS)),
+            teamBattleMinFullnessEnabled: merged.teamBattleMinFullnessEnabled !== false,
+            teamBattleMinFullness: safeTeamBattleMinFullness,
           }
         };
         get().showToast(translations[newData.settings.language || 'zh'].settingsSaved, 'success');
@@ -691,39 +702,90 @@ export const useStore = create<StoreState>()(
         const tLang = translations[state.data.settings?.language || 'zh'];
         const maxTeamSize = state.data.settings?.maxTeamSize ?? DEFAULT_MAX_TEAM_SIZE;
         const battleMode = state.data.settings?.battleMode ?? DEFAULT_BATTLE_MODE;
+        const teamBattleMinFullnessEnabled = state.data.settings?.teamBattleMinFullnessEnabled ?? TEAM_BATTLE_MIN_FULLNESS_ENABLED;
+        const teamBattleMinFullness = state.data.settings?.teamBattleMinFullness ?? TEAM_BATTLE_MIN_FULLNESS;
+        const soloBattleWinPoints = state.data.settings?.soloBattleWinPoints ?? SOLO_BATTLE_WIN_POINTS;
+        const soloBattleLossPoints = state.data.settings?.soloBattleLossPoints ?? SOLO_BATTLE_LOSS_POINTS;
+        const soloBattleReadyOptions = { minimumFullness: SOLO_BATTLE_MIN_FULLNESS };
+        const teamBattleReadyOptions = {
+          minimumFullness: teamBattleMinFullness,
+          ignoreFullness: !teamBattleMinFullnessEnabled,
+        };
 
         const attackerMembers = getTeamMembers(currentClass.students, attacker, maxTeamSize)
-          .filter((member) => member.id === attacker.id || isBattleReady(member, now))
+          .filter((member) => isBattleReady(member, now, teamBattleReadyOptions))
           .map((member) => ({ id: member.id, student: member }));
         const defenderMembers = getTeamMembers(currentClass.students, defender, maxTeamSize)
-          .filter((member) => member.id === defender.id || isBattleReady(member, now))
+          .filter((member) => isBattleReady(member, now, teamBattleReadyOptions))
           .map((member) => ({ id: member.id, student: member }));
-        
-        const shouldForceTeamBattle = battleMode === 'team';
-        const shouldUseTeamBattle = battleMode !== 'solo' && attackerMembers.length > 1 && defenderMembers.length > 1;
 
-        if (shouldForceTeamBattle && (attackerMembers.length < 2 || defenderMembers.length < 2)) {
-          get().showToast(state.data.settings?.language === 'en' ? 'Team battle mode requires at least 2 ready members on both sides.' : '隊伍賽模式要求雙方都至少有 2 位可出戰成員。', 'error');
+        const canRunTeamBattle = attackerMembers.length >= 2 && defenderMembers.length >= 2;
+
+        if (battleMode === 'team' && !canRunTeamBattle) {
+          get().showToast(
+            state.data.settings?.language === 'en'
+              ? `Team battle mode requires at least 2 eligible members per side${teamBattleMinFullnessEnabled ? ` (fullness >= ${teamBattleMinFullness})` : ''}.`
+              : `隊伍賽模式要求雙方都至少有 2 位符合條件的成員${teamBattleMinFullnessEnabled ? `（飽食度需 >= ${teamBattleMinFullness}）` : ''}。`,
+            'error',
+          );
           return state;
         }
 
         const maxPoints = state.data.settings?.maxPoints ?? 700;
         const battleOptions = { 
           battleRankPointsWin: state.data.settings?.battleRankPointsWin,
-          battleRankPointsLoss: state.data.settings?.battleRankPointsLoss
+          battleRankPointsLoss: state.data.settings?.battleRankPointsLoss,
+          soloBattleFullnessCost: state.data.settings?.soloBattleFullnessCost,
+          soloBattleWinPoints: state.data.settings?.soloBattleWinPoints,
+          soloBattleLossPoints: state.data.settings?.soloBattleLossPoints,
+          teamBattleMinFullnessEnabled,
+          teamBattleMinFullness,
         };
         
-        const battleResult = !shouldUseTeamBattle && !shouldForceTeamBattle
-          ? (() => {
-              const singleResult = resolveBattle(attacker, defender, { attacker: Math.floor(Math.random() * 20), defender: Math.floor(Math.random() * 20) }, battleOptions, now, maxPoints);
-              if (singleResult.blocked) return singleResult;
-              return { ...singleResult, mode: 'solo' as const, updated: { [attacker.id]: singleResult.attacker, [defender.id]: singleResult.defender } };
-            })()
-          : { ...resolveTeamBattle(attackerMembers, defenderMembers, { attackers: attackerMembers.map(() => Math.floor(Math.random() * 20)), defenders: defenderMembers.map(() => Math.floor(Math.random() * 20)) }, battleOptions, now, maxPoints), mode: 'team' as const };
+        const battleResult =
+          battleMode === 'team' || (battleMode === 'both' && canRunTeamBattle)
+            ? {
+                ...resolveTeamBattle(
+                  attackerMembers,
+                  defenderMembers,
+                  {
+                    attackers: attackerMembers.map(() => Math.floor(Math.random() * 20)),
+                    defenders: defenderMembers.map(() => Math.floor(Math.random() * 20)),
+                  },
+                  battleOptions,
+                  now,
+                  maxPoints,
+                ),
+                mode: 'team' as const,
+              }
+            : (() => {
+                const singleResult = resolveBattle(
+                  attacker,
+                  defender,
+                  { attacker: Math.floor(Math.random() * 20), defender: Math.floor(Math.random() * 20) },
+                  battleOptions,
+                  now,
+                  maxPoints,
+                );
+                if (singleResult.blocked) return singleResult;
+                return {
+                  ...singleResult,
+                  mode: 'solo' as const,
+                  updated: { [attacker.id]: singleResult.attacker, [defender.id]: singleResult.defender },
+                };
+              })();
 
         if (battleResult.blocked === 'penalty') { get().showToast(tLang.battleBlockedByPenalty, 'error'); return state; }
         if (battleResult.blocked === 'dead') { get().showToast(tLang.battleBlockedByDeath ?? '寵物已死亡，必須先復活', 'error'); return state; }
-        if (battleResult.blocked === 'fullness') { get().showToast(tLang.fullnessNeed50Battle, 'error'); return state; }
+        if (battleResult.blocked === 'happiness') {
+          get().showToast(state.data.settings?.language === 'en' ? 'Mood too low to battle.' : '心情過低，無法對戰。', 'error');
+          return state;
+        }
+        if (battleResult.blocked === 'fullness') {
+          const requiredFullness = (battleResult as any).mode === 'team' ? teamBattleMinFullness : SOLO_BATTLE_MIN_FULLNESS;
+          get().showToast((tLang.fullnessNeed50Battle ?? '').replace('{value}', requiredFullness.toString()), 'error');
+          return state;
+        }
         if (battleResult.blocked === 'invalid') return state;
 
         const teamReward = (battleResult as any).teamReward;
@@ -733,10 +795,16 @@ export const useStore = create<StoreState>()(
           get().showToast(
             isTeamBattle && teamReward
               ? (state.data.settings?.language === 'en' ? `Team battle won. Team bonus +${teamReward.bonusPoints} pts / +${teamReward.bonusHappiness} mood.` : `隊伍對戰獲勝，啟動隊伍獎勵：+${teamReward.bonusPoints} 積分 / +${teamReward.bonusHappiness} 心情。`)
-              : tLang.battleWon, 'success'
+              : (state.data.settings?.language === 'en' ? `Battle won! +${soloBattleWinPoints} points` : `對戰勝利！+${soloBattleWinPoints} 積分`),
+            'success'
           );
         } else if (battleResult.outcome === 'loss') {
-          get().showToast(isTeamBattle ? (state.data.settings?.language === 'en' ? 'Team battle lost.' : '隊伍對戰失敗。') : tLang.battleLost, 'error');
+          get().showToast(
+            isTeamBattle
+              ? (state.data.settings?.language === 'en' ? 'Team battle lost.' : '隊伍對戰失敗。')
+              : (state.data.settings?.language === 'en' ? `Battle lost! -${soloBattleLossPoints} points` : `對戰失敗！-${soloBattleLossPoints} 積分`),
+            'error',
+          );
         } else {
           get().showToast(isTeamBattle ? (state.data.settings?.language === 'en' ? 'Team battle draw.' : '隊伍對戰平手。') : tLang.battleDraw, 'success');
         }
@@ -793,7 +861,7 @@ export const useStore = create<StoreState>()(
 
         if (result.blocked === 'penalty') { get().showToast(tLang.battleBlockedByPenalty, 'error'); return state; }
         if (result.blocked === 'dead') { get().showToast(tLang.battleBlockedByDeath ?? '寵物已死亡，無法討伐', 'error'); return state; }
-        if (result.blocked === 'fullness') { get().showToast((tLang.battleNeedFullness ?? '').replace('50', BOSS_ATTACK_FULLNESS_COST.toString()), 'error'); return state; }
+        if (result.blocked === 'fullness') { get().showToast((tLang.battleNeedFullness ?? '').replace('{value}', BOSS_ATTACK_FULLNESS_COST.toString()), 'error'); return state; }
         
         if (result.updatedStudent && result.updatedBoss) {
           get().triggerPetAnimation(studentId, 'attack', 500);
