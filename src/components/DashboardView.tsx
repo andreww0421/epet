@@ -47,6 +47,12 @@ export const DashboardView: React.FC = () => {
   const [battleRankPointsWin, setBattleRankPointsWin] = useState(data.settings?.battleRankPointsWin ?? 20);
   const [battleRankPointsLoss, setBattleRankPointsLoss] = useState(data.settings?.battleRankPointsLoss ?? 10);
   const [soloBattleFullnessCost, setSoloBattleFullnessCost] = useState(data.settings?.soloBattleFullnessCost ?? SOLO_BATTLE_FULLNESS_COST);
+  const [soloBattleAttackerFullnessCost, setSoloBattleAttackerFullnessCost] = useState(
+    data.settings?.soloBattleAttackerFullnessCost ?? data.settings?.soloBattleFullnessCost ?? SOLO_BATTLE_FULLNESS_COST,
+  );
+  const [soloBattleDefenderFullnessCost, setSoloBattleDefenderFullnessCost] = useState(
+    data.settings?.soloBattleDefenderFullnessCost ?? data.settings?.soloBattleFullnessCost ?? SOLO_BATTLE_FULLNESS_COST,
+  );
   const [soloBattleWinPoints, setSoloBattleWinPoints] = useState(data.settings?.soloBattleWinPoints ?? SOLO_BATTLE_WIN_POINTS);
   const [soloBattleLossPoints, setSoloBattleLossPoints] = useState(data.settings?.soloBattleLossPoints ?? SOLO_BATTLE_LOSS_POINTS);
   const [teamBattleMinFullnessEnabled, setTeamBattleMinFullnessEnabled] = useState(
@@ -184,6 +190,8 @@ export const DashboardView: React.FC = () => {
       battleRankPointsWin: Number(battleRankPointsWin),
       battleRankPointsLoss: Number(battleRankPointsLoss),
       soloBattleFullnessCost: Number(soloBattleFullnessCost),
+      soloBattleAttackerFullnessCost: Number(soloBattleAttackerFullnessCost),
+      soloBattleDefenderFullnessCost: Number(soloBattleDefenderFullnessCost),
       soloBattleWinPoints: Number(soloBattleWinPoints),
       soloBattleLossPoints: Number(soloBattleLossPoints),
       teamBattleMinFullnessEnabled,
@@ -937,16 +945,54 @@ export const DashboardView: React.FC = () => {
             </div>
             <div className="flex flex-col gap-1">
               <label htmlFor="soloBattleFullnessCost" className="text-sm font-medium text-slate-700">
-                {lang === 'en' ? 'Solo Fullness Cost' : '個人賽消耗飽食度'}
+                {lang === 'en' ? 'Solo Default Fullness Cost' : '個人賽雙方預設消耗飽食度'}
               </label>
               <input
                 type="number"
                 id="soloBattleFullnessCost"
                 min="0"
                 value={soloBattleFullnessCost}
-                onChange={(e) => setSoloBattleFullnessCost(Number(e.target.value))}
+                onChange={(e) => {
+                  const value = Number(e.target.value);
+                  setSoloBattleFullnessCost(value);
+                  setSoloBattleAttackerFullnessCost(value);
+                  setSoloBattleDefenderFullnessCost(value);
+                }}
                 className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
               />
+              <p className="text-xs text-slate-500">
+                {lang === 'en'
+                  ? 'Changing this value syncs both attacker and defender costs; adjust each side below if needed.'
+                  : '修改此數值會同步攻方與守方；若需要不同消耗，可再分別調整下方欄位。'}
+              </p>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="flex flex-col gap-1">
+                <label htmlFor="soloBattleAttackerFullnessCost" className="text-sm font-medium text-slate-700">
+                  {lang === 'en' ? 'Attacker Fullness Cost' : '攻方消耗飽食度'}
+                </label>
+                <input
+                  type="number"
+                  id="soloBattleAttackerFullnessCost"
+                  min="0"
+                  value={soloBattleAttackerFullnessCost}
+                  onChange={(e) => setSoloBattleAttackerFullnessCost(Number(e.target.value))}
+                  className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label htmlFor="soloBattleDefenderFullnessCost" className="text-sm font-medium text-slate-700">
+                  {lang === 'en' ? 'Defender Fullness Cost' : '守方消耗飽食度'}
+                </label>
+                <input
+                  type="number"
+                  id="soloBattleDefenderFullnessCost"
+                  min="0"
+                  value={soloBattleDefenderFullnessCost}
+                  onChange={(e) => setSoloBattleDefenderFullnessCost(Number(e.target.value))}
+                  className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
+                />
+              </div>
             </div>
             <div className="flex flex-col gap-1">
               <label htmlFor="soloBattleWinPoints" className="text-sm font-medium text-slate-700">

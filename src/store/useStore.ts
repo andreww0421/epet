@@ -154,6 +154,10 @@ export const useStore = create<StoreState>()(
           0,
           toFiniteNumber(merged.teamBattleMinFullness, TEAM_BATTLE_MIN_FULLNESS),
         );
+        const safeSoloBattleFullnessCost = Math.max(
+          0,
+          toFiniteNumber(merged.soloBattleFullnessCost, SOLO_BATTLE_FULLNESS_COST),
+        );
         
         const newData = {
           ...state.data,
@@ -169,7 +173,15 @@ export const useStore = create<StoreState>()(
             reviveCost: Math.max(0, toFiniteNumber(merged.reviveCost, 120)),
             battleRankPointsWin: Math.max(0, toFiniteNumber(merged.battleRankPointsWin, 20)),
             battleRankPointsLoss: Math.max(0, toFiniteNumber(merged.battleRankPointsLoss, 10)),
-            soloBattleFullnessCost: Math.max(0, toFiniteNumber(merged.soloBattleFullnessCost, SOLO_BATTLE_FULLNESS_COST)),
+            soloBattleFullnessCost: safeSoloBattleFullnessCost,
+            soloBattleAttackerFullnessCost: Math.max(
+              0,
+              toFiniteNumber(merged.soloBattleAttackerFullnessCost, safeSoloBattleFullnessCost),
+            ),
+            soloBattleDefenderFullnessCost: Math.max(
+              0,
+              toFiniteNumber(merged.soloBattleDefenderFullnessCost, safeSoloBattleFullnessCost),
+            ),
             soloBattleWinPoints: Math.max(0, toFiniteNumber(merged.soloBattleWinPoints, SOLO_BATTLE_WIN_POINTS)),
             soloBattleLossPoints: Math.max(0, toFiniteNumber(merged.soloBattleLossPoints, SOLO_BATTLE_LOSS_POINTS)),
             teamBattleMinFullnessEnabled: merged.teamBattleMinFullnessEnabled !== false,
@@ -736,6 +748,8 @@ export const useStore = create<StoreState>()(
           battleRankPointsWin: state.data.settings?.battleRankPointsWin,
           battleRankPointsLoss: state.data.settings?.battleRankPointsLoss,
           soloBattleFullnessCost: state.data.settings?.soloBattleFullnessCost,
+          soloBattleAttackerFullnessCost: state.data.settings?.soloBattleAttackerFullnessCost,
+          soloBattleDefenderFullnessCost: state.data.settings?.soloBattleDefenderFullnessCost,
           soloBattleWinPoints: state.data.settings?.soloBattleWinPoints,
           soloBattleLossPoints: state.data.settings?.soloBattleLossPoints,
           teamBattleMinFullnessEnabled,

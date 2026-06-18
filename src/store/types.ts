@@ -72,6 +72,8 @@ export type AppData = {
     battleRankPointsWin?: number;
     battleRankPointsLoss?: number;
     soloBattleFullnessCost?: number;
+    soloBattleAttackerFullnessCost?: number;
+    soloBattleDefenderFullnessCost?: number;
     soloBattleWinPoints?: number;
     soloBattleLossPoints?: number;
     teamBattleMinFullnessEnabled?: boolean;

@@ -114,6 +114,8 @@ export const createInitialData = (now = Date.now()): AppData => ({
     maxTeamSize: DEFAULT_MAX_TEAM_SIZE,
     maxPoints: 700,
     soloBattleFullnessCost: SOLO_BATTLE_FULLNESS_COST,
+    soloBattleAttackerFullnessCost: SOLO_BATTLE_FULLNESS_COST,
+    soloBattleDefenderFullnessCost: SOLO_BATTLE_FULLNESS_COST,
     soloBattleWinPoints: SOLO_BATTLE_WIN_POINTS,
     soloBattleLossPoints: SOLO_BATTLE_LOSS_POINTS,
     teamBattleMinFullnessEnabled: TEAM_BATTLE_MIN_FULLNESS_ENABLED,
@@ -245,6 +247,10 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
   const currentClassId = typeof raw?.currentClassId === 'string' && classes.some((classData) => classData.id === raw.currentClassId)
     ? raw.currentClassId
     : classes[0]?.id ?? initialData.currentClassId;
+  const soloBattleFullnessCost = Math.max(
+    0,
+    toFiniteNumber(rawSettings?.soloBattleFullnessCost, initialData.settings?.soloBattleFullnessCost ?? SOLO_BATTLE_FULLNESS_COST),
+  );
 
   return {
     lastOpened: toFiniteNumber(raw?.lastOpened, now),
@@ -267,9 +273,14 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
       rankBrackets: rawSettings?.rankBrackets ?? { diamond: 400, platinum: 300, gold: 200, silver: 100 },
       battleRankPointsWin: Math.max(0, toFiniteNumber(rawSettings?.battleRankPointsWin, 20)),
       battleRankPointsLoss: Math.max(0, toFiniteNumber(rawSettings?.battleRankPointsLoss, 10)),
-      soloBattleFullnessCost: Math.max(
+      soloBattleFullnessCost,
+      soloBattleAttackerFullnessCost: Math.max(
         0,
-        toFiniteNumber(rawSettings?.soloBattleFullnessCost, initialData.settings?.soloBattleFullnessCost ?? SOLO_BATTLE_FULLNESS_COST),
+        toFiniteNumber(rawSettings?.soloBattleAttackerFullnessCost, soloBattleFullnessCost),
+      ),
+      soloBattleDefenderFullnessCost: Math.max(
+        0,
+        toFiniteNumber(rawSettings?.soloBattleDefenderFullnessCost, soloBattleFullnessCost),
       ),
       soloBattleWinPoints: Math.max(
         0,

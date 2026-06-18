@@ -34,6 +34,10 @@ export const ClassroomView: React.FC = () => {
   const currentBattleMode = data.settings?.battleMode ?? DEFAULT_BATTLE_MODE;
   const currentMaxTeamSize = data.settings?.maxTeamSize ?? DEFAULT_MAX_TEAM_SIZE;
   const currentSoloBattleFullnessCost = data.settings?.soloBattleFullnessCost ?? SOLO_BATTLE_FULLNESS_COST;
+  const currentSoloBattleAttackerFullnessCost =
+    data.settings?.soloBattleAttackerFullnessCost ?? currentSoloBattleFullnessCost;
+  const currentSoloBattleDefenderFullnessCost =
+    data.settings?.soloBattleDefenderFullnessCost ?? currentSoloBattleFullnessCost;
   const currentSoloBattleWinPoints = data.settings?.soloBattleWinPoints ?? SOLO_BATTLE_WIN_POINTS;
   const currentSoloBattleLossPoints = data.settings?.soloBattleLossPoints ?? SOLO_BATTLE_LOSS_POINTS;
   const currentTeamBattleMinFullnessEnabled = data.settings?.teamBattleMinFullnessEnabled ?? TEAM_BATTLE_MIN_FULLNESS_ENABLED;
@@ -435,8 +439,8 @@ export const ClassroomView: React.FC = () => {
               <div className="mb-4 space-y-2 text-sm text-gray-600">
                 <p>
                   {lang === 'en'
-                    ? `Solo battles cost ${currentSoloBattleFullnessCost} fullness per side. Winner +${currentSoloBattleWinPoints} points, loser -${currentSoloBattleLossPoints} points.`
-                    : `個人賽雙方各消耗 ${currentSoloBattleFullnessCost} 飽食度。勝方 +${currentSoloBattleWinPoints} 積分，敗方 -${currentSoloBattleLossPoints} 積分。`}
+                    ? `Solo battles cost ${currentSoloBattleAttackerFullnessCost} fullness for the attacker and ${currentSoloBattleDefenderFullnessCost} for the defender. Winner +${currentSoloBattleWinPoints} points, loser -${currentSoloBattleLossPoints} points.`
+                    : `個人賽攻方消耗 ${currentSoloBattleAttackerFullnessCost} 飽食度，守方消耗 ${currentSoloBattleDefenderFullnessCost} 飽食度。勝方 +${currentSoloBattleWinPoints} 積分，敗方 -${currentSoloBattleLossPoints} 積分。`}
                 </p>
                 <p className="rounded-xl bg-sky-50 px-3 py-2 text-sky-800">
                   {currentBattleMode === 'solo'

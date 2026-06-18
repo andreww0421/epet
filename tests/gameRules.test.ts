@@ -87,6 +87,28 @@ test('resolveBattle uses configurable solo cost and point settings symmetrically
   assert.equal(result.defender.pet.fullness, 58);
 });
 
+test('resolveBattle can use different attacker and defender fullness costs', () => {
+  const attacker = createStudent();
+  const defender = createStudent();
+
+  const result = resolveBattle(
+    attacker,
+    defender,
+    { attacker: 12, defender: 0 },
+    {
+      soloBattleFullnessCost: 50,
+      soloBattleAttackerFullnessCost: 18,
+      soloBattleDefenderFullnessCost: 9,
+    },
+    1000,
+  );
+
+  assert.equal(result.blocked, null);
+  assert.equal(result.outcome, 'win');
+  assert.equal(result.attacker.pet.fullness, 62);
+  assert.equal(result.defender.pet.fullness, 71);
+});
+
 test('applyFeedToStudent uses custom feed gain and reduced mood under penalty', () => {
   const student = {
     ...createStudent(),
@@ -290,6 +312,9 @@ test('normalizeAppData sanitizes active boss data and drops defeated bosses', ()
     {
       lastOpened: 1000,
       currentClassId: 'class-a',
+      settings: {
+        soloBattleFullnessCost: '17',
+      },
       classes: [
         {
           id: 'class-a',
@@ -334,6 +359,9 @@ test('normalizeAppData sanitizes active boss data and drops defeated bosses', ()
     isActive: true,
   });
   assert.equal(normalized.classes[1].activeBoss, undefined);
+  assert.equal(normalized.settings?.soloBattleFullnessCost, 17);
+  assert.equal(normalized.settings?.soloBattleAttackerFullnessCost, 17);
+  assert.equal(normalized.settings?.soloBattleDefenderFullnessCost, 17);
 });
 
 test('computeBadges derives badges from the current student state', () => {

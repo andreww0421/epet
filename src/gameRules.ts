@@ -92,6 +92,8 @@ export type BattleResolutionOptions = {
   battleRankPointsWin?: number;
   battleRankPointsLoss?: number;
   soloBattleFullnessCost?: number;
+  soloBattleAttackerFullnessCost?: number;
+  soloBattleDefenderFullnessCost?: number;
   soloBattleWinPoints?: number;
   soloBattleLossPoints?: number;
   teamBattleMinFullnessEnabled?: boolean;
@@ -378,6 +380,14 @@ export const resolveBattle = <
     0,
     toFiniteNumber(options?.soloBattleFullnessCost, SOLO_BATTLE_FULLNESS_COST),
   );
+  const soloBattleAttackerFullnessCost = Math.max(
+    0,
+    toFiniteNumber(options?.soloBattleAttackerFullnessCost, soloBattleFullnessCost),
+  );
+  const soloBattleDefenderFullnessCost = Math.max(
+    0,
+    toFiniteNumber(options?.soloBattleDefenderFullnessCost, soloBattleFullnessCost),
+  );
   const soloBattleWinPoints = Math.max(0, toFiniteNumber(options?.soloBattleWinPoints, SOLO_BATTLE_WIN_POINTS));
   const soloBattleLossPoints = Math.max(0, toFiniteNumber(options?.soloBattleLossPoints, SOLO_BATTLE_LOSS_POINTS));
 
@@ -404,7 +414,7 @@ export const resolveBattle = <
         pet: syncPetLifeState(
           {
             ...attacker.pet,
-            fullness: clamp(attacker.pet.fullness - soloBattleFullnessCost, 0, 100),
+            fullness: clamp(attacker.pet.fullness - soloBattleAttackerFullnessCost, 0, 100),
             happiness: clamp(attacker.pet.happiness - 5, 0, 100),
           },
           now,
@@ -415,7 +425,7 @@ export const resolveBattle = <
         pet: syncPetLifeState(
           {
             ...defender.pet,
-            fullness: clamp(defender.pet.fullness - soloBattleFullnessCost, 0, 100),
+            fullness: clamp(defender.pet.fullness - soloBattleDefenderFullnessCost, 0, 100),
             happiness: clamp(defender.pet.happiness - 5, 0, 100),
           },
           now,
@@ -437,7 +447,7 @@ export const resolveBattle = <
       pet: syncPetLifeState(
         {
           ...attacker.pet,
-          fullness: clamp(attacker.pet.fullness - soloBattleFullnessCost, 0, 100),
+          fullness: clamp(attacker.pet.fullness - soloBattleAttackerFullnessCost, 0, 100),
           happiness: clamp(attacker.pet.happiness + (attackerWon ? 15 : -20), 0, 100),
         },
         now,
@@ -456,7 +466,7 @@ export const resolveBattle = <
       pet: syncPetLifeState(
         {
           ...defender.pet,
-          fullness: clamp(defender.pet.fullness - soloBattleFullnessCost, 0, 100),
+          fullness: clamp(defender.pet.fullness - soloBattleDefenderFullnessCost, 0, 100),
           happiness: clamp(defender.pet.happiness + (attackerWon ? -20 : 15), 0, 100),
         },
         now,
