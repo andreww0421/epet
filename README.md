@@ -93,6 +93,12 @@ npm run dev
 npm run lint
 ```
 
+規則測試：
+
+```bash
+npm run test:rules
+```
+
 正式建置：
 
 ```bash

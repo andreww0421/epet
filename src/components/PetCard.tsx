@@ -6,13 +6,13 @@ import {
 import { useStore } from '../store/useStore';
 import { useShallow } from 'zustand/react/shallow';
 import { translations } from '../i18n/translations';
-import { PET_TYPES, REVIVE_COST, DEFAULT_BATTLE_MODE } from '../store/constants';
+import { PET_TYPES, DEFAULT_BATTLE_MODE } from '../store/constants';
 import { Student, PetAnimationMode } from '../store/types';
 import {
   isPenaltyActive, isPetDead, clamp, getDateKey, isBattleReady,
   SOLO_BATTLE_MIN_FULLNESS, TEAM_BATTLE_MIN_FULLNESS, TEAM_BATTLE_MIN_FULLNESS_ENABLED
 } from '../gameRules';
-import { getTeamMembers } from '../store/utils';
+import { computeBadges, getTeamMembers } from '../store/utils';
 
 const WARNING_THRESHOLD = 3;
 const DAILY_TASK_REWARD_POINTS = 30;
@@ -31,6 +31,7 @@ const selectSettings = (state: any) => ({
   lang: (state.data.settings?.language || 'zh') as 'zh' | 'en',
   feedCost: state.data.settings?.feedCost ?? 10,
   playCost: state.data.settings?.playCost ?? 5,
+  reviveCost: state.data.settings?.reviveCost ?? 120,
   maxPoints: state.data.settings?.maxPoints ?? 700,
   maxTeamSize: state.data.settings?.maxTeamSize ?? 6,
   battleMode: state.data.settings?.battleMode ?? DEFAULT_BATTLE_MODE,
@@ -85,11 +86,12 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
 
   if (!student) return null;
 
-  const { lang, feedCost, playCost, maxPoints, battleMode, teamBattleMinFullnessEnabled, teamBattleMinFullness } = settings;
+  const { lang, feedCost, playCost, reviveCost, maxPoints, battleMode, teamBattleMinFullnessEnabled, teamBattleMinFullness } = settings;
   const tLang = translations[lang];
 
-  const { name, points, pet, badges = [], rankPoints = 0, warningPoints = 0, nextUpgradeGachaLevel = 2, penaltyStatus, dailyProgress } = student;
+  const { name, points, pet, rankPoints = 0, warningPoints = 0, nextUpgradeGachaLevel = 2, penaltyStatus, dailyProgress } = student;
   const { fullness, type, level = 1, happiness = 80 } = pet;
+  const badges = computeBadges(student);
 
   const petConfig = PET_TYPES.find(p => p.id === type) || PET_TYPES[0];
   const PetIcon = petConfig.icon;
@@ -119,7 +121,7 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
   const canUpgrade = level < 10 && fullness >= 100 && points >= upgradeCost && happiness >= 40 && !isDead;
   const canGacha = points >= 200 && !isDead;
   const hasUpgradeReward = nextUpgradeGachaLevel !== null && level >= nextUpgradeGachaLevel;
-  const canRevive = points >= REVIVE_COST;
+  const canRevive = points >= reviveCost;
   const todayKey = getDateKey();
   const dailyClaimedToday = dailyProgress?.lastClaimDate === todayKey;
   const streak = dailyProgress?.streak ?? 0;
@@ -407,7 +409,9 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
             {isDead && (
               <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-center">
                 <div className="text-sm font-bold text-rose-700">{tLang.petDead}</div>
-                <div className="mt-1 text-[11px] text-rose-600">{tLang.petDeadHint}</div>
+                <div className="mt-1 text-[11px] text-rose-600">
+                  {tLang.petDeadHint.replace('{cost}', reviveCost.toString())}
+                </div>
               </div>
             )}
 
@@ -447,7 +451,7 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
                 }`}
               >
                 <RefreshCw className="h-4 w-4 mr-2" />
-                {tLang.revivePet}
+                {tLang.revivePet.replace('{cost}', reviveCost.toString())}
               </button>
             ) : (
               <>

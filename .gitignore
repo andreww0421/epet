@@ -2,6 +2,7 @@ node_modules/
 build/
 dist/
 coverage/
+.tmp-rule-tests/
 .playwright-cli/
 .DS_Store
 *.log

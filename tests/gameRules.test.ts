@@ -5,12 +5,14 @@ import {
   REVIVE_COST,
   applyDecayToStudent,
   applyFeedToStudent,
+  attackWorldBoss,
   claimDailyTaskForStudent,
   createPenaltyStatus,
   resolveBattle,
   resolveTeamBattle,
   reviveStudentPet,
 } from '../src/gameRules.js';
+import { computeBadges, normalizeAppData } from '../src/store/utils.js';
 
 const tests: Array<{ name: string; run: () => void }> = [];
 
@@ -37,6 +39,16 @@ const createStudent = () => ({
   dailyProgress: {
     streak: 0,
   },
+});
+
+const createBoss = () => ({
+  id: 'boss-1',
+  name: 'Training Boss',
+  maxHp: 100,
+  currentHp: 100,
+  rewardPoints: 50,
+  rewardHappiness: 10,
+  isActive: true,
 });
 
 test('resolveBattle returns draw when scores are equal', () => {
@@ -258,6 +270,88 @@ test('resolveTeamBattle can disable the minimum fullness gate', () => {
 
   assert.equal(allowed.blocked, null);
   assert.ok(allowed.outcome === 'win' || allowed.outcome === 'loss' || allowed.outcome === 'draw');
+});
+
+test('attackWorldBoss blocks students with active penalty status', () => {
+  const result = attackWorldBoss(
+    {
+      ...createStudent(),
+      penaltyStatus: createPenaltyStatus('discipline', 1000),
+    },
+    createBoss(),
+    2000,
+  );
+
+  assert.equal(result.blocked, 'penalty');
+});
+
+test('normalizeAppData sanitizes active boss data and drops defeated bosses', () => {
+  const normalized = normalizeAppData(
+    {
+      lastOpened: 1000,
+      currentClassId: 'class-a',
+      classes: [
+        {
+          id: 'class-a',
+          name: 'Class A',
+          students: [],
+          activeBoss: {
+            id: 'boss-a',
+            name: '  Dragon  ',
+            maxHp: '50.8',
+            currentHp: '80',
+            rewardPoints: '-10',
+            rewardHappiness: '12.4',
+            isActive: true,
+          },
+        },
+        {
+          id: 'class-b',
+          name: 'Class B',
+          students: [],
+          activeBoss: {
+            id: 'boss-b',
+            name: 'Defeated',
+            maxHp: 100,
+            currentHp: 0,
+            rewardPoints: 20,
+            rewardHappiness: 5,
+            isActive: true,
+          },
+        },
+      ],
+    },
+    2000,
+  );
+
+  assert.deepEqual(normalized.classes[0].activeBoss, {
+    id: 'boss-a',
+    name: 'Dragon',
+    maxHp: 50,
+    currentHp: 50,
+    rewardPoints: 0,
+    rewardHappiness: 12,
+    isActive: true,
+  });
+  assert.equal(normalized.classes[1].activeBoss, undefined);
+});
+
+test('computeBadges derives badges from the current student state', () => {
+  const badges = computeBadges({
+    ...createStudent(),
+    points: 520,
+    pet: {
+      ...createStudent().pet,
+      type: 'dog',
+      level: 10,
+    },
+    stats: {
+      wins: 10,
+      losses: 2,
+    },
+  });
+
+  assert.deepEqual(badges, ['badgeFirstWin', 'badgeVeteran', 'badgeRich', 'badgeMaxLevel']);
 });
 
 let failures = 0;

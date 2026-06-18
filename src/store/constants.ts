@@ -29,4 +29,3 @@ export const DEFAULT_CLASS_NAME = '預設班級';
 export const STORAGE_KEY = 'tamagotchi_classroom_data';
 export const DEFAULT_BATTLE_MODE: BattleMode = 'both';
 export const DEFAULT_MAX_TEAM_SIZE = 6;
-export const REVIVE_COST = 120;

@@ -677,6 +677,9 @@ export const attackWorldBoss = <T extends StudentRuleState>(
   if (isPetDead(student.pet)) {
     return { blocked: 'dead' as const };
   }
+  if (isPenaltyActive(student.penaltyStatus, now)) {
+    return { blocked: 'penalty' as const };
+  }
   if (student.pet.fullness < BOSS_ATTACK_FULLNESS_COST) {
     return { blocked: 'fullness' as const };
   }

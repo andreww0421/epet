@@ -5,12 +5,12 @@ import {
   PointAdjustmentSource, BattleMode, Language
 } from './types';
 import { 
-  translations, STORAGE_KEY, DEFAULT_MAX_TEAM_SIZE, REVIVE_COST,
+  translations, STORAGE_KEY, DEFAULT_MAX_TEAM_SIZE,
   DEFAULT_BATTLE_MODE, petNames
 } from './constants';
 import { 
   normalizeAppData, applyDecay, getRandomPetType, 
-  sanitizeTeamAssignments, getTeamMembers, createTeamId
+  sanitizeTeamAssignments, getTeamMembers, createTeamId, normalizeWorldBoss
 } from './utils';
 import { 
   applyFeedToStudent, applyPlayWithPet, claimDailyTaskForStudent,
@@ -537,7 +537,7 @@ export const useStore = create<StoreState>()(
         const reviveCost = state.data.settings?.reviveCost ?? 120;
 
         if (targetStudent.points < reviveCost) {
-          get().showToast(state.data.settings?.language === 'en' ? `Need ${reviveCost} points to revive` : `復活需要 ${reviveCost} 積分`, 'error');
+          get().showToast(tLang.reviveNeedPoints.replace('{cost}', reviveCost.toString()), 'error');
           return state;
         }
 
@@ -821,18 +821,30 @@ export const useStore = create<StoreState>()(
         const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
         if (currentClassIndex === -1) return state;
 
+        const now = Date.now();
+        const safeMaxHp = Math.max(1, Math.floor(toFiniteNumber(maxHp, 1)));
+        const activeBoss = normalizeWorldBoss(
+          {
+            id: `boss-${now}`,
+            name,
+            maxHp: safeMaxHp,
+            currentHp: safeMaxHp,
+            rewardPoints,
+            rewardHappiness,
+            isActive: true,
+          },
+          currentClassIndex,
+          now,
+        );
+        if (!activeBoss) return state;
+
         const nextClasses = [...state.data.classes];
         nextClasses[currentClassIndex] = {
           ...nextClasses[currentClassIndex],
-          activeBoss: {
-            id: `boss-${Date.now()}`, name: name || 'Unknown Boss',
-            maxHp: Math.max(1, maxHp), currentHp: Math.max(1, maxHp),
-            rewardPoints: Math.max(0, rewardPoints), rewardHappiness: Math.max(0, rewardHappiness),
-            isActive: true,
-          }
+          activeBoss,
         };
         const lang = state.data.settings?.language || 'zh';
-        get().showToast(lang === 'en' ? `Summoned Boss: ${name}` : `已召喚魔王：${name}`, 'success');
+        get().showToast(lang === 'en' ? `Summoned Boss: ${activeBoss.name}` : `已召喚魔王：${activeBoss.name}`, 'success');
         return { data: { ...state.data, classes: nextClasses } };
       }),
 
@@ -874,22 +886,26 @@ export const useStore = create<StoreState>()(
           const newBoss = result.updatedBoss;
 
           if (result.isDefeated) {
+            const defeatedClassId = currentClass.id;
+            const defeatedBossId = newBoss.id;
             set({ showBossVictory: true });
             nextClasses[currentClassIndex] = { ...currentClass, students: currentClass.students.map(s => s.id === studentId ? result.updatedStudent! : s), activeBoss: { ...newBoss, currentHp: 0, isActive: true } };
             
             setTimeout(() => {
               set((s2) => {
-                const idx = s2.data.classes.findIndex(c => c.id === s2.data.currentClassId);
-                if (idx === -1) return s2;
+                const idx = s2.data.classes.findIndex(c => c.id === defeatedClassId);
+                if (idx === -1) return { ...s2, showBossVictory: false };
                 const c = s2.data.classes[idx];
-                if (!c.activeBoss) return s2;
+                if (!c.activeBoss || c.activeBoss.id !== defeatedBossId) {
+                  return { ...s2, showBossVictory: false };
+                }
                 
                 const rewardedStudents = applyBossDefeatRewards(c.students, c.activeBoss.rewardPoints, c.activeBoss.rewardHappiness, Date.now(), s2.data.settings?.maxPoints ?? 700);
                 const afterClasses = [...s2.data.classes];
                 afterClasses[idx] = { ...afterClasses[idx], students: rewardedStudents as any, activeBoss: undefined };
                 return { showBossVictory: false, data: { ...s2.data, classes: afterClasses } };
               });
-              get().showToast((tLang.bossDefeated ?? '').replace('{name}', newBoss.name).replace('{points}', currentClass.activeBoss!.rewardPoints.toString()).replace('{happiness}', currentClass.activeBoss!.rewardHappiness.toString()), 'success');
+              get().showToast((tLang.bossDefeated ?? '').replace('{name}', newBoss.name).replace('{points}', newBoss.rewardPoints.toString()).replace('{happiness}', newBoss.rewardHappiness.toString()), 'success');
             }, 3800);
             return { data: { ...state.data, classes: nextClasses } };
           } else {
@@ -908,6 +924,13 @@ export const useStore = create<StoreState>()(
     {
       name: STORAGE_KEY,
       storage: createJSONStorage(() => localStorage),
+      merge: (persistedState, currentState) => {
+        const persisted = persistedState as Partial<StoreState> | undefined;
+        return {
+          ...currentState,
+          data: normalizeAppData(persisted?.data ?? currentState.data, Date.now()),
+        };
+      },
       partialize: (state) => ({ data: state.data }),
       onRehydrateStorage: () => (state) => {
         if (state) state.triggerDecay();

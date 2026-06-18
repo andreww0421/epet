@@ -3,7 +3,7 @@ import {
   syncPetLifeState, applyDecayToStudent, SOLO_BATTLE_FULLNESS_COST, SOLO_BATTLE_WIN_POINTS,
   SOLO_BATTLE_LOSS_POINTS, TEAM_BATTLE_MIN_FULLNESS, TEAM_BATTLE_MIN_FULLNESS_ENABLED
 } from '../gameRules';
-import { AppData, Student, DisciplineRecord, PointAdjustmentRecord } from './types';
+import { AppData, Student, DisciplineRecord, PointAdjustmentRecord, WorldBoss } from './types';
 import { PET_TYPES, DEFAULT_CLASS_NAME, DEFAULT_MAX_TEAM_SIZE, DEFAULT_BATTLE_MODE } from './constants';
 
 export const getRandomPetType = (useRarity = false) => {
@@ -30,6 +30,28 @@ export const computeBadges = (student: Pick<Student, 'points' | 'pet' | 'stats'>
   if ((student.pet.level || 1) >= 10) badges.add('badgeMaxLevel');
 
   return Array.from(badges);
+};
+
+export const normalizeWorldBoss = (boss: unknown, fallbackIndex: number, now = Date.now()): WorldBoss | undefined => {
+  if (!boss || typeof boss !== 'object') return undefined;
+
+  const rawBoss = boss as Partial<WorldBoss>;
+  const maxHp = Math.max(1, Math.floor(toFiniteNumber(rawBoss.maxHp, 1)));
+  const currentHp = clamp(Math.floor(toFiniteNumber(rawBoss.currentHp, maxHp)), 0, maxHp);
+
+  if (rawBoss.isActive === false || currentHp <= 0) {
+    return undefined;
+  }
+
+  return {
+    id: typeof rawBoss.id === 'string' && rawBoss.id ? rawBoss.id : `boss-${now}-${fallbackIndex}`,
+    name: typeof rawBoss.name === 'string' && rawBoss.name.trim() ? rawBoss.name.trim() : 'Unknown Boss',
+    maxHp,
+    currentHp,
+    rewardPoints: Math.max(0, Math.floor(toFiniteNumber(rawBoss.rewardPoints, 0))),
+    rewardHappiness: Math.max(0, Math.floor(toFiniteNumber(rawBoss.rewardHappiness, 0))),
+    isActive: true,
+  };
 };
 
 export const clampTeamSize = (value: unknown) => clamp(Math.floor(toFiniteNumber(value, DEFAULT_MAX_TEAM_SIZE)), 2, 6);
@@ -216,7 +238,7 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
       id: typeof classItem?.id === 'string' && classItem.id ? classItem.id : `class-${now}-${index}`,
       name: typeof classItem?.name === 'string' && classItem.name.trim() ? classItem.name.trim() : DEFAULT_CLASS_NAME,
       students: sanitizeTeamAssignments(withLegacyTeams, clampTeamSize(rawSettings?.maxTeamSize)),
-      activeBoss: classItem?.activeBoss,
+      activeBoss: normalizeWorldBoss(classItem?.activeBoss, index, now),
     };
   });
 
