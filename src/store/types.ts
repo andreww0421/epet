@@ -1,6 +1,12 @@
-import { WorldBoss, PenaltyStatus, DisciplineRecord, PointAdjustmentRecord, DailyProgress, PointAdjustmentSource } from '../gameRules';
+import {
+  WorldBoss, PenaltyStatus, DisciplineRecord, PointAdjustmentRecord, DailyProgress,
+  PointAdjustmentSource, BossRewardTier, BossContributionStanding,
+} from '../gameRules';
 
-export type { WorldBoss, PenaltyStatus, DisciplineRecord, PointAdjustmentRecord, DailyProgress, PointAdjustmentSource };
+export type {
+  WorldBoss, PenaltyStatus, DisciplineRecord, PointAdjustmentRecord, DailyProgress,
+  PointAdjustmentSource, BossRewardTier, BossContributionStanding,
+};
 
 export type Pet = {
   type: string;
@@ -78,6 +84,12 @@ export type AppData = {
     soloBattleLossPoints?: number;
     teamBattleMinFullnessEnabled?: boolean;
     teamBattleMinFullness?: number;
+    teamBattleAttackerFullnessCost?: number;
+    teamBattleAttackerTeammateFullnessCost?: number;
+    teamBattleDefenderFullnessCost?: number;
+    teamBattleDefenderTeammateFullnessCost?: number;
+    bossAttackMaxTargets?: number;
+    bossAttackDamage?: number;
     enableSeasonResetRewards?: boolean;
     seasonResetRewards?: { diamond: number, platinum: number, gold: number, silver: number, bronze: number };
     reviveCost?: number;
@@ -88,4 +100,9 @@ export type PointReasonOption = {
   id: string;
   amount: number;
   labels: Record<Language, string>;
+};
+
+export type BossVictoryResult = {
+  bossName: string;
+  standings: BossContributionStanding[];
 };

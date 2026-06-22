@@ -1,17 +1,22 @@
 import React, { useState, useRef } from 'react';
 import { 
   Users, Settings, AlertCircle, Trash2, Star, Shield, Zap, X, Plus, Minus,
-  Download, Upload, ChevronsDown, Edit2, Save, BookOpen, RefreshCw, Skull, Swords
+  Download, Upload, ChevronsDown, Edit2, Save, BookOpen, RefreshCw, Skull, Swords,
+  Gift, Crosshair,
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { translations, petNames, POINT_REASON_OPTIONS } from '../i18n/translations';
 import { PET_TYPES, DEFAULT_BATTLE_MODE, DEFAULT_MAX_TEAM_SIZE } from '../store/constants';
 import { normalizeAppData, applyDecay } from '../store/utils';
-import { Student, Language, BattleMode } from '../store/types';
+import { Student, Language, BattleMode, BossRewardTier } from '../store/types';
 import { 
   isPenaltyActive, WARNING_THRESHOLD, WARNING_AUTO_PENALTY, DIRECT_DISCIPLINE_PENALTY,
   SOLO_BATTLE_FULLNESS_COST, SOLO_BATTLE_WIN_POINTS, SOLO_BATTLE_LOSS_POINTS,
-  TEAM_BATTLE_MIN_FULLNESS, TEAM_BATTLE_MIN_FULLNESS_ENABLED, type DisciplineRecordType
+  TEAM_BATTLE_MIN_FULLNESS, TEAM_BATTLE_MIN_FULLNESS_ENABLED,
+  TEAM_BATTLE_ATTACKER_FULLNESS_COST, TEAM_BATTLE_ATTACKER_TEAMMATE_FULLNESS_COST,
+  TEAM_BATTLE_DEFENDER_FULLNESS_COST, TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST,
+  DEFAULT_BOSS_ATTACK_MAX_TARGETS, DEFAULT_BOSS_ATTACK_DAMAGE, DEFAULT_BOSS_REWARD_TIERS,
+  type DisciplineRecordType
 } from '../gameRules';
 
 export const DashboardView: React.FC = () => {
@@ -25,6 +30,9 @@ export const DashboardView: React.FC = () => {
   const [studentToDelete, setStudentToDelete] = useState<string | null>(null);
   const [customPoints, setCustomPoints] = useState<{id: string, name: string} | null>(null);
   const [pointsAmount, setPointsAmount] = useState('');
+  const [showAirdrop, setShowAirdrop] = useState(false);
+  const [airdropAmount, setAirdropAmount] = useState('');
+  const [airdropReason, setAirdropReason] = useState('');
   const [recordView, setRecordView] = useState<'discipline' | 'points'>('discipline');
   const [decayAmount, setDecayAmount] = useState(data.settings?.decayAmount ?? 2);
   const [decayType, setDecayType] = useState<'hourly' | 'daily'>(data.settings?.decayType ?? 'hourly');
@@ -46,7 +54,7 @@ export const DashboardView: React.FC = () => {
 
   const [battleRankPointsWin, setBattleRankPointsWin] = useState(data.settings?.battleRankPointsWin ?? 20);
   const [battleRankPointsLoss, setBattleRankPointsLoss] = useState(data.settings?.battleRankPointsLoss ?? 10);
-  const [soloBattleFullnessCost, setSoloBattleFullnessCost] = useState(data.settings?.soloBattleFullnessCost ?? SOLO_BATTLE_FULLNESS_COST);
+  const [battleSettingsCategory, setBattleSettingsCategory] = useState<'solo' | 'team'>('solo');
   const [soloBattleAttackerFullnessCost, setSoloBattleAttackerFullnessCost] = useState(
     data.settings?.soloBattleAttackerFullnessCost ?? data.settings?.soloBattleFullnessCost ?? SOLO_BATTLE_FULLNESS_COST,
   );
@@ -60,6 +68,24 @@ export const DashboardView: React.FC = () => {
   );
   const [teamBattleMinFullness, setTeamBattleMinFullness] = useState(
     data.settings?.teamBattleMinFullness ?? TEAM_BATTLE_MIN_FULLNESS,
+  );
+  const [teamBattleAttackerFullnessCost, setTeamBattleAttackerFullnessCost] = useState(
+    data.settings?.teamBattleAttackerFullnessCost ?? TEAM_BATTLE_ATTACKER_FULLNESS_COST,
+  );
+  const [teamBattleAttackerTeammateFullnessCost, setTeamBattleAttackerTeammateFullnessCost] = useState(
+    data.settings?.teamBattleAttackerTeammateFullnessCost ?? TEAM_BATTLE_ATTACKER_TEAMMATE_FULLNESS_COST,
+  );
+  const [teamBattleDefenderFullnessCost, setTeamBattleDefenderFullnessCost] = useState(
+    data.settings?.teamBattleDefenderFullnessCost ?? TEAM_BATTLE_DEFENDER_FULLNESS_COST,
+  );
+  const [teamBattleDefenderTeammateFullnessCost, setTeamBattleDefenderTeammateFullnessCost] = useState(
+    data.settings?.teamBattleDefenderTeammateFullnessCost ?? TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST,
+  );
+  const [bossAttackMaxTargets, setBossAttackMaxTargets] = useState(
+    data.settings?.bossAttackMaxTargets ?? DEFAULT_BOSS_ATTACK_MAX_TARGETS,
+  );
+  const [bossAttackDamage, setBossAttackDamage] = useState(
+    data.settings?.bossAttackDamage ?? DEFAULT_BOSS_ATTACK_DAMAGE,
   );
   const [enableSeasonResetRewards, setEnableSeasonResetRewards] = useState(data.settings?.enableSeasonResetRewards ?? false);
 
@@ -78,8 +104,9 @@ export const DashboardView: React.FC = () => {
 
   const [bossNameInput, setBossNameInput] = useState('');
   const [bossHpInput, setBossHpInput] = useState(1000);
-  const [bossPointsInput, setBossPointsInput] = useState(100);
-  const [bossHappinessInput, setBossHappinessInput] = useState(30);
+  const [bossRewardTiers, setBossRewardTiers] = useState<BossRewardTier[]>(() =>
+    DEFAULT_BOSS_REWARD_TIERS.map((tier) => ({ ...tier })),
+  );
 
   const currentClass = data.classes.find((c: any) => c.id === data.currentClassId);
   const currentStudents = currentClass?.students || [];
@@ -189,13 +216,18 @@ export const DashboardView: React.FC = () => {
       },
       battleRankPointsWin: Number(battleRankPointsWin),
       battleRankPointsLoss: Number(battleRankPointsLoss),
-      soloBattleFullnessCost: Number(soloBattleFullnessCost),
       soloBattleAttackerFullnessCost: Number(soloBattleAttackerFullnessCost),
       soloBattleDefenderFullnessCost: Number(soloBattleDefenderFullnessCost),
       soloBattleWinPoints: Number(soloBattleWinPoints),
       soloBattleLossPoints: Number(soloBattleLossPoints),
       teamBattleMinFullnessEnabled,
       teamBattleMinFullness: Number(teamBattleMinFullness),
+      teamBattleAttackerFullnessCost: Number(teamBattleAttackerFullnessCost),
+      teamBattleAttackerTeammateFullnessCost: Number(teamBattleAttackerTeammateFullnessCost),
+      teamBattleDefenderFullnessCost: Number(teamBattleDefenderFullnessCost),
+      teamBattleDefenderTeammateFullnessCost: Number(teamBattleDefenderTeammateFullnessCost),
+      bossAttackMaxTargets: Number(bossAttackMaxTargets),
+      bossAttackDamage: Number(bossAttackDamage),
       enableSeasonResetRewards,
       seasonResetRewards: {
         diamond: Number(rewardDiamond),
@@ -393,6 +425,20 @@ export const DashboardView: React.FC = () => {
 
       {/* Students Table */}
       <div className="bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200">
+        <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h3 className="text-base font-semibold text-slate-900">{tLang.pointManagement}</h3>
+            <p className="mt-1 text-xs text-slate-500">{tLang.airdropHint}</p>
+          </div>
+          <button
+            onClick={() => setShowAirdrop(true)}
+            disabled={currentStudents.length === 0}
+            className="inline-flex items-center justify-center rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+          >
+            <Gift className="mr-2 h-4 w-4" />
+            {tLang.airdropAll}
+          </button>
+        </div>
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-slate-200">
             <thead className="bg-slate-50">
@@ -669,7 +715,11 @@ export const DashboardView: React.FC = () => {
                       <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-bold ${
                         record.amount >= 0 ? 'bg-indigo-100 text-indigo-700' : 'bg-rose-100 text-rose-700'
                       }`}>
-                        {record.source === 'manual' ? tLang.recordManualAdjust : tLang.recordQuickAdjust}
+                        {record.source === 'airdrop'
+                          ? tLang.recordAirdrop
+                          : record.source === 'manual'
+                            ? tLang.recordManualAdjust
+                            : tLang.recordQuickAdjust}
                       </span>
                       <span className="font-medium text-slate-900">{record.studentName}</span>
                     </div>
@@ -756,59 +806,118 @@ export const DashboardView: React.FC = () => {
             </button>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end">
-            <div className="md:col-span-1">
-              <label className="block text-sm font-medium text-slate-700 mb-1">{tLang.bossName ?? '魔王名稱'}</label>
-              <input 
-                type="text" 
-                value={bossNameInput}
-                onChange={(e) => setBossNameInput(e.target.value)}
-                placeholder={tLang.enterBossName ?? '輸入名稱...'}
-                className="w-full rounded-md border-slate-300 shadow-sm focus:border-rose-500 focus:ring-rose-500 sm:text-sm border p-2"
-              />
+          <div className="space-y-5">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">{tLang.bossName}</label>
+                <input
+                  type="text"
+                  value={bossNameInput}
+                  onChange={(e) => setBossNameInput(e.target.value)}
+                  placeholder={tLang.enterBossName}
+                  className="w-full rounded-md border border-slate-300 p-2 text-sm shadow-sm focus:border-rose-500 focus:ring-rose-500"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">{tLang.bossHp}</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={bossHpInput}
+                  onChange={(e) => setBossHpInput(Number(e.target.value))}
+                  className="w-full rounded-md border border-slate-300 p-2 text-sm shadow-sm focus:border-rose-500 focus:ring-rose-500"
+                />
+              </div>
             </div>
-            <div className="md:col-span-1">
-              <label className="block text-sm font-medium text-slate-700 mb-1">{tLang.bossHp ?? '血量'}</label>
-              <input 
-                type="number" 
-                min="1"
-                value={bossHpInput}
-                onChange={(e) => setBossHpInput(Number(e.target.value))}
-                className="w-full rounded-md border-slate-300 shadow-sm focus:border-rose-500 focus:ring-rose-500 sm:text-sm border p-2"
-              />
+
+            <div className="border-t border-slate-200 pt-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <h4 className="text-sm font-bold text-slate-800">{tLang.bossRankRewards}</h4>
+                  <p className="mt-1 text-xs text-slate-500">{tLang.bossRankRewardsHint}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const usedRanks = new Set(bossRewardTiers.map((tier) => tier.rank));
+                    const nextRank = Array.from({ length: Math.max(10, currentStudents.length) }, (_, index) => index + 1)
+                      .find((rank) => !usedRanks.has(rank));
+                    if (nextRank) {
+                      setBossRewardTiers((tiers) => [...tiers, { rank: nextRank, points: 0, happiness: 0 }]);
+                    }
+                  }}
+                  className="inline-flex shrink-0 items-center rounded-md border border-rose-200 bg-white px-3 py-2 text-xs font-medium text-rose-700 hover:bg-rose-50"
+                >
+                  <Plus className="mr-1 h-3.5 w-3.5" />
+                  {tLang.addRewardTier}
+                </button>
+              </div>
+              <div className="space-y-2">
+                {bossRewardTiers
+                  .slice()
+                  .sort((left, right) => left.rank - right.rank)
+                  .map((tier) => (
+                    <div key={tier.rank} className="grid grid-cols-[minmax(88px,0.8fr)_1fr_1fr_36px] items-end gap-2 rounded-md border border-slate-200 bg-slate-50 p-3">
+                      <label className="text-xs font-medium text-slate-600">
+                        {tLang.rewardRank}
+                        <select
+                          value={tier.rank}
+                          onChange={(e) => {
+                            const rank = Number(e.target.value);
+                            setBossRewardTiers((tiers) => tiers.map((item) => item.rank === tier.rank ? { ...item, rank } : item));
+                          }}
+                          className="mt-1 w-full rounded-md border border-slate-300 bg-white p-2 text-sm"
+                        >
+                          {Array.from({ length: Math.max(10, currentStudents.length) }, (_, index) => index + 1).map((rank) => (
+                            <option key={rank} value={rank} disabled={rank !== tier.rank && bossRewardTiers.some((item) => item.rank === rank)}>
+                              {tLang.rewardRankOption.replace('{rank}', rank.toString())}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="text-xs font-medium text-slate-600">
+                        {tLang.rewardPoints}
+                        <input
+                          type="number"
+                          min="0"
+                          value={tier.points}
+                          onChange={(e) => setBossRewardTiers((tiers) => tiers.map((item) => item.rank === tier.rank ? { ...item, points: Number(e.target.value) } : item))}
+                          className="mt-1 w-full min-w-0 rounded-md border border-slate-300 bg-white p-2 text-sm"
+                        />
+                      </label>
+                      <label className="text-xs font-medium text-slate-600">
+                        {tLang.rewardHappiness}
+                        <input
+                          type="number"
+                          min="0"
+                          value={tier.happiness}
+                          onChange={(e) => setBossRewardTiers((tiers) => tiers.map((item) => item.rank === tier.rank ? { ...item, happiness: Number(e.target.value) } : item))}
+                          className="mt-1 w-full min-w-0 rounded-md border border-slate-300 bg-white p-2 text-sm"
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setBossRewardTiers((tiers) => tiers.filter((item) => item.rank !== tier.rank))}
+                        className="flex h-9 w-9 items-center justify-center rounded-md text-slate-400 hover:bg-rose-100 hover:text-rose-600"
+                        title={tLang.removeRewardTier}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ))}
+              </div>
             </div>
-            <div className="md:col-span-1">
-              <label className="block text-sm font-medium text-slate-700 mb-1">{tLang.bossPointsReward ?? '勝利積分'}</label>
-              <input 
-                type="number" 
-                min="0"
-                value={bossPointsInput}
-                onChange={(e) => setBossPointsInput(Number(e.target.value))}
-                className="w-full rounded-md border-slate-300 shadow-sm focus:border-rose-500 focus:ring-rose-500 sm:text-sm border p-2"
-              />
-            </div>
-            <div className="md:col-span-1">
-              <label className="block text-sm font-medium text-slate-700 mb-1">{tLang.bossHappinessReward ?? '勝利心情'}</label>
-              <input 
-                type="number" 
-                min="0"
-                value={bossHappinessInput}
-                onChange={(e) => setBossHappinessInput(Number(e.target.value))}
-                className="w-full rounded-md border-slate-300 shadow-sm focus:border-rose-500 focus:ring-rose-500 sm:text-sm border p-2"
-              />
-            </div>
-            <div className="md:col-span-1">
-              <button
-                onClick={() => {
-                  store.summonBoss(bossNameInput, bossHpInput, bossPointsInput, bossHappinessInput);
-                  setBossNameInput('');
-                }}
-                disabled={!bossNameInput.trim()}
-                className="w-full bg-rose-600 text-white px-4 py-2 rounded-md font-medium hover:bg-rose-700 disabled:bg-slate-300 transition-colors"
-              >
-                {tLang.summonBoss ?? '召喚魔王'}
-              </button>
-            </div>
+
+            <button
+              onClick={() => {
+                store.summonBoss(bossNameInput, bossHpInput, bossRewardTiers);
+                setBossNameInput('');
+              }}
+              disabled={!bossNameInput.trim() || bossRewardTiers.length === 0}
+              className="w-full rounded-md bg-rose-600 px-4 py-2 font-medium text-white transition-colors hover:bg-rose-700 disabled:bg-slate-300 sm:w-auto"
+            >
+              {tLang.summonBoss}
+            </button>
           </div>
         )}
       </div>
@@ -901,6 +1010,40 @@ export const DashboardView: React.FC = () => {
             </div>
           </div>
 
+          {/* 魔王設定 */}
+          <div className="space-y-4 bg-rose-50 p-4 rounded-xl border border-rose-200">
+            <h4 className="text-sm font-bold text-rose-800 pb-2 border-b border-rose-200 flex items-center">
+              <Crosshair className="mr-2 h-4 w-4" />
+              {tLang.bossAttackSettings}
+            </h4>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="bossAttackMaxTargets" className="text-sm font-medium text-slate-700">{tLang.bossAttackMaxTargets}</label>
+              <select
+                id="bossAttackMaxTargets"
+                value={bossAttackMaxTargets}
+                onChange={(e) => setBossAttackMaxTargets(Number(e.target.value))}
+                className="w-full rounded-md border border-slate-300 bg-white p-2 text-sm shadow-sm focus:border-rose-500 focus:ring-rose-500"
+              >
+                {[0, 1, 2, 3, 4].map((count) => (
+                  <option key={count} value={count}>{tLang.bossTargetCountOption.replace('{count}', count.toString())}</option>
+                ))}
+              </select>
+              <p className="text-xs text-slate-500">{tLang.bossAttackMaxTargetsHint}</p>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="bossAttackDamage" className="text-sm font-medium text-slate-700">{tLang.bossAttackDamage}</label>
+              <input
+                type="number"
+                id="bossAttackDamage"
+                min="0"
+                value={bossAttackDamage}
+                onChange={(e) => setBossAttackDamage(Number(e.target.value))}
+                className="w-full rounded-md border border-slate-300 bg-white p-2 text-sm shadow-sm focus:border-rose-500 focus:ring-rose-500"
+              />
+              <p className="text-xs text-slate-500">{tLang.bossAttackDamageHint}</p>
+            </div>
+          </div>
+
           {/* 對戰設定 */}
           <div className="space-y-4 bg-slate-50 p-4 rounded-xl border border-slate-200">
             <h4 className="text-sm font-bold text-slate-700 pb-2 border-b border-slate-200">
@@ -943,118 +1086,165 @@ export const DashboardView: React.FC = () => {
               <label htmlFor="battleRankPointsLoss" className="text-sm font-medium text-slate-700">{lang === 'en' ? 'Battle Loss RP' : '落敗扣分 (RP)'}</label>
               <input type="number" id="battleRankPointsLoss" min="0" value={battleRankPointsLoss} onChange={(e) => setBattleRankPointsLoss(Number(e.target.value))} className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2" />
             </div>
-            <div className="flex flex-col gap-1">
-              <label htmlFor="soloBattleFullnessCost" className="text-sm font-medium text-slate-700">
-                {lang === 'en' ? 'Solo Default Fullness Cost' : '個人賽雙方預設消耗飽食度'}
-              </label>
-              <input
-                type="number"
-                id="soloBattleFullnessCost"
-                min="0"
-                value={soloBattleFullnessCost}
-                onChange={(e) => {
-                  const value = Number(e.target.value);
-                  setSoloBattleFullnessCost(value);
-                  setSoloBattleAttackerFullnessCost(value);
-                  setSoloBattleDefenderFullnessCost(value);
-                }}
-                className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
-              />
-              <p className="text-xs text-slate-500">
-                {lang === 'en'
-                  ? 'Changing this value syncs both attacker and defender costs; adjust each side below if needed.'
-                  : '修改此數值會同步攻方與守方；若需要不同消耗，可再分別調整下方欄位。'}
-              </p>
-            </div>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="pt-2 border-t border-slate-200 mt-2 space-y-4">
               <div className="flex flex-col gap-1">
-                <label htmlFor="soloBattleAttackerFullnessCost" className="text-sm font-medium text-slate-700">
-                  {lang === 'en' ? 'Attacker Fullness Cost' : '攻方消耗飽食度'}
+                <label htmlFor="battleSettingsCategory" className="text-sm font-medium text-slate-700">
+                  {lang === 'en' ? 'Rules to Adjust' : '調整賽制'}
                 </label>
-                <input
-                  type="number"
-                  id="soloBattleAttackerFullnessCost"
-                  min="0"
-                  value={soloBattleAttackerFullnessCost}
-                  onChange={(e) => setSoloBattleAttackerFullnessCost(Number(e.target.value))}
+                <select
+                  id="battleSettingsCategory"
+                  value={battleSettingsCategory}
+                  onChange={(e) => setBattleSettingsCategory(e.target.value as 'solo' | 'team')}
                   className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
-                />
+                >
+                  <option value="solo">{lang === 'en' ? 'Solo Battle Rules' : '個人賽飽食度機制'}</option>
+                  <option value="team">{lang === 'en' ? 'Team Battle Rules' : '隊伍賽飽食度機制'}</option>
+                </select>
               </div>
-              <div className="flex flex-col gap-1">
-                <label htmlFor="soloBattleDefenderFullnessCost" className="text-sm font-medium text-slate-700">
-                  {lang === 'en' ? 'Defender Fullness Cost' : '守方消耗飽食度'}
-                </label>
-                <input
-                  type="number"
-                  id="soloBattleDefenderFullnessCost"
-                  min="0"
-                  value={soloBattleDefenderFullnessCost}
-                  onChange={(e) => setSoloBattleDefenderFullnessCost(Number(e.target.value))}
-                  className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
-                />
-              </div>
-            </div>
-            <div className="flex flex-col gap-1">
-              <label htmlFor="soloBattleWinPoints" className="text-sm font-medium text-slate-700">
-                {lang === 'en' ? 'Solo Win Points' : '個人賽勝利積分'}
-              </label>
-              <input
-                type="number"
-                id="soloBattleWinPoints"
-                min="0"
-                value={soloBattleWinPoints}
-                onChange={(e) => setSoloBattleWinPoints(Number(e.target.value))}
-                className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <label htmlFor="soloBattleLossPoints" className="text-sm font-medium text-slate-700">
-                {lang === 'en' ? 'Solo Loss Penalty' : '個人賽失敗扣分'}
-              </label>
-              <input
-                type="number"
-                id="soloBattleLossPoints"
-                min="0"
-                value={soloBattleLossPoints}
-                onChange={(e) => setSoloBattleLossPoints(Number(e.target.value))}
-                className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
-              />
-            </div>
-            <div className="pt-2 border-t border-slate-200 mt-2 space-y-3">
-              <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={teamBattleMinFullnessEnabled}
-                  onChange={(e) => setTeamBattleMinFullnessEnabled(e.target.checked)}
-                  className="rounded text-indigo-600 focus:ring-indigo-500"
-                />
-                <span className="text-sm font-medium text-slate-700">
-                  {lang === 'en' ? 'Enable team minimum fullness gate' : '隊伍賽啟用最低飽食度限制'}
-                </span>
-              </label>
-              <div className="flex flex-col gap-1">
-                <label htmlFor="teamBattleMinFullness" className="text-sm font-medium text-slate-700">
-                  {lang === 'en' ? 'Team Minimum Fullness' : '隊伍賽最低飽食度'}
-                </label>
-                <input
-                  type="number"
-                  id="teamBattleMinFullness"
-                  min="0"
-                  value={teamBattleMinFullness}
-                  disabled={!teamBattleMinFullnessEnabled}
-                  onChange={(e) => setTeamBattleMinFullness(Number(e.target.value))}
-                  className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 disabled:bg-slate-100 disabled:text-slate-400 sm:text-sm border p-2"
-                />
-              </div>
-              <p className="text-xs text-slate-500">
-                {teamBattleMinFullnessEnabled
-                  ? (lang === 'en'
-                      ? 'Only members meeting this fullness value can enter team battles.'
-                      : '只有達到此飽食度的成員才能參與隊伍賽。')
-                  : (lang === 'en'
-                      ? 'When disabled, team battles ignore the minimum fullness requirement.'
-                      : '關閉後，隊伍賽將忽略最低飽食度限制。')}
-              </p>
+
+              {battleSettingsCategory === 'solo' ? (
+                <div className="space-y-4">
+                  <p className="text-xs text-slate-500">
+                    {lang === 'en'
+                      ? 'Solo battle costs are based on whether the student starts or receives the challenge.'
+                      : '個人賽依學生是發起挑戰或接受挑戰，分別套用飽食度消耗。'}
+                  </p>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div className="flex flex-col gap-1">
+                      <label htmlFor="soloBattleAttackerFullnessCost" className="text-sm font-medium text-slate-700">
+                        {lang === 'en' ? 'Attacker Fullness Cost' : '進攻方消耗飽食度'}
+                      </label>
+                      <input
+                        type="number"
+                        id="soloBattleAttackerFullnessCost"
+                        min="0"
+                        value={soloBattleAttackerFullnessCost}
+                        onChange={(e) => setSoloBattleAttackerFullnessCost(Number(e.target.value))}
+                        className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label htmlFor="soloBattleDefenderFullnessCost" className="text-sm font-medium text-slate-700">
+                        {lang === 'en' ? 'Defender Fullness Cost' : '防守方消耗飽食度'}
+                      </label>
+                      <input
+                        type="number"
+                        id="soloBattleDefenderFullnessCost"
+                        min="0"
+                        value={soloBattleDefenderFullnessCost}
+                        onChange={(e) => setSoloBattleDefenderFullnessCost(Number(e.target.value))}
+                        className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div className="flex flex-col gap-1">
+                      <label htmlFor="soloBattleWinPoints" className="text-sm font-medium text-slate-700">
+                        {lang === 'en' ? 'Solo Win Points' : '個人賽勝利積分'}
+                      </label>
+                      <input
+                        type="number"
+                        id="soloBattleWinPoints"
+                        min="0"
+                        value={soloBattleWinPoints}
+                        onChange={(e) => setSoloBattleWinPoints(Number(e.target.value))}
+                        className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label htmlFor="soloBattleLossPoints" className="text-sm font-medium text-slate-700">
+                        {lang === 'en' ? 'Solo Loss Penalty' : '個人賽失敗扣分'}
+                      </label>
+                      <input
+                        type="number"
+                        id="soloBattleLossPoints"
+                        min="0"
+                        value={soloBattleLossPoints}
+                        onChange={(e) => setSoloBattleLossPoints(Number(e.target.value))}
+                        className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
+                      />
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <p className="text-xs text-slate-500">
+                    {lang === 'en'
+                      ? 'Team battle costs are based on each participant role, independent of the match result.'
+                      : '隊伍賽依每位成員在本場的角色扣除飽食度，不受勝敗結果影響。'}
+                  </p>
+                  <div className="space-y-3">
+                    <h5 className="text-xs font-bold text-slate-600">{lang === 'en' ? 'Attacking Team' : '攻擊方'}</h5>
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <div className="flex flex-col gap-1">
+                        <label htmlFor="teamBattleAttackerFullnessCost" className="text-sm font-medium text-slate-700">
+                          {lang === 'en' ? 'Initiator Fullness Cost' : '發動攻擊者消耗飽食度'}
+                        </label>
+                        <input type="number" id="teamBattleAttackerFullnessCost" min="0" value={teamBattleAttackerFullnessCost} onChange={(e) => setTeamBattleAttackerFullnessCost(Number(e.target.value))} className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2" />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label htmlFor="teamBattleAttackerTeammateFullnessCost" className="text-sm font-medium text-slate-700">
+                          {lang === 'en' ? 'Attacking Teammate Cost' : '攻擊方隊友消耗飽食度'}
+                        </label>
+                        <input type="number" id="teamBattleAttackerTeammateFullnessCost" min="0" value={teamBattleAttackerTeammateFullnessCost} onChange={(e) => setTeamBattleAttackerTeammateFullnessCost(Number(e.target.value))} className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2" />
+                      </div>
+                    </div>
+                  </div>
+                  <div className="space-y-3 border-t border-slate-200 pt-3">
+                    <h5 className="text-xs font-bold text-slate-600">{lang === 'en' ? 'Defending Team' : '防守方'}</h5>
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <div className="flex flex-col gap-1">
+                        <label htmlFor="teamBattleDefenderFullnessCost" className="text-sm font-medium text-slate-700">
+                          {lang === 'en' ? 'Target Fullness Cost' : '被攻擊者消耗飽食度'}
+                        </label>
+                        <input type="number" id="teamBattleDefenderFullnessCost" min="0" value={teamBattleDefenderFullnessCost} onChange={(e) => setTeamBattleDefenderFullnessCost(Number(e.target.value))} className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2" />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label htmlFor="teamBattleDefenderTeammateFullnessCost" className="text-sm font-medium text-slate-700">
+                          {lang === 'en' ? 'Defending Teammate Cost' : '防守方隊友消耗飽食度'}
+                        </label>
+                        <input type="number" id="teamBattleDefenderTeammateFullnessCost" min="0" value={teamBattleDefenderTeammateFullnessCost} onChange={(e) => setTeamBattleDefenderTeammateFullnessCost(Number(e.target.value))} className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2" />
+                      </div>
+                    </div>
+                  </div>
+                  <div className="space-y-3 border-t border-slate-200 pt-3">
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={teamBattleMinFullnessEnabled}
+                        onChange={(e) => setTeamBattleMinFullnessEnabled(e.target.checked)}
+                        className="rounded text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <span className="text-sm font-medium text-slate-700">
+                        {lang === 'en' ? 'Enable team minimum fullness gate' : '隊伍賽啟用最低飽食度限制'}
+                      </span>
+                    </label>
+                    <div className="flex flex-col gap-1">
+                      <label htmlFor="teamBattleMinFullness" className="text-sm font-medium text-slate-700">
+                        {lang === 'en' ? 'Team Minimum Fullness' : '隊伍賽最低飽食度'}
+                      </label>
+                      <input
+                        type="number"
+                        id="teamBattleMinFullness"
+                        min="0"
+                        value={teamBattleMinFullness}
+                        disabled={!teamBattleMinFullnessEnabled}
+                        onChange={(e) => setTeamBattleMinFullness(Number(e.target.value))}
+                        className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 disabled:bg-slate-100 disabled:text-slate-400 sm:text-sm border p-2"
+                      />
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      {teamBattleMinFullnessEnabled
+                        ? (lang === 'en'
+                            ? 'Only members meeting this fullness value can enter team battles.'
+                            : '只有達到此飽食度的成員才能參與隊伍賽。')
+                        : (lang === 'en'
+                            ? 'When disabled, team battles ignore the minimum fullness requirement.'
+                            : '關閉後，隊伍賽將忽略最低飽食度限制。')}
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -1171,6 +1361,64 @@ export const DashboardView: React.FC = () => {
                 className="px-4 py-2 text-sm font-medium text-white bg-red-600 border border-transparent rounded-md hover:bg-red-700"
               >
                 {tLang.delete}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Class Airdrop Modal */}
+      {showAirdrop && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 animate-in fade-in duration-200">
+          <div className="w-full max-w-sm overflow-hidden rounded-xl bg-white shadow-xl">
+            <div className="p-6">
+              <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
+                <Gift className="h-5 w-5" />
+              </div>
+              <h3 className="text-lg font-bold text-slate-900">{tLang.airdropTitle}</h3>
+              <p className="mt-2 text-sm text-slate-600">
+                {tLang.airdropDesc.replace('{count}', currentStudents.length.toString())}
+              </p>
+              <label className="mt-5 block text-sm font-medium text-slate-700">
+                {tLang.airdropAmount}
+                <input
+                  type="number"
+                  value={airdropAmount}
+                  onChange={(e) => setAirdropAmount(e.target.value)}
+                  className="mt-1 w-full rounded-md border border-slate-300 p-2 text-sm shadow-sm focus:border-emerald-500 focus:ring-emerald-500"
+                  placeholder={tLang.airdropAmountPlaceholder}
+                  autoFocus
+                />
+              </label>
+              <label className="mt-4 block text-sm font-medium text-slate-700">
+                {tLang.airdropReason}
+                <input
+                  type="text"
+                  value={airdropReason}
+                  onChange={(e) => setAirdropReason(e.target.value)}
+                  className="mt-1 w-full rounded-md border border-slate-300 p-2 text-sm shadow-sm focus:border-emerald-500 focus:ring-emerald-500"
+                  placeholder={tLang.airdropReasonPlaceholder}
+                />
+              </label>
+            </div>
+            <div className="flex justify-end gap-3 bg-slate-50 px-6 py-4">
+              <button
+                onClick={() => { setShowAirdrop(false); setAirdropAmount(''); setAirdropReason(''); }}
+                className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                {tLang.cancel}
+              </button>
+              <button
+                onClick={() => {
+                  store.airdropPoints(Number(airdropAmount), airdropReason);
+                  setShowAirdrop(false);
+                  setAirdropAmount('');
+                  setAirdropReason('');
+                }}
+                disabled={!Number.isFinite(Number(airdropAmount)) || Number(airdropAmount) === 0}
+                className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:bg-slate-300"
+              >
+                {tLang.confirmAirdrop}
               </button>
             </div>
           </div>

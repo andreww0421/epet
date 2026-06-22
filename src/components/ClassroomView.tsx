@@ -10,7 +10,9 @@ import { getTeamMembers } from '../store/utils';
 import {
   isBattleReady, SOLO_BATTLE_MIN_FULLNESS, SOLO_BATTLE_FULLNESS_COST,
   SOLO_BATTLE_WIN_POINTS, SOLO_BATTLE_LOSS_POINTS, TEAM_BATTLE_MIN_FULLNESS,
-  TEAM_BATTLE_MIN_FULLNESS_ENABLED
+  TEAM_BATTLE_MIN_FULLNESS_ENABLED, TEAM_BATTLE_ATTACKER_FULLNESS_COST,
+  TEAM_BATTLE_ATTACKER_TEAMMATE_FULLNESS_COST, TEAM_BATTLE_DEFENDER_FULLNESS_COST,
+  TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST, getBossContributionStandings
 } from '../gameRules';
 import { PetCard } from './PetCard';
 
@@ -29,6 +31,9 @@ export const ClassroomView: React.FC = () => {
 
   const currentClass = data.classes.find((c: any) => c.id === data.currentClassId);
   const students = currentClass?.students || [];
+  const bossContributionStandings = currentClass?.activeBoss
+    ? getBossContributionStandings(students, currentClass.activeBoss)
+    : [];
   const attackerStudent = attackerId ? students.find((student: any) => student.id === attackerId) : null;
   const renderNow = Date.now();
   const currentBattleMode = data.settings?.battleMode ?? DEFAULT_BATTLE_MODE;
@@ -42,6 +47,14 @@ export const ClassroomView: React.FC = () => {
   const currentSoloBattleLossPoints = data.settings?.soloBattleLossPoints ?? SOLO_BATTLE_LOSS_POINTS;
   const currentTeamBattleMinFullnessEnabled = data.settings?.teamBattleMinFullnessEnabled ?? TEAM_BATTLE_MIN_FULLNESS_ENABLED;
   const currentTeamBattleMinFullness = data.settings?.teamBattleMinFullness ?? TEAM_BATTLE_MIN_FULLNESS;
+  const currentTeamBattleAttackerFullnessCost =
+    data.settings?.teamBattleAttackerFullnessCost ?? TEAM_BATTLE_ATTACKER_FULLNESS_COST;
+  const currentTeamBattleAttackerTeammateFullnessCost =
+    data.settings?.teamBattleAttackerTeammateFullnessCost ?? TEAM_BATTLE_ATTACKER_TEAMMATE_FULLNESS_COST;
+  const currentTeamBattleDefenderFullnessCost =
+    data.settings?.teamBattleDefenderFullnessCost ?? TEAM_BATTLE_DEFENDER_FULLNESS_COST;
+  const currentTeamBattleDefenderTeammateFullnessCost =
+    data.settings?.teamBattleDefenderTeammateFullnessCost ?? TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST;
   const soloBattleReadyOptions = { minimumFullness: SOLO_BATTLE_MIN_FULLNESS };
   const teamBattleReadyOptions = {
     minimumFullness: currentTeamBattleMinFullness,
@@ -158,7 +171,7 @@ export const ClassroomView: React.FC = () => {
           <p className="mt-3 max-w-2xl mx-auto text-xl text-amber-700 sm:mt-4">
             {tLang.classroomDesc}
           </p>
-          <div className="mt-6 flex justify-center space-x-4">
+          <div className="mt-6 flex flex-wrap justify-center gap-2">
             <button
               onClick={() => setViewMode('grid')}
               className={`px-4 py-2 rounded-full font-medium transition-colors ${viewMode === 'grid' ? 'bg-amber-500 text-white shadow-md' : 'bg-white text-amber-700 hover:bg-amber-100'}`}
@@ -183,50 +196,120 @@ export const ClassroomView: React.FC = () => {
           </div>
         </div>
 
-        {store.showBossVictory && (
-           <div className="fixed inset-0 z-[100] bg-black/80 flex items-center justify-center backdrop-blur-sm animate-in fade-in duration-500">
-             <div className="relative flex flex-col items-center justify-center animate-[bounce_1s_ease-in-out]">
-                <Sparkles className="absolute -inset-x-12 -inset-y-12 w-full h-full text-amber-500 animate-[pulse_1.5s_ease-in-out_infinite] opacity-50" />
-                <Trophy className="w-32 h-32 text-amber-400 mb-6 drop-shadow-[0_0_30px_rgba(251,191,36,0.8)] animate-[spin_3s_linear_infinite]" />
-                <h1 className="text-5xl md:text-7xl font-black text-amber-400 drop-shadow-[0_0_20px_rgba(251,191,36,0.8)] uppercase tracking-widest text-center animate-[pulse_1s_ease-in-out_infinite]">
-                  {tLang.bossDefeatedTitle ?? '討伐成功'}
-                </h1>
-                <p className="mt-4 text-amber-200 text-xl font-bold tracking-wide drop-shadow-md">
-                  {tLang.bossDefeatedSubtitle ?? 'Epic Victory!'}
-                </p>
-             </div>
-           </div>
+        {store.showBossVictory && store.bossVictoryResult && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/85 p-4 backdrop-blur-sm animate-in fade-in duration-300">
+            <div className="max-h-[90vh] w-full max-w-2xl overflow-hidden rounded-xl border border-amber-300/30 bg-slate-900 shadow-2xl">
+              <div className="flex items-start justify-between border-b border-slate-700 px-5 py-4 sm:px-6">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-amber-400/15 text-amber-300">
+                    <Trophy className="h-6 w-6" />
+                  </div>
+                  <div className="min-w-0">
+                    <h2 className="text-xl font-black text-amber-300">{tLang.bossDefeatedTitle}</h2>
+                    <p className="truncate text-sm text-slate-300">{store.bossVictoryResult.bossName}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={store.dismissBossVictory}
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-slate-800 hover:text-white"
+                  title={tLang.close}
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              <div className="overflow-y-auto p-5 sm:p-6">
+                <p className="mb-4 text-sm text-slate-300">{tLang.bossDefeatedSubtitle}</p>
+                <div className="overflow-x-auto rounded-lg border border-slate-700">
+                  <div className="grid min-w-[500px] grid-cols-[52px_minmax(0,1fr)_90px_minmax(115px,auto)] gap-2 bg-slate-800 px-3 py-2 text-xs font-bold text-slate-400">
+                    <span>#</span>
+                    <span>{tLang.studentName}</span>
+                    <span className="text-right">{tLang.damageContribution.replace('{damage}', '')}</span>
+                    <span className="text-right">{tLang.rewardPoints} / {tLang.rewardHappiness}</span>
+                  </div>
+                  {store.bossVictoryResult.standings.map((standing) => (
+                    <div key={standing.studentId} className="grid min-w-[500px] grid-cols-[52px_minmax(0,1fr)_90px_minmax(115px,auto)] items-center gap-2 border-t border-slate-700 px-3 py-3 text-sm">
+                      <span className="font-black text-amber-300">{standing.rank}</span>
+                      <span className="truncate font-medium text-white">{standing.studentName}</span>
+                      <span className="text-right font-mono text-rose-300">{standing.damage}</span>
+                      <span className="text-right text-slate-200">+{standing.rewardPoints} / +{standing.rewardHappiness}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="border-t border-slate-700 px-5 py-4 text-right sm:px-6">
+                <button onClick={store.dismissBossVictory} className="rounded-md bg-amber-400 px-5 py-2 text-sm font-bold text-slate-950 hover:bg-amber-300">
+                  {tLang.close}
+                </button>
+              </div>
+            </div>
+          </div>
         )}
 
         {currentClass?.activeBoss?.isActive && (
-          <div className={`mb-4 rounded-2xl bg-slate-900 border-2 ${store.bossHitFeedback ? 'border-red-500 bg-red-950 animate-[bounce_0.2s_ease-in-out_2]' : 'border-red-900/50'} p-6 shadow-2xl relative overflow-hidden`}>
+          <div className={`relative mb-4 overflow-hidden rounded-xl border-2 bg-slate-900 p-5 shadow-2xl ${store.bossHitFeedback ? 'border-red-500 bg-red-950' : 'border-red-900/50'}`}>
             <div className="absolute top-0 right-0 p-4 opacity-10">
               <Skull className="w-32 h-32 text-red-500" />
             </div>
-            <div className="relative z-10 flex flex-col md:flex-row items-center gap-6">
-              <div className="flex-shrink-0 flex items-center justify-center w-16 h-16 rounded-full bg-red-950 border border-red-800 relative">
-                <Swords className="w-8 h-8 text-red-500 animate-pulse" />
-                {store.bossHitFeedback && (
-                  <div key={store.bossHitFeedback.id} className="absolute -top-8 text-red-400 font-black text-3xl animate-[bounce_0.8s_ease-out_forwards] drop-shadow-lg whitespace-nowrap z-20">
-                    -{store.bossHitFeedback.damage}
+            <div className="relative z-10 grid gap-5 lg:grid-cols-[minmax(0,1fr)_300px]">
+              <div className="min-w-0">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+                  <div className="relative flex h-14 w-14 shrink-0 items-center justify-center rounded-full border border-red-800 bg-red-950">
+                    <Swords className="h-7 w-7 text-red-500" />
+                    {store.bossHitFeedback && (
+                      <div key={store.bossHitFeedback.id} className="absolute -top-7 z-20 whitespace-nowrap text-2xl font-black text-red-400 animate-[bounce_0.8s_ease-out_forwards]">
+                        -{store.bossHitFeedback.damage}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-              <div className="flex-1 w-full text-center md:text-left">
-                <h2 className="text-2xl font-black text-rose-100 tracking-wider mb-2 drop-shadow-md">
-                  {currentClass.activeBoss.name}
-                </h2>
-                <div className="w-full bg-slate-800 rounded-full h-6 relative overflow-hidden ring-1 ring-white/10">
-                  <div 
-                    className="bg-gradient-to-r from-red-600 to-rose-500 h-6 rounded-full transition-all duration-500 relative overflow-hidden" 
-                    style={{ width: `${Math.max(0, (currentClass.activeBoss.currentHp / currentClass.activeBoss.maxHp) * 100)}%` }}
-                  >
-                    <div className="absolute inset-0 bg-white/20 animate-[pulse_2s_ease-in-out_infinite]"></div>
-                  </div>
-                  <div className="absolute inset-0 flex items-center justify-center text-xs font-bold text-white shadow-black drop-shadow-md">
-                    {currentClass.activeBoss.currentHp} / {currentClass.activeBoss.maxHp}
+                  <div className="min-w-0 flex-1">
+                    <h2 className="mb-2 truncate text-2xl font-black text-rose-100">{currentClass.activeBoss.name}</h2>
+                    <div className="relative h-6 w-full overflow-hidden rounded-full bg-slate-800 ring-1 ring-white/10">
+                      <div
+                        className="h-6 rounded-full bg-red-600 transition-all duration-500"
+                        style={{ width: `${Math.max(0, (currentClass.activeBoss.currentHp / currentClass.activeBoss.maxHp) * 100)}%` }}
+                      />
+                      <div className="absolute inset-0 flex items-center justify-center text-xs font-bold text-white drop-shadow-md">
+                        {currentClass.activeBoss.currentHp} / {currentClass.activeBoss.maxHp}
+                      </div>
+                    </div>
                   </div>
                 </div>
+                <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+                  <button
+                    onClick={store.executeBossAttack}
+                    className="inline-flex items-center justify-center rounded-md bg-red-600 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-red-500 active:scale-[0.98]"
+                  >
+                    <Skull className="mr-2 h-4 w-4" />
+                    {tLang.executeBossAttack}
+                  </button>
+                  {store.bossAttackFeedback && (
+                    <p className="min-w-0 text-sm text-rose-200">
+                      {store.bossAttackFeedback.targetNames.length > 0
+                        ? `${store.bossAttackFeedback.targetNames.join(lang === 'en' ? ', ' : '、')} (-${store.bossAttackFeedback.damage})`
+                        : tLang.bossAttackMissed}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-slate-700 bg-slate-950/50 p-3">
+                <h3 className="mb-2 flex items-center text-sm font-bold text-slate-200">
+                  <BarChart3 className="mr-2 h-4 w-4 text-amber-300" />
+                  {tLang.contributionLeaderboard}
+                </h3>
+                {bossContributionStandings.length === 0 ? (
+                  <p className="py-3 text-center text-xs text-slate-500">{tLang.noContribution}</p>
+                ) : (
+                  <div className="max-h-28 space-y-1.5 overflow-y-auto pr-1">
+                    {bossContributionStandings.map((standing) => (
+                      <div key={standing.studentId} className="grid grid-cols-[28px_minmax(0,1fr)_auto] items-center gap-2 rounded bg-slate-800/80 px-2 py-1.5 text-xs">
+                        <span className="font-black text-amber-300">{standing.rank}</span>
+                        <span className="truncate font-medium text-slate-100">{standing.studentName}</span>
+                        <span className="font-mono text-rose-300">{standing.damage}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -437,11 +520,13 @@ export const ClassroomView: React.FC = () => {
             </div>
             <div className="p-6">
               <div className="mb-4 space-y-2 text-sm text-gray-600">
-                <p>
-                  {lang === 'en'
-                    ? `Solo battles cost ${currentSoloBattleAttackerFullnessCost} fullness for the attacker and ${currentSoloBattleDefenderFullnessCost} for the defender. Winner +${currentSoloBattleWinPoints} points, loser -${currentSoloBattleLossPoints} points.`
-                    : `個人賽攻方消耗 ${currentSoloBattleAttackerFullnessCost} 飽食度，守方消耗 ${currentSoloBattleDefenderFullnessCost} 飽食度。勝方 +${currentSoloBattleWinPoints} 積分，敗方 -${currentSoloBattleLossPoints} 積分。`}
-                </p>
+                {currentBattleMode !== 'team' && (
+                  <p>
+                    {lang === 'en'
+                      ? `Solo: attacker -${currentSoloBattleAttackerFullnessCost} fullness, defender -${currentSoloBattleDefenderFullnessCost}. Winner +${currentSoloBattleWinPoints} points, loser -${currentSoloBattleLossPoints} points.`
+                      : `個人賽：進攻方消耗 ${currentSoloBattleAttackerFullnessCost} 飽食度，防守方消耗 ${currentSoloBattleDefenderFullnessCost} 飽食度；勝方 +${currentSoloBattleWinPoints} 積分，敗方 -${currentSoloBattleLossPoints} 積分。`}
+                  </p>
+                )}
                 <p className="rounded-xl bg-sky-50 px-3 py-2 text-sky-800">
                   {currentBattleMode === 'solo'
                     ? (lang === 'en'
@@ -455,15 +540,13 @@ export const ClassroomView: React.FC = () => {
                           ? `If both sides have at least 2 eligible members, this match becomes a team battle; otherwise it falls back to solo. Teams can include up to ${currentMaxTeamSize} members.`
                           : `若雙方都至少有 2 位符合條件的成員，這場對戰會切換為隊伍賽；否則會回到個人賽。每隊最多 ${currentMaxTeamSize} 人。`)}
                 </p>
-                <p className="rounded-xl bg-amber-50 px-3 py-2 text-amber-800">
-                  {currentTeamBattleMinFullnessEnabled
-                    ? (lang === 'en'
-                        ? `Team battles require each participant to have at least ${currentTeamBattleMinFullness} fullness.`
-                        : `隊伍賽出戰成員需至少 ${currentTeamBattleMinFullness} 飽食度。`)
-                    : (lang === 'en'
-                        ? 'Team battles currently ignore the minimum fullness gate.'
-                        : '隊伍賽目前已關閉最低飽食度限制。')}
-                </p>
+                {currentBattleMode !== 'solo' && (
+                  <p className="rounded-xl bg-amber-50 px-3 py-2 text-amber-800">
+                    {lang === 'en'
+                      ? `Team: initiator -${currentTeamBattleAttackerFullnessCost}, attacking teammates -${currentTeamBattleAttackerTeammateFullnessCost}, target -${currentTeamBattleDefenderFullnessCost}, defending teammates -${currentTeamBattleDefenderTeammateFullnessCost} fullness. ${currentTeamBattleMinFullnessEnabled ? `Minimum ${currentTeamBattleMinFullness} fullness required.` : 'Minimum fullness gate is disabled.'}`
+                      : `隊伍賽：發動攻擊者消耗 ${currentTeamBattleAttackerFullnessCost}、攻擊方隊友消耗 ${currentTeamBattleAttackerTeammateFullnessCost}、被攻擊者消耗 ${currentTeamBattleDefenderFullnessCost}、防守方隊友消耗 ${currentTeamBattleDefenderTeammateFullnessCost} 飽食度。${currentTeamBattleMinFullnessEnabled ? `出戰需至少 ${currentTeamBattleMinFullness} 飽食度。` : '目前已關閉最低飽食度限制。'}`}
+                  </p>
+                )}
               </div>
               <div className="space-y-2 max-h-60 overflow-y-auto">
                 {availableOpponents.map((student: any) => (

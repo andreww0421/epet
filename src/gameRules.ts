@@ -9,7 +9,7 @@ export type DisciplineRecord = {
   warningCount?: number;
 };
 
-export type PointAdjustmentSource = 'quick' | 'manual';
+export type PointAdjustmentSource = 'quick' | 'manual' | 'airdrop';
 
 export type PointAdjustmentRecord = {
   id: string;
@@ -65,9 +65,24 @@ export type WorldBoss = {
   name: string;
   maxHp: number;
   currentHp: number;
+  rewardTiers: BossRewardTier[];
+  contributions: Record<string, number>;
+  isActive: boolean;
+};
+
+export type BossRewardTier = {
+  rank: number;
+  points: number;
+  happiness: number;
+};
+
+export type BossContributionStanding = {
+  rank: number;
+  studentId: string;
+  studentName: string;
+  damage: number;
   rewardPoints: number;
   rewardHappiness: number;
-  isActive: boolean;
 };
 
 export type BattleOutcome = 'win' | 'loss' | 'draw';
@@ -98,6 +113,10 @@ export type BattleResolutionOptions = {
   soloBattleLossPoints?: number;
   teamBattleMinFullnessEnabled?: boolean;
   teamBattleMinFullness?: number;
+  teamBattleAttackerFullnessCost?: number;
+  teamBattleAttackerTeammateFullnessCost?: number;
+  teamBattleDefenderFullnessCost?: number;
+  teamBattleDefenderTeammateFullnessCost?: number;
 };
 
 export const UPGRADE_GACHA_LEVEL_SEQUENCE = [2, 4, 6, 8] as const;
@@ -129,12 +148,20 @@ export const TEAM_BATTLE_WIN_RANK_POINTS = 12;
 export const TEAM_BATTLE_LOSS_RANK_POINTS = 6;
 export const TEAM_BATTLE_MIN_FULLNESS_ENABLED = true;
 export const TEAM_BATTLE_MIN_FULLNESS = 50;
-export const TEAM_BATTLE_WIN_FULLNESS_COST = 30;
-export const TEAM_BATTLE_LOSS_FULLNESS_COST = 35;
-export const TEAM_BATTLE_DRAW_FULLNESS_COST = 20;
+export const TEAM_BATTLE_ATTACKER_FULLNESS_COST = 30;
+export const TEAM_BATTLE_ATTACKER_TEAMMATE_FULLNESS_COST = 20;
+export const TEAM_BATTLE_DEFENDER_FULLNESS_COST = 35;
+export const TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST = 20;
 export const TEAM_BATTLE_TEAM_BONUS_POINTS = 10;
 export const TEAM_BATTLE_TEAM_BONUS_HAPPINESS = 6;
 export const BOSS_ATTACK_FULLNESS_COST = 20;
+export const DEFAULT_BOSS_ATTACK_MAX_TARGETS = 4;
+export const DEFAULT_BOSS_ATTACK_DAMAGE = 20;
+export const DEFAULT_BOSS_REWARD_TIERS: BossRewardTier[] = [
+  { rank: 1, points: 100, happiness: 30 },
+  { rank: 2, points: 70, happiness: 20 },
+  { rank: 3, points: 50, happiness: 10 },
+];
 
 export const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
@@ -514,10 +541,34 @@ export const resolveTeamBattle = <
   if (attackerScore > defenderScore) outcome = 'win';
   else if (attackerScore < defenderScore) outcome = 'loss';
 
+  const teamBattleAttackerFullnessCost = Math.max(
+    0,
+    toFiniteNumber(options?.teamBattleAttackerFullnessCost, TEAM_BATTLE_ATTACKER_FULLNESS_COST),
+  );
+  const teamBattleAttackerTeammateFullnessCost = Math.max(
+    0,
+    toFiniteNumber(
+      options?.teamBattleAttackerTeammateFullnessCost,
+      TEAM_BATTLE_ATTACKER_TEAMMATE_FULLNESS_COST,
+    ),
+  );
+  const teamBattleDefenderFullnessCost = Math.max(
+    0,
+    toFiniteNumber(options?.teamBattleDefenderFullnessCost, TEAM_BATTLE_DEFENDER_FULLNESS_COST),
+  );
+  const teamBattleDefenderTeammateFullnessCost = Math.max(
+    0,
+    toFiniteNumber(
+      options?.teamBattleDefenderTeammateFullnessCost,
+      TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST,
+    ),
+  );
+
   const updateMember = <T extends StudentRuleState>(
     member: TeamBattleMember<T>,
     sideWon: boolean | null,
     reward: TeamBattleReward | null,
+    fullnessCost: number,
   ) => {
     const stats = member.student.stats ?? { wins: 0, losses: 0 };
     const rankPoints = member.student.rankPoints ?? 0;
@@ -528,7 +579,7 @@ export const resolveTeamBattle = <
         pet: syncPetLifeState(
           {
             ...member.student.pet,
-            fullness: clamp(member.student.pet.fullness - TEAM_BATTLE_DRAW_FULLNESS_COST, 0, 100),
+            fullness: clamp(member.student.pet.fullness - fullnessCost, 0, 100),
           },
           now,
         ),
@@ -549,11 +600,7 @@ export const resolveTeamBattle = <
       pet: syncPetLifeState(
         {
           ...member.student.pet,
-          fullness: clamp(
-            member.student.pet.fullness - (sideWon ? TEAM_BATTLE_WIN_FULLNESS_COST : TEAM_BATTLE_LOSS_FULLNESS_COST),
-            0,
-            100,
-          ),
+          fullness: clamp(member.student.pet.fullness - fullnessCost, 0, 100),
           happiness: clamp(
             member.student.pet.happiness + (sideWon ? 4 + bonusHappiness : -4),
             0,
@@ -574,9 +621,30 @@ export const resolveTeamBattle = <
 
   const updated: Record<string, TAttacker | TDefender> = {};
 
+  const updateAttackers = (sideWon: boolean | null, reward: TeamBattleReward | null) => {
+    attackers.forEach((member, index) => {
+      updated[member.id] = updateMember(
+        member,
+        sideWon,
+        reward,
+        index === 0 ? teamBattleAttackerFullnessCost : teamBattleAttackerTeammateFullnessCost,
+      );
+    });
+  };
+  const updateDefenders = (sideWon: boolean | null, reward: TeamBattleReward | null) => {
+    defenders.forEach((member, index) => {
+      updated[member.id] = updateMember(
+        member,
+        sideWon,
+        reward,
+        index === 0 ? teamBattleDefenderFullnessCost : teamBattleDefenderTeammateFullnessCost,
+      );
+    });
+  };
+
   if (outcome === 'draw') {
-    for (const member of attackers) updated[member.id] = updateMember(member, null, null);
-    for (const member of defenders) updated[member.id] = updateMember(member, null, null);
+    updateAttackers(null, null);
+    updateDefenders(null, null);
     return {
       blocked: null,
       outcome,
@@ -598,8 +666,8 @@ export const resolveTeamBattle = <
         }
       : null;
 
-  for (const member of attackers) updated[member.id] = updateMember(member, attackerWon, teamReward);
-  for (const member of defenders) updated[member.id] = updateMember(member, !attackerWon, teamReward);
+  updateAttackers(attackerWon, teamReward);
+  updateDefenders(!attackerWon, teamReward);
 
   return {
     blocked: null,
@@ -679,7 +747,7 @@ export const claimDailyTaskForStudent = <T extends StudentRuleState>(student: T,
   };
 };
 
-export const attackWorldBoss = <T extends StudentRuleState>(
+export const attackWorldBoss = <T extends StudentRuleState & { id: string }>(
   student: T,
   boss: WorldBoss,
   now = Date.now(),
@@ -705,12 +773,17 @@ export const attackWorldBoss = <T extends StudentRuleState>(
     ),
   };
 
-  const damageDealt = student.pet.level * 10 + Math.floor(Math.random() * 10) + 1;
+  const rolledDamage = student.pet.level * 10 + Math.floor(Math.random() * 10) + 1;
+  const damageDealt = Math.min(boss.currentHp, rolledDamage);
   const newHp = Math.max(0, boss.currentHp - damageDealt);
   
   const updatedBoss = {
     ...boss,
     currentHp: newHp,
+    contributions: {
+      ...boss.contributions,
+      [student.id]: (boss.contributions[student.id] ?? 0) + damageDealt,
+    },
     isActive: newHp > 0,
   };
 
@@ -723,26 +796,102 @@ export const attackWorldBoss = <T extends StudentRuleState>(
   };
 };
 
-export const applyBossDefeatRewards = <T extends StudentRuleState>(
-  students: T[],
-  rewardPoints: number,
-  rewardHappiness: number,
+export const resolveBossAttack = <T extends StudentRuleState>(
+  students: Array<TeamBattleMember<T>>,
+  maxTargets = DEFAULT_BOSS_ATTACK_MAX_TARGETS,
+  damage = DEFAULT_BOSS_ATTACK_DAMAGE,
+  random = Math.random,
   now = Date.now(),
-  maxPoints = 700
-): T[] => {
-  return students.map((s) => {
-    if (isPetDead(s.pet)) return s;
+): { updated: Record<string, T>; targetIds: string[]; damage: number } => {
+  const eligible = students.filter(({ student }) => !isPetDead(student.pet));
+  const safeMaxTargets = clamp(Math.floor(toFiniteNumber(maxTargets, DEFAULT_BOSS_ATTACK_MAX_TARGETS)), 0, 4);
+  const targetCount = Math.min(eligible.length, Math.floor(random() * (safeMaxTargets + 1)));
+  const shuffled = [...eligible];
 
-    return {
-      ...s,
-      points: clamp(s.points + rewardPoints, 0, maxPoints),
-      pet: syncPetLifeState(
-        {
-          ...s.pet,
-          happiness: clamp(s.pet.happiness + rewardHappiness, 0, 100),
-        },
-        now,
-      ),
-    };
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(random() * (index + 1));
+    [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+  }
+
+  const safeDamage = Math.max(0, Math.floor(toFiniteNumber(damage, DEFAULT_BOSS_ATTACK_DAMAGE)));
+  const targets = shuffled.slice(0, targetCount);
+  const targetIds = targets.map(({ id }) => id);
+  const targetIdSet = new Set(targetIds);
+  const updated: Record<string, T> = {};
+
+  students.forEach(({ id, student }) => {
+    updated[id] = targetIdSet.has(id)
+      ? {
+          ...student,
+          pet: syncPetLifeState(
+            {
+              ...student.pet,
+              fullness: student.pet.fullness - safeDamage,
+            },
+            now,
+          ),
+        }
+      : student;
   });
+
+  return { updated, targetIds, damage: safeDamage };
+};
+
+export const getBossContributionStandings = <
+  T extends Pick<StudentRuleState, 'points' | 'pet'> & { id: string; name: string },
+>(students: T[], boss: WorldBoss): BossContributionStanding[] => {
+  const rewardsByRank = new Map(boss.rewardTiers.map((tier) => [tier.rank, tier]));
+
+  return students
+    .map((student) => ({
+      student,
+      damage: Math.max(0, Math.floor(toFiniteNumber(boss.contributions[student.id], 0))),
+    }))
+    .filter(({ damage }) => damage > 0)
+    .sort((left, right) => right.damage - left.damage || left.student.name.localeCompare(right.student.name))
+    .map(({ student, damage }, index) => {
+      const rank = index + 1;
+      const reward = rewardsByRank.get(rank);
+
+      return {
+        rank,
+        studentId: student.id,
+        studentName: student.name,
+        damage,
+        rewardPoints: reward?.points ?? 0,
+        rewardHappiness: reward?.happiness ?? 0,
+      };
+    });
+};
+
+export const applyBossContributionRewards = <
+  T extends StudentRuleState & { id: string; name: string },
+>(
+  students: T[],
+  boss: WorldBoss,
+  now = Date.now(),
+  maxPoints = 700,
+): { students: T[]; standings: BossContributionStanding[] } => {
+  const standings = getBossContributionStandings(students, boss);
+  const standingByStudentId = new Map(standings.map((standing) => [standing.studentId, standing]));
+
+  return {
+    standings,
+    students: students.map((student) => {
+      const standing = standingByStudentId.get(student.id);
+      if (!standing) return student;
+
+      return {
+        ...student,
+        points: clamp(student.points + standing.rewardPoints, 0, maxPoints),
+        pet: syncPetLifeState(
+          {
+            ...student.pet,
+            happiness: clamp(student.pet.happiness + standing.rewardHappiness, 0, 100),
+          },
+          now,
+        ),
+      };
+    }),
+  };
 };

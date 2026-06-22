@@ -4,11 +4,13 @@ import {
   PET_DEATH_DELAY_MS,
   REVIVE_COST,
   applyDecayToStudent,
+  applyBossContributionRewards,
   applyFeedToStudent,
   attackWorldBoss,
   claimDailyTaskForStudent,
   createPenaltyStatus,
   resolveBattle,
+  resolveBossAttack,
   resolveTeamBattle,
   reviveStudentPet,
 } from '../src/gameRules.js';
@@ -20,7 +22,9 @@ const test = (name: string, run: () => void) => {
   tests.push({ name, run });
 };
 
-const createStudent = () => ({
+const createStudent = (id = 'student-1', name = 'Student 1') => ({
+  id,
+  name,
   points: 200,
   rankPoints: 100,
   warningPoints: 0,
@@ -46,8 +50,11 @@ const createBoss = () => ({
   name: 'Training Boss',
   maxHp: 100,
   currentHp: 100,
-  rewardPoints: 50,
-  rewardHappiness: 10,
+  rewardTiers: [
+    { rank: 1, points: 50, happiness: 10 },
+    { rank: 2, points: 30, happiness: 5 },
+  ],
+  contributions: {},
   isActive: true,
 });
 
@@ -232,6 +239,37 @@ test('resolveTeamBattle updates all active team members', () => {
   assert.equal(result.updated.d2.rankPoints, 94);
 });
 
+test('resolveTeamBattle applies configurable fullness costs by participant role', () => {
+  const result = resolveTeamBattle(
+    [
+      { id: 'a1', student: createStudent() },
+      { id: 'a2', student: createStudent() },
+    ],
+    [
+      { id: 'd1', student: createStudent() },
+      { id: 'd2', student: createStudent() },
+    ],
+    {
+      attackers: [20, 20],
+      defenders: [0, 0],
+    },
+    {
+      teamBattleAttackerFullnessCost: 11,
+      teamBattleAttackerTeammateFullnessCost: 5,
+      teamBattleDefenderFullnessCost: 13,
+      teamBattleDefenderTeammateFullnessCost: 7,
+    },
+    1000,
+  );
+
+  assert.equal(result.blocked, null);
+  assert.equal(result.outcome, 'win');
+  assert.equal(result.updated.a1.pet.fullness, 69);
+  assert.equal(result.updated.a2.pet.fullness, 75);
+  assert.equal(result.updated.d1.pet.fullness, 67);
+  assert.equal(result.updated.d2.pet.fullness, 73);
+});
+
 test('resolveTeamBattle can disable the minimum fullness gate', () => {
   const lowFullnessLeader = {
     ...createStudent(),
@@ -307,6 +345,57 @@ test('attackWorldBoss blocks students with active penalty status', () => {
   assert.equal(result.blocked, 'penalty');
 });
 
+test('attackWorldBoss records actual damage as student contribution', () => {
+  const result = attackWorldBoss(
+    createStudent('attacker', 'Attacker'),
+    { ...createBoss(), currentHp: 5 },
+    2000,
+  );
+
+  assert.equal(result.blocked, null);
+  assert.equal(result.damageDealt, 5);
+  assert.equal(result.updatedBoss?.contributions.attacker, 5);
+  assert.equal(result.isDefeated, true);
+});
+
+test('resolveBossAttack randomly targets up to four living pets and applies configured damage', () => {
+  const students = Array.from({ length: 5 }, (_, index) => ({
+    id: `student-${index + 1}`,
+    student: createStudent(`student-${index + 1}`, `Student ${index + 1}`),
+  }));
+  const rolls = [0.75, 0, 0, 0, 0];
+  const result = resolveBossAttack(students, 4, 20, () => rolls.shift() ?? 0, 2000);
+
+  assert.equal(result.targetIds.length, 3);
+  assert.equal(Object.values(result.updated).filter((student) => student.pet.fullness === 60).length, 3);
+  assert.equal(Object.values(result.updated).filter((student) => student.pet.fullness === 80).length, 2);
+});
+
+test('applyBossContributionRewards ranks damage and applies each configured reward tier', () => {
+  const students = [
+    createStudent('a', 'Alpha'),
+    createStudent('b', 'Beta'),
+    createStudent('c', 'Gamma'),
+  ];
+  const boss = {
+    ...createBoss(),
+    contributions: { a: 40, b: 90, c: 20 },
+  };
+  const result = applyBossContributionRewards(students, boss, 2000, 700);
+
+  assert.deepEqual(
+    result.standings.map(({ studentId, rank, rewardPoints, rewardHappiness }) => ({ studentId, rank, rewardPoints, rewardHappiness })),
+    [
+      { studentId: 'b', rank: 1, rewardPoints: 50, rewardHappiness: 10 },
+      { studentId: 'a', rank: 2, rewardPoints: 30, rewardHappiness: 5 },
+      { studentId: 'c', rank: 3, rewardPoints: 0, rewardHappiness: 0 },
+    ],
+  );
+  assert.equal(result.students.find((student) => student.id === 'b')?.points, 250);
+  assert.equal(result.students.find((student) => student.id === 'a')?.points, 230);
+  assert.equal(result.students.find((student) => student.id === 'c')?.points, 200);
+});
+
 test('normalizeAppData sanitizes active boss data and drops defeated bosses', () => {
   const normalized = normalizeAppData(
     {
@@ -314,6 +403,10 @@ test('normalizeAppData sanitizes active boss data and drops defeated bosses', ()
       currentClassId: 'class-a',
       settings: {
         soloBattleFullnessCost: '17',
+        teamBattleAttackerFullnessCost: '11',
+        teamBattleAttackerTeammateFullnessCost: '5',
+        teamBattleDefenderFullnessCost: '13',
+        teamBattleDefenderTeammateFullnessCost: '-2',
       },
       classes: [
         {
@@ -354,14 +447,18 @@ test('normalizeAppData sanitizes active boss data and drops defeated bosses', ()
     name: 'Dragon',
     maxHp: 50,
     currentHp: 50,
-    rewardPoints: 0,
-    rewardHappiness: 12,
+    rewardTiers: [{ rank: 1, points: 0, happiness: 12 }],
+    contributions: {},
     isActive: true,
   });
   assert.equal(normalized.classes[1].activeBoss, undefined);
   assert.equal(normalized.settings?.soloBattleFullnessCost, 17);
   assert.equal(normalized.settings?.soloBattleAttackerFullnessCost, 17);
   assert.equal(normalized.settings?.soloBattleDefenderFullnessCost, 17);
+  assert.equal(normalized.settings?.teamBattleAttackerFullnessCost, 11);
+  assert.equal(normalized.settings?.teamBattleAttackerTeammateFullnessCost, 5);
+  assert.equal(normalized.settings?.teamBattleDefenderFullnessCost, 13);
+  assert.equal(normalized.settings?.teamBattleDefenderTeammateFullnessCost, 0);
 });
 
 test('computeBadges derives badges from the current student state', () => {

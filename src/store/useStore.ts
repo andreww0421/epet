@@ -1,8 +1,8 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { 
-  AppData, Student, ClassData, UpgradeRewardState, PetAnimationMode, 
-  PointAdjustmentSource, BattleMode, Language
+  AppData, Student, ClassData, UpgradeRewardState, PetAnimationMode,
+  PointAdjustmentSource, BattleMode, Language, BossRewardTier, BossVictoryResult,
 } from './types';
 import { 
   translations, STORAGE_KEY, DEFAULT_MAX_TEAM_SIZE,
@@ -17,12 +17,15 @@ import {
   reviveStudentPet, applyPointAdjustmentToStudent, createPointAdjustmentRecord,
   applyPenaltyToStudent, createDisciplineRecord, getNextUpgradeGachaLevel,
   getUpcomingUpgradeGachaLevel, resolveBattle, resolveTeamBattle,
-  isBattleReady, attackWorldBoss, applyBossDefeatRewards, toFiniteNumber,
+  isBattleReady, attackWorldBoss, applyBossContributionRewards, resolveBossAttack, toFiniteNumber,
   BOSS_ATTACK_FULLNESS_COST, DIRECT_DISCIPLINE_PENALTY, WARNING_THRESHOLD,
   WARNING_AUTO_PENALTY, MAX_ACTIVITY_RECORDS, UPGRADE_REWARD_LEVEL,
   UPGRADE_REWARD_FULLNESS, UPGRADE_REWARD_HAPPINESS, DAILY_TASK_REWARD_HAPPINESS,
   SOLO_BATTLE_MIN_FULLNESS, SOLO_BATTLE_FULLNESS_COST, SOLO_BATTLE_WIN_POINTS,
-  SOLO_BATTLE_LOSS_POINTS, TEAM_BATTLE_MIN_FULLNESS, TEAM_BATTLE_MIN_FULLNESS_ENABLED
+  SOLO_BATTLE_LOSS_POINTS, TEAM_BATTLE_MIN_FULLNESS, TEAM_BATTLE_MIN_FULLNESS_ENABLED,
+  TEAM_BATTLE_ATTACKER_FULLNESS_COST, TEAM_BATTLE_ATTACKER_TEAMMATE_FULLNESS_COST,
+  TEAM_BATTLE_DEFENDER_FULLNESS_COST, TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST,
+  DEFAULT_BOSS_ATTACK_MAX_TARGETS, DEFAULT_BOSS_ATTACK_DAMAGE,
 } from '../gameRules';
 
 type StoreState = {
@@ -32,7 +35,9 @@ type StoreState = {
   toast: { message: string; type: 'success' | 'error' } | null;
   upgradeReward: UpgradeRewardState | null;
   bossHitFeedback: { damage: number; id: number } | null;
+  bossAttackFeedback: { targetNames: string[]; damage: number; id: number } | null;
   showBossVictory: boolean;
+  bossVictoryResult: BossVictoryResult | null;
 
   // Actions
   setView: (view: 'dashboard' | 'classroom') => void;
@@ -54,6 +59,7 @@ type StoreState = {
   
   // Student Stats & Discipline
   addPoints: (studentId: string, pointsToAdd: number, source?: PointAdjustmentSource, reason?: { id?: string; label?: string }) => void;
+  airdropPoints: (pointsToAdd: number, reasonLabel?: string) => void;
   decreaseLevel: (studentId: string) => void;
   warnStudent: (studentId: string) => void;
   removeWarning: (studentId: string) => void;
@@ -76,9 +82,11 @@ type StoreState = {
   battle: (attackerId: string, defenderId: string) => void;
   
   // Boss
-  summonBoss: (name: string, maxHp: number, rewardPoints: number, rewardHappiness: number) => void;
+  summonBoss: (name: string, maxHp: number, rewardTiers: BossRewardTier[]) => void;
   removeBoss: () => void;
   executeAttackBoss: (studentId: string) => void;
+  executeBossAttack: () => void;
+  dismissBossVictory: () => void;
 
   // Lifecycle
   triggerDecay: () => void;
@@ -93,7 +101,9 @@ export const useStore = create<StoreState>()(
       toast: null,
       upgradeReward: null,
       bossHitFeedback: null,
+      bossAttackFeedback: null,
       showBossVictory: false,
+      bossVictoryResult: null,
 
       setView: (view) => set({ view }),
       
@@ -186,6 +196,36 @@ export const useStore = create<StoreState>()(
             soloBattleLossPoints: Math.max(0, toFiniteNumber(merged.soloBattleLossPoints, SOLO_BATTLE_LOSS_POINTS)),
             teamBattleMinFullnessEnabled: merged.teamBattleMinFullnessEnabled !== false,
             teamBattleMinFullness: safeTeamBattleMinFullness,
+            teamBattleAttackerFullnessCost: Math.max(
+              0,
+              toFiniteNumber(merged.teamBattleAttackerFullnessCost, TEAM_BATTLE_ATTACKER_FULLNESS_COST),
+            ),
+            teamBattleAttackerTeammateFullnessCost: Math.max(
+              0,
+              toFiniteNumber(
+                merged.teamBattleAttackerTeammateFullnessCost,
+                TEAM_BATTLE_ATTACKER_TEAMMATE_FULLNESS_COST,
+              ),
+            ),
+            teamBattleDefenderFullnessCost: Math.max(
+              0,
+              toFiniteNumber(merged.teamBattleDefenderFullnessCost, TEAM_BATTLE_DEFENDER_FULLNESS_COST),
+            ),
+            teamBattleDefenderTeammateFullnessCost: Math.max(
+              0,
+              toFiniteNumber(
+                merged.teamBattleDefenderTeammateFullnessCost,
+                TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST,
+              ),
+            ),
+            bossAttackMaxTargets: Math.max(
+              0,
+              Math.min(4, Math.floor(toFiniteNumber(merged.bossAttackMaxTargets, DEFAULT_BOSS_ATTACK_MAX_TARGETS))),
+            ),
+            bossAttackDamage: Math.max(
+              0,
+              Math.floor(toFiniteNumber(merged.bossAttackDamage, DEFAULT_BOSS_ATTACK_DAMAGE)),
+            ),
           }
         };
         get().showToast(translations[newData.settings.language || 'zh'].settingsSaved, 'success');
@@ -277,6 +317,45 @@ export const useStore = create<StoreState>()(
               : s
           )
         };
+        return { data: { ...state.data, classes: nextClasses } };
+      }),
+
+      airdropPoints: (pointsToAdd, reasonLabel) => set((state) => {
+        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+        if (currentClassIndex === -1) return state;
+
+        const amount = Math.trunc(toFiniteNumber(pointsToAdd, 0));
+        if (amount === 0) return state;
+
+        const now = Date.now();
+        const currentClass = state.data.classes[currentClassIndex];
+        const nextClasses = [...state.data.classes];
+        nextClasses[currentClassIndex] = {
+          ...currentClass,
+          students: currentClass.students.map((student) =>
+            applyPointAdjustmentToStudent(
+              student,
+              amount,
+              createPointAdjustmentRecord(
+                amount,
+                'airdrop',
+                reasonLabel?.trim() ? { label: reasonLabel.trim() } : undefined,
+                now,
+              ),
+              state.data.settings?.maxPoints ?? 700,
+            ),
+          ),
+        };
+
+        const lang = state.data.settings?.language || 'zh';
+        const signedAmount = `${amount > 0 ? '+' : ''}${amount}`;
+        get().showToast(
+          lang === 'en'
+            ? `Airdropped ${signedAmount} points to ${currentClass.students.length} students.`
+            : `已向 ${currentClass.students.length} 位學生空投 ${signedAmount} 積分。`,
+          amount > 0 ? 'success' : 'error',
+        );
+
         return { data: { ...state.data, classes: nextClasses } };
       }),
 
@@ -724,11 +803,21 @@ export const useStore = create<StoreState>()(
           ignoreFullness: !teamBattleMinFullnessEnabled,
         };
 
-        const attackerMembers = getTeamMembers(currentClass.students, attacker, maxTeamSize)
-          .filter((member) => isBattleReady(member, now, teamBattleReadyOptions))
+        const attackerMembers = [
+          attacker,
+          ...getTeamMembers(currentClass.students, attacker, maxTeamSize).filter(
+            (member) => member.id !== attacker.id && isBattleReady(member, now, teamBattleReadyOptions),
+          ),
+        ]
+          .slice(0, maxTeamSize)
           .map((member) => ({ id: member.id, student: member }));
-        const defenderMembers = getTeamMembers(currentClass.students, defender, maxTeamSize)
-          .filter((member) => isBattleReady(member, now, teamBattleReadyOptions))
+        const defenderMembers = [
+          defender,
+          ...getTeamMembers(currentClass.students, defender, maxTeamSize).filter(
+            (member) => member.id !== defender.id && isBattleReady(member, now, teamBattleReadyOptions),
+          ),
+        ]
+          .slice(0, maxTeamSize)
           .map((member) => ({ id: member.id, student: member }));
 
         const canRunTeamBattle = attackerMembers.length >= 2 && defenderMembers.length >= 2;
@@ -754,6 +843,10 @@ export const useStore = create<StoreState>()(
           soloBattleLossPoints: state.data.settings?.soloBattleLossPoints,
           teamBattleMinFullnessEnabled,
           teamBattleMinFullness,
+          teamBattleAttackerFullnessCost: state.data.settings?.teamBattleAttackerFullnessCost,
+          teamBattleAttackerTeammateFullnessCost: state.data.settings?.teamBattleAttackerTeammateFullnessCost,
+          teamBattleDefenderFullnessCost: state.data.settings?.teamBattleDefenderFullnessCost,
+          teamBattleDefenderTeammateFullnessCost: state.data.settings?.teamBattleDefenderTeammateFullnessCost,
         };
         
         const battleResult =
@@ -831,7 +924,7 @@ export const useStore = create<StoreState>()(
         return { data: { ...state.data, classes: nextClasses } };
       }),
 
-      summonBoss: (name, maxHp, rewardPoints, rewardHappiness) => set((state) => {
+      summonBoss: (name, maxHp, rewardTiers) => set((state) => {
         const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
         if (currentClassIndex === -1) return state;
 
@@ -843,8 +936,8 @@ export const useStore = create<StoreState>()(
             name,
             maxHp: safeMaxHp,
             currentHp: safeMaxHp,
-            rewardPoints,
-            rewardHappiness,
+            rewardTiers,
+            contributions: {},
             isActive: true,
           },
           currentClassIndex,
@@ -870,6 +963,50 @@ export const useStore = create<StoreState>()(
         nextClasses[currentClassIndex] = { ...nextClasses[currentClassIndex], activeBoss: undefined };
         get().showToast(translations[state.data.settings?.language || 'zh'].removeBoss, 'success');
         return { data: { ...state.data, classes: nextClasses } };
+      }),
+
+      dismissBossVictory: () => set({ showBossVictory: false, bossVictoryResult: null }),
+
+      executeBossAttack: () => set((state) => {
+        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+        if (currentClassIndex === -1) return state;
+
+        const currentClass = state.data.classes[currentClassIndex];
+        if (!currentClass.activeBoss?.isActive) return state;
+
+        const result = resolveBossAttack(
+          currentClass.students.map((student) => ({ id: student.id, student })),
+          state.data.settings?.bossAttackMaxTargets ?? DEFAULT_BOSS_ATTACK_MAX_TARGETS,
+          state.data.settings?.bossAttackDamage ?? DEFAULT_BOSS_ATTACK_DAMAGE,
+          Math.random,
+          Date.now(),
+        );
+        const targetIdSet = new Set(result.targetIds);
+        const targetNames = currentClass.students
+          .filter((student) => targetIdSet.has(student.id))
+          .map((student) => student.name);
+        const feedback = { targetNames, damage: result.damage, id: Date.now() };
+        const nextClasses = [...state.data.classes];
+        nextClasses[currentClassIndex] = {
+          ...currentClass,
+          students: currentClass.students.map((student) => result.updated[student.id] ?? student),
+        };
+
+        const lang = state.data.settings?.language || 'zh';
+        get().showToast(
+          targetNames.length === 0
+            ? (lang === 'en' ? 'The boss attack missed every pet.' : '魔王本次攻擊沒有命中任何寵物。')
+            : (lang === 'en'
+                ? `Boss hit ${targetNames.join(', ')} for ${result.damage} fullness.`
+                : `魔王攻擊 ${targetNames.join('、')}，各造成 ${result.damage} 點飽食度傷害。`),
+          targetNames.length === 0 ? 'success' : 'error',
+        );
+        setTimeout(() => set({ bossAttackFeedback: null }), 3000);
+
+        return {
+          bossAttackFeedback: feedback,
+          data: { ...state.data, classes: nextClasses },
+        };
       }),
 
       executeAttackBoss: (studentId) => set((state) => {
@@ -900,28 +1037,26 @@ export const useStore = create<StoreState>()(
           const newBoss = result.updatedBoss;
 
           if (result.isDefeated) {
-            const defeatedClassId = currentClass.id;
-            const defeatedBossId = newBoss.id;
-            set({ showBossVictory: true });
-            nextClasses[currentClassIndex] = { ...currentClass, students: currentClass.students.map(s => s.id === studentId ? result.updatedStudent! : s), activeBoss: { ...newBoss, currentHp: 0, isActive: true } };
-            
-            setTimeout(() => {
-              set((s2) => {
-                const idx = s2.data.classes.findIndex(c => c.id === defeatedClassId);
-                if (idx === -1) return { ...s2, showBossVictory: false };
-                const c = s2.data.classes[idx];
-                if (!c.activeBoss || c.activeBoss.id !== defeatedBossId) {
-                  return { ...s2, showBossVictory: false };
-                }
-                
-                const rewardedStudents = applyBossDefeatRewards(c.students, c.activeBoss.rewardPoints, c.activeBoss.rewardHappiness, Date.now(), s2.data.settings?.maxPoints ?? 700);
-                const afterClasses = [...s2.data.classes];
-                afterClasses[idx] = { ...afterClasses[idx], students: rewardedStudents as any, activeBoss: undefined };
-                return { showBossVictory: false, data: { ...s2.data, classes: afterClasses } };
-              });
-              get().showToast((tLang.bossDefeated ?? '').replace('{name}', newBoss.name).replace('{points}', newBoss.rewardPoints.toString()).replace('{happiness}', newBoss.rewardHappiness.toString()), 'success');
-            }, 3800);
-            return { data: { ...state.data, classes: nextClasses } };
+            const studentsAfterAttack = currentClass.students.map((student) =>
+              student.id === studentId ? result.updatedStudent! : student,
+            );
+            const rewardResult = applyBossContributionRewards(
+              studentsAfterAttack,
+              newBoss,
+              Date.now(),
+              state.data.settings?.maxPoints ?? 700,
+            );
+            nextClasses[currentClassIndex] = {
+              ...currentClass,
+              students: rewardResult.students,
+              activeBoss: undefined,
+            };
+            get().showToast((tLang.bossDefeated ?? '').replace('{name}', newBoss.name), 'success');
+            return {
+              showBossVictory: true,
+              bossVictoryResult: { bossName: newBoss.name, standings: rewardResult.standings },
+              data: { ...state.data, classes: nextClasses },
+            };
           } else {
             nextClasses[currentClassIndex] = { ...currentClass, students: currentClass.students.map(s => s.id === studentId ? result.updatedStudent! : s), activeBoss: newBoss.isActive ? newBoss : undefined };
             return { data: { ...state.data, classes: nextClasses } };

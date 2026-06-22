@@ -1,7 +1,11 @@
 import { 
   UPGRADE_GACHA_LEVELS, getUpcomingUpgradeGachaLevel, normalizePenaltyStatus, clamp, toFiniteNumber,
   syncPetLifeState, applyDecayToStudent, SOLO_BATTLE_FULLNESS_COST, SOLO_BATTLE_WIN_POINTS,
-  SOLO_BATTLE_LOSS_POINTS, TEAM_BATTLE_MIN_FULLNESS, TEAM_BATTLE_MIN_FULLNESS_ENABLED
+  SOLO_BATTLE_LOSS_POINTS, TEAM_BATTLE_MIN_FULLNESS, TEAM_BATTLE_MIN_FULLNESS_ENABLED,
+  TEAM_BATTLE_ATTACKER_FULLNESS_COST, TEAM_BATTLE_ATTACKER_TEAMMATE_FULLNESS_COST,
+  TEAM_BATTLE_DEFENDER_FULLNESS_COST, TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST,
+  DEFAULT_BOSS_ATTACK_MAX_TARGETS, DEFAULT_BOSS_ATTACK_DAMAGE, DEFAULT_BOSS_REWARD_TIERS,
+  type BossRewardTier,
 } from '../gameRules';
 import { AppData, Student, DisciplineRecord, PointAdjustmentRecord, WorldBoss } from './types';
 import { PET_TYPES, DEFAULT_CLASS_NAME, DEFAULT_MAX_TEAM_SIZE, DEFAULT_BATTLE_MODE } from './constants';
@@ -35,7 +39,7 @@ export const computeBadges = (student: Pick<Student, 'points' | 'pet' | 'stats'>
 export const normalizeWorldBoss = (boss: unknown, fallbackIndex: number, now = Date.now()): WorldBoss | undefined => {
   if (!boss || typeof boss !== 'object') return undefined;
 
-  const rawBoss = boss as Partial<WorldBoss>;
+  const rawBoss = boss as Partial<WorldBoss> & { rewardPoints?: unknown; rewardHappiness?: unknown };
   const maxHp = Math.max(1, Math.floor(toFiniteNumber(rawBoss.maxHp, 1)));
   const currentHp = clamp(Math.floor(toFiniteNumber(rawBoss.currentHp, maxHp)), 0, maxHp);
 
@@ -43,13 +47,41 @@ export const normalizeWorldBoss = (boss: unknown, fallbackIndex: number, now = D
     return undefined;
   }
 
+  const legacyRewardTier: BossRewardTier[] = rawBoss.rewardPoints != null || rawBoss.rewardHappiness != null
+    ? [{
+        rank: 1,
+        points: Math.max(0, Math.floor(toFiniteNumber(rawBoss.rewardPoints, 0))),
+        happiness: Math.max(0, Math.floor(toFiniteNumber(rawBoss.rewardHappiness, 0))),
+      }]
+    : DEFAULT_BOSS_REWARD_TIERS;
+  const seenRanks = new Set<number>();
+  const rewardTiers = (Array.isArray(rawBoss.rewardTiers) ? rawBoss.rewardTiers : legacyRewardTier)
+    .map((tier) => ({
+      rank: Math.max(1, Math.floor(toFiniteNumber(tier?.rank, 1))),
+      points: Math.max(0, Math.floor(toFiniteNumber(tier?.points, 0))),
+      happiness: Math.max(0, Math.floor(toFiniteNumber(tier?.happiness, 0))),
+    }))
+    .filter((tier) => {
+      if (seenRanks.has(tier.rank)) return false;
+      seenRanks.add(tier.rank);
+      return true;
+    })
+    .sort((left, right) => left.rank - right.rank);
+  const contributions: Record<string, number> = {};
+  if (rawBoss.contributions && typeof rawBoss.contributions === 'object') {
+    Object.entries(rawBoss.contributions).forEach(([studentId, damage]) => {
+      const safeDamage = Math.max(0, Math.floor(toFiniteNumber(damage, 0)));
+      if (safeDamage > 0) contributions[studentId] = safeDamage;
+    });
+  }
+
   return {
     id: typeof rawBoss.id === 'string' && rawBoss.id ? rawBoss.id : `boss-${now}-${fallbackIndex}`,
     name: typeof rawBoss.name === 'string' && rawBoss.name.trim() ? rawBoss.name.trim() : 'Unknown Boss',
     maxHp,
     currentHp,
-    rewardPoints: Math.max(0, Math.floor(toFiniteNumber(rawBoss.rewardPoints, 0))),
-    rewardHappiness: Math.max(0, Math.floor(toFiniteNumber(rawBoss.rewardHappiness, 0))),
+    rewardTiers,
+    contributions,
     isActive: true,
   };
 };
@@ -120,6 +152,12 @@ export const createInitialData = (now = Date.now()): AppData => ({
     soloBattleLossPoints: SOLO_BATTLE_LOSS_POINTS,
     teamBattleMinFullnessEnabled: TEAM_BATTLE_MIN_FULLNESS_ENABLED,
     teamBattleMinFullness: TEAM_BATTLE_MIN_FULLNESS,
+    teamBattleAttackerFullnessCost: TEAM_BATTLE_ATTACKER_FULLNESS_COST,
+    teamBattleAttackerTeammateFullnessCost: TEAM_BATTLE_ATTACKER_TEAMMATE_FULLNESS_COST,
+    teamBattleDefenderFullnessCost: TEAM_BATTLE_DEFENDER_FULLNESS_COST,
+    teamBattleDefenderTeammateFullnessCost: TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST,
+    bossAttackMaxTargets: DEFAULT_BOSS_ATTACK_MAX_TARGETS,
+    bossAttackDamage: DEFAULT_BOSS_ATTACK_DAMAGE,
   },
 });
 
@@ -180,7 +218,7 @@ export const normalizeStudent = (student: any, fallbackIndex: number, now = Date
                 : `points-${now}-${fallbackIndex}-${index}`,
             amount: toFiniteNumber(record?.amount, 0),
             createdAt: toFiniteNumber(record?.createdAt, now),
-            source: record?.source === 'manual' ? 'manual' : 'quick',
+            source: record?.source === 'manual' || record?.source === 'airdrop' ? record.source : 'quick',
             reasonId: typeof record?.reasonId === 'string' ? record.reasonId : undefined,
             reasonLabel: typeof record?.reasonLabel === 'string' ? record.reasonLabel : undefined,
           }))
@@ -294,6 +332,31 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
       teamBattleMinFullness: Math.max(
         0,
         toFiniteNumber(rawSettings?.teamBattleMinFullness, initialData.settings?.teamBattleMinFullness ?? TEAM_BATTLE_MIN_FULLNESS),
+      ),
+      teamBattleAttackerFullnessCost: Math.max(
+        0,
+        toFiniteNumber(rawSettings?.teamBattleAttackerFullnessCost, TEAM_BATTLE_ATTACKER_FULLNESS_COST),
+      ),
+      teamBattleAttackerTeammateFullnessCost: Math.max(
+        0,
+        toFiniteNumber(rawSettings?.teamBattleAttackerTeammateFullnessCost, TEAM_BATTLE_ATTACKER_TEAMMATE_FULLNESS_COST),
+      ),
+      teamBattleDefenderFullnessCost: Math.max(
+        0,
+        toFiniteNumber(rawSettings?.teamBattleDefenderFullnessCost, TEAM_BATTLE_DEFENDER_FULLNESS_COST),
+      ),
+      teamBattleDefenderTeammateFullnessCost: Math.max(
+        0,
+        toFiniteNumber(rawSettings?.teamBattleDefenderTeammateFullnessCost, TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST),
+      ),
+      bossAttackMaxTargets: clamp(
+        Math.floor(toFiniteNumber(rawSettings?.bossAttackMaxTargets, DEFAULT_BOSS_ATTACK_MAX_TARGETS)),
+        0,
+        4,
+      ),
+      bossAttackDamage: Math.max(
+        0,
+        Math.floor(toFiniteNumber(rawSettings?.bossAttackDamage, DEFAULT_BOSS_ATTACK_DAMAGE)),
       ),
       enableSeasonResetRewards: Boolean(rawSettings?.enableSeasonResetRewards),
       seasonResetRewards: rawSettings?.seasonResetRewards ?? { diamond: 500, platinum: 400, gold: 300, silver: 200, bronze: 100 },
