@@ -1,14 +1,17 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { 
   Users, Settings, AlertCircle, Trash2, Star, Shield, Zap, X, Plus, Minus,
   Download, Upload, ChevronsDown, Edit2, Save, BookOpen, RefreshCw, Skull, Swords,
-  Gift, Crosshair,
+  Gift, Crosshair, Target, BarChart3,
 } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store/useStore';
 import { translations, petNames, POINT_REASON_OPTIONS } from '../i18n/translations';
 import { PET_TYPES, DEFAULT_BATTLE_MODE, DEFAULT_MAX_TEAM_SIZE } from '../store/constants';
 import { normalizeAppData, applyDecay } from '../store/utils';
-import { Student, Language, BattleMode, BossRewardTier } from '../store/types';
+import {
+  Student, Language, BattleMode, BossRewardTier, LearningCompetency, BossAttackMode,
+} from '../store/types';
 import { 
   isPenaltyActive, WARNING_THRESHOLD, WARNING_AUTO_PENALTY, DIRECT_DISCIPLINE_PENALTY,
   SOLO_BATTLE_FULLNESS_COST, SOLO_BATTLE_WIN_POINTS, SOLO_BATTLE_LOSS_POINTS,
@@ -16,11 +19,43 @@ import {
   TEAM_BATTLE_ATTACKER_FULLNESS_COST, TEAM_BATTLE_ATTACKER_TEAMMATE_FULLNESS_COST,
   TEAM_BATTLE_DEFENDER_FULLNESS_COST, TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST,
   DEFAULT_BOSS_ATTACK_MAX_TARGETS, DEFAULT_BOSS_ATTACK_DAMAGE, DEFAULT_BOSS_REWARD_TIERS,
+  DEFAULT_BOSS_PARTICIPATION_REWARD, DEFAULT_BOSS_IMPROVEMENT_REWARD,
   type DisciplineRecordType
 } from '../gameRules';
+import {
+  getClassGoalProgress, getRecordCompetency, getWeeklyEducationInsights,
+} from '../educationInsights';
+
+type PointAdjustmentTarget =
+  | { kind: 'student'; id: string; name: string }
+  | { kind: 'class'; count: number };
 
 export const DashboardView: React.FC = () => {
-  const store = useStore();
+  const store = useStore(
+    useShallow((state) => ({
+      data: state.data,
+      addClass: state.addClass,
+      addPoints: state.addPoints,
+      addStudent: state.addStudent,
+      airdropPoints: state.airdropPoints,
+      decreaseLevel: state.decreaseLevel,
+      deleteClass: state.deleteClass,
+      deleteStudent: state.deleteStudent,
+      disciplineStudent: state.disciplineStudent,
+      editStudentName: state.editStudentName,
+      importData: state.importData,
+      removeBoss: state.removeBoss,
+      removePenalty: state.removePenalty,
+      removeWarning: state.removeWarning,
+      resetSeason: state.resetSeason,
+      setClassGoal: state.setClassGoal,
+      showToast: state.showToast,
+      summonBoss: state.summonBoss,
+      switchClass: state.switchClass,
+      updateSettings: state.updateSettings,
+      warnStudent: state.warnStudent,
+    })),
+  );
   const data = store.data;
   const lang = data.settings?.language || 'zh';
   const tLang = translations[lang];
@@ -28,11 +63,13 @@ export const DashboardView: React.FC = () => {
 
   const [newStudentName, setNewStudentName] = useState('');
   const [studentToDelete, setStudentToDelete] = useState<string | null>(null);
-  const [customPoints, setCustomPoints] = useState<{id: string, name: string} | null>(null);
-  const [pointsAmount, setPointsAmount] = useState('');
-  const [showAirdrop, setShowAirdrop] = useState(false);
-  const [airdropAmount, setAirdropAmount] = useState('');
-  const [airdropReason, setAirdropReason] = useState('');
+  const [pointAdjustmentTarget, setPointAdjustmentTarget] = useState<PointAdjustmentTarget | null>(null);
+  const [pointAdjustmentAmount, setPointAdjustmentAmount] = useState('');
+  const [pointAdjustmentReason, setPointAdjustmentReason] = useState('');
+  const [pointAdjustmentCompetency, setPointAdjustmentCompetency] =
+    useState<LearningCompetency>('participation');
+  const [dashboardSection, setDashboardSection] =
+    useState<'students' | 'rewards' | 'activities' | 'rules' | 'records'>('students');
   const [recordView, setRecordView] = useState<'discipline' | 'points'>('discipline');
   const [decayAmount, setDecayAmount] = useState(data.settings?.decayAmount ?? 2);
   const [decayType, setDecayType] = useState<'hourly' | 'daily'>(data.settings?.decayType ?? 'hourly');
@@ -87,6 +124,9 @@ export const DashboardView: React.FC = () => {
   const [bossAttackDamage, setBossAttackDamage] = useState(
     data.settings?.bossAttackDamage ?? DEFAULT_BOSS_ATTACK_DAMAGE,
   );
+  const [bossAttackMode, setBossAttackMode] = useState<BossAttackMode>(
+    data.settings?.bossAttackMode ?? 'shared',
+  );
   const [enableSeasonResetRewards, setEnableSeasonResetRewards] = useState(data.settings?.enableSeasonResetRewards ?? false);
 
   const defaultRewards = data.settings?.seasonResetRewards ?? { diamond: 500, platinum: 400, gold: 300, silver: 200, bronze: 100 };
@@ -107,27 +147,85 @@ export const DashboardView: React.FC = () => {
   const [bossRewardTiers, setBossRewardTiers] = useState<BossRewardTier[]>(() =>
     DEFAULT_BOSS_REWARD_TIERS.map((tier) => ({ ...tier })),
   );
+  const [bossParticipationPoints, setBossParticipationPoints] = useState(
+    DEFAULT_BOSS_PARTICIPATION_REWARD.points,
+  );
+  const [bossParticipationHappiness, setBossParticipationHappiness] = useState(
+    DEFAULT_BOSS_PARTICIPATION_REWARD.happiness,
+  );
+  const [bossImprovementPoints, setBossImprovementPoints] = useState(
+    DEFAULT_BOSS_IMPROVEMENT_REWARD.points,
+  );
+  const [bossImprovementHappiness, setBossImprovementHappiness] = useState(
+    DEFAULT_BOSS_IMPROVEMENT_REWARD.happiness,
+  );
+  const [classGoalTitle, setClassGoalTitle] = useState('');
+  const [classGoalCompetency, setClassGoalCompetency] =
+    useState<LearningCompetency>('collaboration');
+  const [classGoalTarget, setClassGoalTarget] = useState(20);
 
   const currentClass = data.classes.find((c: any) => c.id === data.currentClassId);
-  const currentStudents = currentClass?.students || [];
-  const disciplineRecords = currentStudents
-    .flatMap((student: any) =>
-      (student.disciplineRecords ?? []).map((record: any) => ({
-        ...record,
-        studentName: student.name,
-      })),
-    )
-    .sort((a: any, b: any) => b.createdAt - a.createdAt)
-    .slice(0, 12);
-  const pointAdjustmentRecords = currentStudents
-    .flatMap((student: any) =>
-      (student.pointAdjustmentRecords ?? []).map((record: any) => ({
-        ...record,
-        studentName: student.name,
-      })),
-    )
-    .sort((a: any, b: any) => b.createdAt - a.createdAt)
-    .slice(0, 12);
+  const currentStudents = useMemo(() => currentClass?.students || [], [currentClass]);
+  const competencyLabels = useMemo<Record<LearningCompetency, string>>(() => ({
+    participation: tLang.competencyParticipation,
+    collaboration: tLang.competencyCollaboration,
+    selfManagement: tLang.competencySelfManagement,
+    assignmentQuality: tLang.competencyAssignmentQuality,
+  }), [tLang]);
+  const weeklyInsights = useMemo(
+    () => getWeeklyEducationInsights(currentStudents),
+    [currentStudents],
+  );
+  const classGoalProgress = useMemo(
+    () => getClassGoalProgress(currentStudents, currentClass?.classGoal),
+    [currentClass?.classGoal, currentStudents],
+  );
+  const estimatedDailyDecay = Math.max(0, Number(decayAmount)) * (decayType === 'hourly' ? 24 : 1);
+  const estimatedUpgradeActions = Math.max(
+    1,
+    Math.ceil(
+      (
+        100 +
+        Math.max(0, Number(feedCost)) *
+          Math.ceil(100 / Math.max(1, Number(feedGain)))
+      ) / 20,
+    ),
+  );
+
+  useEffect(() => {
+    setClassGoalTitle(currentClass?.classGoal?.title ?? '');
+    setClassGoalCompetency(currentClass?.classGoal?.competency ?? 'collaboration');
+    setClassGoalTarget(currentClass?.classGoal?.targetCount ?? 20);
+  }, [
+    currentClass?.id,
+    currentClass?.classGoal?.title,
+    currentClass?.classGoal?.competency,
+    currentClass?.classGoal?.targetCount,
+  ]);
+  const disciplineRecords = useMemo(
+    () => currentStudents
+      .flatMap((student: any) =>
+        (student.disciplineRecords ?? []).map((record: any) => ({
+          ...record,
+          studentName: student.name,
+        })),
+      )
+      .sort((a: any, b: any) => b.createdAt - a.createdAt)
+      .slice(0, 12),
+    [currentStudents],
+  );
+  const pointAdjustmentRecords = useMemo(
+    () => currentStudents
+      .flatMap((student: any) =>
+        (student.pointAdjustmentRecords ?? []).map((record: any) => ({
+          ...record,
+          studentName: student.name,
+        })),
+      )
+      .sort((a: any, b: any) => b.createdAt - a.createdAt)
+      .slice(0, 12),
+    [currentStudents],
+  );
 
   const getRecordLabel = (type: DisciplineRecordType) => {
     if (type === 'autoPenalty') return tLang.recordAutoPenalty;
@@ -157,10 +255,13 @@ export const DashboardView: React.FC = () => {
       .replace('{happiness}', penalty.happiness.toString())
       .replace('{rankPoints}', penalty.rankPoints.toString());
 
-  const pointReasonOptions = POINT_REASON_OPTIONS.map((option) => ({
-    ...option,
-    label: option.labels[currentLang] ?? option.labels.zh,
-  }));
+  const pointReasonOptions = useMemo(
+    () => POINT_REASON_OPTIONS.map((option) => ({
+      ...option,
+      label: option.labels[currentLang] ?? option.labels.zh,
+    })),
+    [currentLang],
+  );
   const guideStudentItems =
     lang === 'en'
       ? [
@@ -228,6 +329,7 @@ export const DashboardView: React.FC = () => {
       teamBattleDefenderTeammateFullnessCost: Number(teamBattleDefenderTeammateFullnessCost),
       bossAttackMaxTargets: Number(bossAttackMaxTargets),
       bossAttackDamage: Number(bossAttackDamage),
+      bossAttackMode,
       enableSeasonResetRewards,
       seasonResetRewards: {
         diamond: Number(rewardDiamond),
@@ -314,6 +416,64 @@ export const DashboardView: React.FC = () => {
     }
   };
 
+  const applySettingsPreset = (
+    preset: 'lowCompetition' | 'cooperative' | 'shortCampaign',
+    name: string,
+  ) => {
+    if (preset === 'lowCompetition') {
+      setBattleMode('both');
+      setBattleRankPointsWin(8);
+      setBattleRankPointsLoss(0);
+      setSoloBattleWinPoints(30);
+      setSoloBattleLossPoints(0);
+      setBossAttackMode('shared');
+      setBossAttackDamage(12);
+      setDecayType('daily');
+      setDecayAmount(2);
+    } else if (preset === 'cooperative') {
+      setBattleMode('team');
+      setMaxTeamSize(4);
+      setBattleRankPointsWin(5);
+      setBattleRankPointsLoss(0);
+      setTeamBattleMinFullnessEnabled(false);
+      setTeamBattleAttackerFullnessCost(10);
+      setTeamBattleAttackerTeammateFullnessCost(8);
+      setTeamBattleDefenderFullnessCost(10);
+      setTeamBattleDefenderTeammateFullnessCost(8);
+      setBossAttackMode('shared');
+      setBossAttackDamage(16);
+    } else {
+      setDecayType('daily');
+      setDecayAmount(5);
+      setMaxPoints(400);
+      setFeedCost(8);
+      setFeedGain(25);
+      setPlayCost(4);
+      setPlayGain(20);
+      setBattleMode('both');
+      setBossAttackMode('shared');
+      setBossAttackDamage(20);
+    }
+
+    store.showToast(tLang.presetApplied.replace('{name}', name), 'success');
+  };
+
+  const handleSaveClassGoal = () => {
+    if (!classGoalTitle.trim()) return;
+    store.setClassGoal({
+      title: classGoalTitle.trim(),
+      competency: classGoalCompetency,
+      targetCount: Math.max(1, Number(classGoalTarget)),
+    });
+  };
+
+  const handleClearClassGoal = () => {
+    store.setClassGoal(null);
+    setClassGoalTitle('');
+    setClassGoalCompetency('collaboration');
+    setClassGoalTarget(20);
+  };
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 bg-slate-50 min-h-full">
       <div className="sm:flex sm:items-center sm:justify-between mb-8">
@@ -346,8 +506,38 @@ export const DashboardView: React.FC = () => {
         </div>
       </div>
 
+      <div
+        className="mb-6 grid grid-cols-2 gap-1 border-b border-slate-200 sm:flex"
+        role="tablist"
+        aria-label={tLang.dashboard}
+      >
+        {([
+          ['students', tLang.dashboardTabStudents, Users],
+          ['rewards', tLang.dashboardTabRewards, Gift],
+          ['activities', tLang.dashboardTabActivities, Crosshair],
+          ['rules', tLang.dashboardTabRules, Settings],
+          ['records', tLang.dashboardTabRecords, BookOpen],
+        ] as const).map(([section, label, Icon]) => (
+          <button
+            key={section}
+            type="button"
+            role="tab"
+            aria-selected={dashboardSection === section}
+            onClick={() => setDashboardSection(section)}
+            className={`inline-flex min-h-11 items-center justify-center gap-2 border-b-2 px-4 py-2 text-sm font-bold transition-colors ${
+              dashboardSection === section
+                ? 'border-indigo-600 bg-white text-indigo-700'
+                : 'border-transparent text-slate-500 hover:bg-white hover:text-slate-800'
+            }`}
+          >
+            <Icon className="h-4 w-4" />
+            {label}
+          </button>
+        ))}
+      </div>
+
       {/* Class Management */}
-      <div className="bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200 mb-6 p-5">
+      <div className={`${dashboardSection === 'students' ? '' : 'hidden'} bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200 mb-6 p-5`}>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex-1 w-full sm:max-w-xs">
             <label htmlFor="classSelect" className="block text-sm font-medium text-slate-700 mb-1">{tLang.classManagement}</label>
@@ -394,7 +584,7 @@ export const DashboardView: React.FC = () => {
       </div>
 
       {/* Add Student Form */}
-      <div className="bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200 mb-6 p-5">
+      <div className={`${dashboardSection === 'students' ? '' : 'hidden'} bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200 mb-6 p-5`}>
         <h3 className="text-lg font-medium text-slate-900 mb-4 flex items-center">
           <Users className="h-5 w-5 mr-2 text-indigo-500" />
           {tLang.addStudent}
@@ -424,14 +614,14 @@ export const DashboardView: React.FC = () => {
       </div>
 
       {/* Students Table */}
-      <div className="bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200">
+      <div className={`${dashboardSection === 'rewards' ? '' : 'hidden'} bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200`}>
         <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h3 className="text-base font-semibold text-slate-900">{tLang.pointManagement}</h3>
             <p className="mt-1 text-xs text-slate-500">{tLang.airdropHint}</p>
           </div>
           <button
-            onClick={() => setShowAirdrop(true)}
+            onClick={() => setPointAdjustmentTarget({ kind: 'class', count: currentStudents.length })}
             disabled={currentStudents.length === 0}
             className="inline-flex items-center justify-center rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
           >
@@ -531,7 +721,7 @@ export const DashboardView: React.FC = () => {
                         <div className="text-sm font-bold text-amber-600">Lv. {student.pet.level || 1}</div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm font-bold text-indigo-600">{student.points} / {maxPoints}</div>
+                        <div className="text-sm font-bold text-indigo-600">{student.points} / {data.settings?.maxPoints ?? 700}</div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div>
@@ -577,6 +767,7 @@ export const DashboardView: React.FC = () => {
                                 store.addPoints(student.id, selectedReason.amount, 'quick', {
                                   id: selectedReason.id,
                                   label: selectedReason.label,
+                                  competency: selectedReason.competency,
                                 });
                               }}
                               disabled={
@@ -592,7 +783,7 @@ export const DashboardView: React.FC = () => {
                               {tLang.applyReason ?? '套用'}
                             </button>
                             <button
-                              onClick={() => setCustomPoints({id: student.id, name: student.name})}
+                              onClick={() => setPointAdjustmentTarget({ kind: 'student', id: student.id, name: student.name })}
                               className="inline-flex items-center px-2 py-1 rounded text-xs font-medium text-indigo-700 hover:bg-indigo-200 transition-colors"
                               title={tLang.manualAdjust}
                             >
@@ -646,7 +837,114 @@ export const DashboardView: React.FC = () => {
         </div>
       </div>
 
-      <div className="mt-6 bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200">
+      <section className={`${dashboardSection === 'records' ? '' : 'hidden'} border border-slate-200 bg-white p-5 shadow-sm`}>
+        <div className="flex flex-col gap-2 border-b border-slate-200 pb-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h3 className="flex items-center text-lg font-semibold text-slate-900">
+              <BarChart3 className="mr-2 h-5 w-5 text-emerald-600" />
+              {tLang.weeklyInsights}
+            </h3>
+            <p className="mt-1 text-sm text-slate-500">{tLang.weeklyInsightsHint}</p>
+          </div>
+          <div className="text-sm font-bold text-slate-600">
+            {weeklyInsights.positiveCount + weeklyInsights.negativeCount === 0
+              ? tLang.noWeeklyFeedback
+              : tLang.positiveRatio}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-px bg-slate-200 sm:grid-cols-4">
+          {[
+            [tLang.positiveFeedback, weeklyInsights.positiveCount, 'text-emerald-700'],
+            [tLang.correctiveFeedback, weeklyInsights.negativeCount, 'text-rose-700'],
+            [tLang.positiveRatio, `${Math.round(weeklyInsights.positiveRatio * 100)}%`, 'text-indigo-700'],
+            [
+              tLang.collaborationReach,
+              tLang.studentsReached
+                .replace('{current}', weeklyInsights.collaborationStudents.toString())
+                .replace('{total}', currentStudents.length.toString()),
+              'text-sky-700',
+            ],
+          ].map(([label, value, tone]) => (
+            <div key={String(label)} className="bg-white px-4 py-4">
+              <p className="text-xs font-medium text-slate-500">{label}</p>
+              <p className={`mt-1 text-xl font-black ${tone}`}>{value}</p>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-5 grid gap-6 lg:grid-cols-3">
+          <div>
+            <h4 className="mb-3 text-sm font-bold text-slate-800">{tLang.competencyDistribution}</h4>
+            <div className="space-y-3">
+              {(Object.keys(competencyLabels) as LearningCompetency[]).map((competency) => {
+                const count = weeklyInsights.competencyCounts[competency];
+                const total = Math.max(
+                  1,
+                  (Object.keys(competencyLabels) as LearningCompetency[]).reduce(
+                    (sum, item) => sum + weeklyInsights.competencyCounts[item],
+                    0,
+                  ),
+                );
+                return (
+                  <div key={competency}>
+                    <div className="mb-1 flex justify-between gap-3 text-xs">
+                      <span className="font-medium text-slate-700">{competencyLabels[competency]}</span>
+                      <span className="font-bold text-slate-500">
+                        {tLang.feedbackCount.replace('{count}', count.toString())}
+                      </span>
+                    </div>
+                    <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                      <div
+                        className="h-full rounded-full bg-emerald-500"
+                        style={{ width: `${(count / total) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div>
+            <h4 className="mb-3 text-sm font-bold text-slate-800">{tLang.topReasons}</h4>
+            {weeklyInsights.reasonCounts.length === 0 ? (
+              <p className="text-sm text-slate-500">{tLang.noWeeklyFeedback}</p>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {weeklyInsights.reasonCounts.slice(0, 6).map((reason) => (
+                  <div key={reason.id} className="flex items-center justify-between gap-3 py-2 text-sm">
+                    <span className="truncate text-slate-700">{reason.label}</span>
+                    <span className="shrink-0 font-bold text-slate-500">
+                      {tLang.feedbackCount.replace('{count}', reason.count.toString())}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <h4 className="mb-3 text-sm font-bold text-slate-800">{tLang.overlookedStudents}</h4>
+            {weeklyInsights.overlookedStudents.length === 0 ? (
+              <p className="text-sm font-medium text-emerald-700">{tLang.noOverlookedStudents}</p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {weeklyInsights.overlookedStudents.map((student) => (
+                  <span
+                    key={student.id}
+                    className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs font-bold text-amber-800"
+                  >
+                    {student.name}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <div className={`${dashboardSection === 'records' ? '' : 'hidden'} mt-6 bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200`}>
         <div className="px-5 py-4 border-b border-slate-200 bg-slate-50 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <h3 className="text-lg font-medium text-slate-900 flex items-center">
             <Shield className="h-5 w-5 mr-2 text-rose-500" />
@@ -722,6 +1020,11 @@ export const DashboardView: React.FC = () => {
                             : tLang.recordQuickAdjust}
                       </span>
                       <span className="font-medium text-slate-900">{record.studentName}</span>
+                      {getRecordCompetency(record) && (
+                        <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700">
+                          {competencyLabels[getRecordCompetency(record)!]}
+                        </span>
+                      )}
                     </div>
                     <div className="mt-1 text-sm text-slate-600">
                       {record.reasonLabel
@@ -739,7 +1042,85 @@ export const DashboardView: React.FC = () => {
         )}
       </div>
 
-      <div className="mt-6 bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200 p-5">
+      <section className={`${dashboardSection === 'activities' ? '' : 'hidden'} border border-emerald-200 bg-white p-5 shadow-sm`}>
+        <div className="mb-5 flex flex-col gap-2 border-b border-emerald-100 pb-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h3 className="flex items-center text-lg font-semibold text-slate-900">
+              <Target className="mr-2 h-5 w-5 text-emerald-600" />
+              {tLang.classGoal}
+            </h3>
+            <p className="mt-1 text-sm text-slate-500">{tLang.classGoalHint}</p>
+          </div>
+          {currentClass?.classGoal && (
+            <div className="text-sm font-bold text-emerald-700">
+              {classGoalProgress >= currentClass.classGoal.targetCount
+                ? tLang.classGoalCompleted
+                : tLang.classGoalProgress
+                    .replace('{current}', classGoalProgress.toString())
+                    .replace('{target}', currentClass.classGoal.targetCount.toString())}
+            </div>
+          )}
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-[minmax(0,1.6fr)_minmax(180px,0.8fr)_minmax(150px,0.5fr)]">
+          <label className="text-sm font-medium text-slate-700">
+            {tLang.classGoalTitle}
+            <input
+              type="text"
+              value={classGoalTitle}
+              onChange={(event) => setClassGoalTitle(event.target.value)}
+              placeholder={tLang.classGoalTitlePlaceholder}
+              className="mt-1 w-full rounded-md border border-slate-300 p-2 text-sm shadow-sm focus:border-emerald-500 focus:ring-emerald-500"
+            />
+          </label>
+          <label className="text-sm font-medium text-slate-700">
+            {tLang.classGoalCompetency}
+            <select
+              value={classGoalCompetency}
+              onChange={(event) => setClassGoalCompetency(event.target.value as LearningCompetency)}
+              className="mt-1 w-full rounded-md border border-slate-300 bg-white p-2 text-sm shadow-sm focus:border-emerald-500 focus:ring-emerald-500"
+            >
+              {(Object.keys(competencyLabels) as LearningCompetency[]).map((competency) => (
+                <option key={competency} value={competency}>{competencyLabels[competency]}</option>
+              ))}
+            </select>
+          </label>
+          <label className="text-sm font-medium text-slate-700">
+            {tLang.classGoalTarget}
+            <input
+              type="number"
+              min="1"
+              value={classGoalTarget}
+              onChange={(event) => setClassGoalTarget(Number(event.target.value))}
+              className="mt-1 w-full rounded-md border border-slate-300 p-2 text-sm shadow-sm focus:border-emerald-500 focus:ring-emerald-500"
+            />
+          </label>
+        </div>
+        <p className="mt-2 text-xs text-slate-500">{tLang.classGoalTargetHint}</p>
+
+        <div className="mt-4 flex flex-wrap gap-3">
+          <button
+            type="button"
+            onClick={handleSaveClassGoal}
+            disabled={!classGoalTitle.trim() || classGoalTarget < 1}
+            className="inline-flex items-center rounded-md bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+          >
+            <Save className="mr-2 h-4 w-4" />
+            {tLang.saveClassGoal}
+          </button>
+          <button
+            type="button"
+            onClick={handleClearClassGoal}
+            disabled={!currentClass?.classGoal}
+            className="inline-flex items-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Trash2 className="mr-2 h-4 w-4" />
+            {tLang.clearClassGoal}
+          </button>
+        </div>
+      </section>
+
+      <div className={`${dashboardSection === 'activities' ? '' : 'hidden'} mt-6 bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200 p-5`}>
         <h3 className="text-lg font-medium text-slate-900 mb-4 flex items-center">
           <BookOpen className="h-5 w-5 mr-2 text-emerald-500" />
           {tLang.guideTitle}
@@ -777,7 +1158,7 @@ export const DashboardView: React.FC = () => {
       </div>
 
       {/* Boss Management */}
-      <div className="bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200 mt-6 p-5">
+      <div className={`${dashboardSection === 'activities' ? '' : 'hidden'} bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200 mt-6 p-5`}>
         <h3 className="text-lg font-medium text-amber-900 mb-4 flex items-center">
           <Skull className="h-5 w-5 mr-2 text-rose-500" />
           {tLang.bossManagement ?? '魔王副本管理'}
@@ -827,6 +1208,61 @@ export const DashboardView: React.FC = () => {
                   onChange={(e) => setBossHpInput(Number(e.target.value))}
                   className="w-full rounded-md border border-slate-300 p-2 text-sm shadow-sm focus:border-rose-500 focus:ring-rose-500"
                 />
+              </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="border-l-4 border-emerald-500 bg-emerald-50 p-4">
+                <h4 className="text-sm font-bold text-emerald-900">{tLang.bossParticipationReward}</h4>
+                <p className="mt-1 text-xs text-emerald-800">{tLang.bossParticipationRewardHint}</p>
+                <div className="mt-3 grid grid-cols-2 gap-3">
+                  <label className="text-xs font-medium text-slate-700">
+                    {tLang.rewardPoints}
+                    <input
+                      type="number"
+                      min="0"
+                      value={bossParticipationPoints}
+                      onChange={(event) => setBossParticipationPoints(Number(event.target.value))}
+                      className="mt-1 w-full rounded-md border border-emerald-200 bg-white p-2 text-sm"
+                    />
+                  </label>
+                  <label className="text-xs font-medium text-slate-700">
+                    {tLang.rewardHappiness}
+                    <input
+                      type="number"
+                      min="0"
+                      value={bossParticipationHappiness}
+                      onChange={(event) => setBossParticipationHappiness(Number(event.target.value))}
+                      className="mt-1 w-full rounded-md border border-emerald-200 bg-white p-2 text-sm"
+                    />
+                  </label>
+                </div>
+              </div>
+              <div className="border-l-4 border-sky-500 bg-sky-50 p-4">
+                <h4 className="text-sm font-bold text-sky-900">{tLang.bossImprovementReward}</h4>
+                <p className="mt-1 text-xs text-sky-800">{tLang.bossImprovementRewardHint}</p>
+                <div className="mt-3 grid grid-cols-2 gap-3">
+                  <label className="text-xs font-medium text-slate-700">
+                    {tLang.rewardPoints}
+                    <input
+                      type="number"
+                      min="0"
+                      value={bossImprovementPoints}
+                      onChange={(event) => setBossImprovementPoints(Number(event.target.value))}
+                      className="mt-1 w-full rounded-md border border-sky-200 bg-white p-2 text-sm"
+                    />
+                  </label>
+                  <label className="text-xs font-medium text-slate-700">
+                    {tLang.rewardHappiness}
+                    <input
+                      type="number"
+                      min="0"
+                      value={bossImprovementHappiness}
+                      onChange={(event) => setBossImprovementHappiness(Number(event.target.value))}
+                      className="mt-1 w-full rounded-md border border-sky-200 bg-white p-2 text-sm"
+                    />
+                  </label>
+                </div>
               </div>
             </div>
 
@@ -910,7 +1346,19 @@ export const DashboardView: React.FC = () => {
 
             <button
               onClick={() => {
-                store.summonBoss(bossNameInput, bossHpInput, bossRewardTiers);
+                store.summonBoss(
+                  bossNameInput,
+                  bossHpInput,
+                  bossRewardTiers,
+                  {
+                    points: Math.max(0, Number(bossParticipationPoints)),
+                    happiness: Math.max(0, Number(bossParticipationHappiness)),
+                  },
+                  {
+                    points: Math.max(0, Number(bossImprovementPoints)),
+                    happiness: Math.max(0, Number(bossImprovementHappiness)),
+                  },
+                );
                 setBossNameInput('');
               }}
               disabled={!bossNameInput.trim() || bossRewardTiers.length === 0}
@@ -923,11 +1371,51 @@ export const DashboardView: React.FC = () => {
       </div>
 
       {/* System Settings */}
-      <div className="bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200 mt-6 p-5">
+      <div className={`${dashboardSection === 'rules' ? '' : 'hidden'} bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200 mt-6 p-5`}>
         <h3 className="text-lg font-medium text-slate-900 mb-6 flex items-center">
           <Settings className="h-5 w-5 mr-2 text-indigo-500" />
           {tLang.systemSettings}
         </h3>
+
+        <div className="mb-6 grid gap-5 border-y border-slate-200 py-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(300px,1fr)]">
+          <div>
+            <h4 className="text-sm font-bold text-slate-800">{tLang.settingsPresets}</h4>
+            <p className="mt-1 text-xs text-slate-500">{tLang.settingsPresetsHint}</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {[
+                ['lowCompetition', tLang.presetLowCompetition],
+                ['cooperative', tLang.presetCooperative],
+                ['shortCampaign', tLang.presetShortCampaign],
+              ].map(([preset, label]) => (
+                <button
+                  key={preset}
+                  type="button"
+                  onClick={() => applySettingsPreset(
+                    preset as 'lowCompetition' | 'cooperative' | 'shortCampaign',
+                    label,
+                  )}
+                  className="rounded-md border border-indigo-200 bg-white px-3 py-2 text-sm font-bold text-indigo-700 hover:bg-indigo-50"
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <h4 className="text-sm font-bold text-slate-800">{tLang.settingsImpact}</h4>
+            <div className="mt-3 grid grid-cols-2 gap-px bg-slate-200">
+              <div className="bg-white p-3">
+                <p className="text-xs text-slate-500">{tLang.estimatedDailyDecay}</p>
+                <p className="mt-1 text-xl font-black text-rose-700">-{estimatedDailyDecay}</p>
+              </div>
+              <div className="bg-white p-3">
+                <p className="text-xs text-slate-500">{tLang.upgradePositiveActions}</p>
+                <p className="mt-1 text-xl font-black text-emerald-700">{estimatedUpgradeActions}</p>
+              </div>
+            </div>
+            <p className="mt-2 text-xs text-slate-500">{tLang.settingsImpactHint}</p>
+          </div>
+        </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-6">
           {/* 基本規則 */}
@@ -1017,6 +1505,24 @@ export const DashboardView: React.FC = () => {
               {tLang.bossAttackSettings}
             </h4>
             <div className="flex flex-col gap-1">
+              <label htmlFor="bossAttackMode" className="text-sm font-medium text-slate-700">
+                {tLang.bossAttackMode}
+              </label>
+              <select
+                id="bossAttackMode"
+                value={bossAttackMode}
+                onChange={(event) => setBossAttackMode(event.target.value as BossAttackMode)}
+                className="w-full rounded-md border border-slate-300 bg-white p-2 text-sm shadow-sm focus:border-rose-500 focus:ring-rose-500"
+              >
+                <option value="shared">{tLang.bossAttackShared}</option>
+                <option value="random">{tLang.bossAttackRandom}</option>
+              </select>
+              <p className="text-xs text-slate-500">
+                {bossAttackMode === 'shared' ? tLang.bossAttackSharedHint : tLang.bossAttackRandomHint}
+              </p>
+            </div>
+            {bossAttackMode === 'random' && (
+              <div className="flex flex-col gap-1">
               <label htmlFor="bossAttackMaxTargets" className="text-sm font-medium text-slate-700">{tLang.bossAttackMaxTargets}</label>
               <select
                 id="bossAttackMaxTargets"
@@ -1029,9 +1535,12 @@ export const DashboardView: React.FC = () => {
                 ))}
               </select>
               <p className="text-xs text-slate-500">{tLang.bossAttackMaxTargetsHint}</p>
-            </div>
+              </div>
+            )}
             <div className="flex flex-col gap-1">
-              <label htmlFor="bossAttackDamage" className="text-sm font-medium text-slate-700">{tLang.bossAttackDamage}</label>
+              <label htmlFor="bossAttackDamage" className="text-sm font-medium text-slate-700">
+                {bossAttackMode === 'shared' ? tLang.bossSharedDamage : tLang.bossAttackDamage}
+              </label>
               <input
                 type="number"
                 id="bossAttackDamage"
@@ -1040,7 +1549,9 @@ export const DashboardView: React.FC = () => {
                 onChange={(e) => setBossAttackDamage(Number(e.target.value))}
                 className="w-full rounded-md border border-slate-300 bg-white p-2 text-sm shadow-sm focus:border-rose-500 focus:ring-rose-500"
               />
-              <p className="text-xs text-slate-500">{tLang.bossAttackDamageHint}</p>
+              <p className="text-xs text-slate-500">
+                {bossAttackMode === 'shared' ? tLang.bossAttackSharedHint : tLang.bossAttackDamageHint}
+              </p>
             </div>
           </div>
 
@@ -1367,25 +1878,36 @@ export const DashboardView: React.FC = () => {
         </div>
       )}
 
-      {/* Class Airdrop Modal */}
-      {showAirdrop && (
+      {/* Shared Point Adjustment Modal */}
+      {pointAdjustmentTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 animate-in fade-in duration-200">
           <div className="w-full max-w-sm overflow-hidden rounded-xl bg-white shadow-xl">
             <div className="p-6">
-              <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
-                <Gift className="h-5 w-5" />
+              <div className={`mb-4 flex h-11 w-11 items-center justify-center rounded-full ${
+                pointAdjustmentTarget.kind === 'class'
+                  ? 'bg-emerald-100 text-emerald-700'
+                  : 'bg-indigo-100 text-indigo-700'
+              }`}>
+                {pointAdjustmentTarget.kind === 'class'
+                  ? <Gift className="h-5 w-5" />
+                  : <Edit2 className="h-5 w-5" />}
               </div>
-              <h3 className="text-lg font-bold text-slate-900">{tLang.airdropTitle}</h3>
+              <h3 className="text-lg font-bold text-slate-900">
+                {pointAdjustmentTarget.kind === 'class' ? tLang.airdropTitle : tLang.manualAdjustTitle}
+              </h3>
               <p className="mt-2 text-sm text-slate-600">
-                {tLang.airdropDesc.replace('{count}', currentStudents.length.toString())}
+                {pointAdjustmentTarget.kind === 'class'
+                  ? tLang.airdropDesc.replace('{count}', pointAdjustmentTarget.count.toString())
+                  : tLang.manualAdjustDesc.replace('{name}', pointAdjustmentTarget.name)}
               </p>
               <label className="mt-5 block text-sm font-medium text-slate-700">
                 {tLang.airdropAmount}
                 <input
                   type="number"
-                  value={airdropAmount}
-                  onChange={(e) => setAirdropAmount(e.target.value)}
-                  className="mt-1 w-full rounded-md border border-slate-300 p-2 text-sm shadow-sm focus:border-emerald-500 focus:ring-emerald-500"
+                  step="1"
+                  value={pointAdjustmentAmount}
+                  onChange={(e) => setPointAdjustmentAmount(e.target.value)}
+                  className="mt-1 w-full rounded-md border border-slate-300 p-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
                   placeholder={tLang.airdropAmountPlaceholder}
                   autoFocus
                 />
@@ -1394,90 +1916,69 @@ export const DashboardView: React.FC = () => {
                 {tLang.airdropReason}
                 <input
                   type="text"
-                  value={airdropReason}
-                  onChange={(e) => setAirdropReason(e.target.value)}
-                  className="mt-1 w-full rounded-md border border-slate-300 p-2 text-sm shadow-sm focus:border-emerald-500 focus:ring-emerald-500"
+                  value={pointAdjustmentReason}
+                  onChange={(e) => setPointAdjustmentReason(e.target.value)}
+                  className="mt-1 w-full rounded-md border border-slate-300 p-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
                   placeholder={tLang.airdropReasonPlaceholder}
                 />
+              </label>
+              <label className="mt-4 block text-sm font-medium text-slate-700">
+                {tLang.feedbackCompetency}
+                <select
+                  value={pointAdjustmentCompetency}
+                  onChange={(event) => setPointAdjustmentCompetency(event.target.value as LearningCompetency)}
+                  className="mt-1 w-full rounded-md border border-slate-300 bg-white p-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
+                >
+                  {(Object.keys(competencyLabels) as LearningCompetency[]).map((competency) => (
+                    <option key={competency} value={competency}>{competencyLabels[competency]}</option>
+                  ))}
+                </select>
               </label>
             </div>
             <div className="flex justify-end gap-3 bg-slate-50 px-6 py-4">
               <button
-                onClick={() => { setShowAirdrop(false); setAirdropAmount(''); setAirdropReason(''); }}
+                onClick={() => {
+                  setPointAdjustmentTarget(null);
+                  setPointAdjustmentAmount('');
+                  setPointAdjustmentReason('');
+                  setPointAdjustmentCompetency('participation');
+                }}
                 className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
               >
                 {tLang.cancel}
               </button>
               <button
                 onClick={() => {
-                  store.airdropPoints(Number(airdropAmount), airdropReason);
-                  setShowAirdrop(false);
-                  setAirdropAmount('');
-                  setAirdropReason('');
+                  const amount = Math.trunc(Number(pointAdjustmentAmount));
+                  if (pointAdjustmentTarget.kind === 'class') {
+                    store.airdropPoints(amount, pointAdjustmentReason, pointAdjustmentCompetency);
+                  } else {
+                    store.addPoints(
+                      pointAdjustmentTarget.id,
+                      amount,
+                      'manual',
+                      {
+                        label: pointAdjustmentReason.trim() || undefined,
+                        competency: pointAdjustmentCompetency,
+                      },
+                    );
+                  }
+                  setPointAdjustmentTarget(null);
+                  setPointAdjustmentAmount('');
+                  setPointAdjustmentReason('');
+                  setPointAdjustmentCompetency('participation');
                 }}
-                disabled={!Number.isFinite(Number(airdropAmount)) || Number(airdropAmount) === 0}
-                className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:bg-slate-300"
+                disabled={
+                  !Number.isFinite(Number(pointAdjustmentAmount)) ||
+                  Math.trunc(Number(pointAdjustmentAmount)) === 0
+                }
+                className={`rounded-md px-4 py-2 text-sm font-medium text-white disabled:bg-slate-300 ${
+                  pointAdjustmentTarget.kind === 'class'
+                    ? 'bg-emerald-600 hover:bg-emerald-700'
+                    : 'bg-indigo-600 hover:bg-indigo-700'
+                }`}
               >
-                {tLang.confirmAirdrop}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Custom Points Modal */}
-      {customPoints && (
-        <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
-          <div className="bg-white rounded-xl shadow-xl max-w-sm w-full overflow-hidden">
-            <div className="p-6">
-              <h3 className="text-lg font-bold text-slate-900 mb-4">{tLang.manualAdjustTitle}</h3>
-              <p className="text-slate-600 text-sm mb-4">
-                {tLang.manualAdjustDesc.replace('{name}', customPoints.name)}
-              </p>
-              <input
-                type="number"
-                min="1"
-                value={pointsAmount}
-                onChange={(e) => setPointsAmount(e.target.value)}
-                className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
-                placeholder={tLang.manualAdjustPlaceholder}
-                autoFocus
-              />
-            </div>
-            <div className="bg-slate-50 px-6 py-4 flex justify-end space-x-3">
-              <button 
-                onClick={() => { setCustomPoints(null); setPointsAmount(''); }} 
-                className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50"
-              >
-                {tLang.cancel}
-              </button>
-              <button 
-                onClick={() => {
-                  const amount = parseInt(pointsAmount, 10);
-                  if (!isNaN(amount) && amount > 0) {
-                    store.addPoints(customPoints.id, -amount, 'manual');
-                    setCustomPoints(null);
-                    setPointsAmount('');
-                  }
-                }} 
-                disabled={!pointsAmount || isNaN(parseInt(pointsAmount, 10)) || parseInt(pointsAmount, 10) <= 0}
-                className="px-4 py-2 text-sm font-medium text-white bg-rose-600 border border-transparent rounded-md hover:bg-rose-700 disabled:bg-rose-300"
-              >
-                {tLang.deduct}
-              </button>
-              <button 
-                onClick={() => {
-                  const amount = parseInt(pointsAmount, 10);
-                  if (!isNaN(amount) && amount > 0) {
-                    store.addPoints(customPoints.id, amount, 'manual');
-                    setCustomPoints(null);
-                    setPointsAmount('');
-                  }
-                }} 
-                disabled={!pointsAmount || isNaN(parseInt(pointsAmount, 10)) || parseInt(pointsAmount, 10) <= 0}
-                className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 border border-transparent rounded-md hover:bg-indigo-700 disabled:bg-indigo-300"
-              >
-                {tLang.increase}
+                {pointAdjustmentTarget.kind === 'class' ? tLang.confirmAirdrop : tLang.confirmAdjustment}
               </button>
             </div>
           </div>

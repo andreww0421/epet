@@ -1,20 +1,43 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Dog, Users, Settings, Smile, AlertCircle, Dices } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from './store/useStore';
 import { translations } from './i18n/translations';
 import { ClassroomView } from './components/ClassroomView';
 import { DashboardView } from './components/DashboardView';
 
 export default function App() {
-  const store = useStore();
-  const { data, view, toast, upgradeReward } = store;
-  const lang = data.settings?.language || 'zh';
+  const {
+    view,
+    toast,
+    upgradeReward,
+    lang,
+    setView,
+    advanceUpgradeRewardProgress,
+    setUpgradeReward,
+    rerollPetFromUpgrade,
+  } = useStore(
+    useShallow((state) => ({
+      view: state.view,
+      toast: state.toast,
+      upgradeReward: state.upgradeReward,
+      lang: state.data.settings?.language || 'zh',
+      setView: state.setView,
+      advanceUpgradeRewardProgress: state.advanceUpgradeRewardProgress,
+      setUpgradeReward: state.setUpgradeReward,
+      rerollPetFromUpgrade: state.rerollPetFromUpgrade,
+    })),
+  );
   const tLang = translations[lang];
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  }, [view]);
 
   return (
     <div className="min-h-screen flex flex-col font-sans">
       {/* Navbar */}
-      <nav className="bg-white shadow-sm border-b border-gray-200 sticky top-0 z-10">
+      <nav className="sticky top-0 z-40 border-b border-gray-200 bg-white shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16">
             <div className="flex items-center">
@@ -23,7 +46,7 @@ export default function App() {
             </div>
             <div className="flex items-center space-x-4">
               <button
-                onClick={() => store.setView('classroom')}
+                onClick={() => setView('classroom')}
                 className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
                   view === 'classroom' 
                     ? 'bg-amber-100 text-amber-800' 
@@ -34,7 +57,7 @@ export default function App() {
                 {tLang.classroom}
               </button>
               <button
-                onClick={() => store.setView('dashboard')}
+                onClick={() => setView('dashboard')}
                 className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
                   view === 'dashboard' 
                     ? 'bg-indigo-100 text-indigo-800' 
@@ -75,8 +98,8 @@ export default function App() {
             <div className="bg-slate-50 px-6 py-4 flex justify-end gap-3">
               <button
                 onClick={() => {
-                  store.advanceUpgradeRewardProgress(upgradeReward.studentId, upgradeReward.reachedLevel);
-                  store.setUpgradeReward(null);
+                  advanceUpgradeRewardProgress(upgradeReward.studentId, upgradeReward.reachedLevel);
+                  setUpgradeReward(null);
                 }}
                 className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50"
               >
@@ -84,8 +107,8 @@ export default function App() {
               </button>
               <button
                 onClick={() => {
-                  store.rerollPetFromUpgrade(upgradeReward.studentId, upgradeReward.reachedLevel);
-                  store.setUpgradeReward(null);
+                  rerollPetFromUpgrade(upgradeReward.studentId, upgradeReward.reachedLevel);
+                  setUpgradeReward(null);
                 }}
                 className="px-4 py-2 text-sm font-medium text-white bg-amber-500 border border-transparent rounded-md hover:bg-amber-600"
               >

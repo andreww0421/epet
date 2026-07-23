@@ -5,9 +5,11 @@ import {
   TEAM_BATTLE_ATTACKER_FULLNESS_COST, TEAM_BATTLE_ATTACKER_TEAMMATE_FULLNESS_COST,
   TEAM_BATTLE_DEFENDER_FULLNESS_COST, TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST,
   DEFAULT_BOSS_ATTACK_MAX_TARGETS, DEFAULT_BOSS_ATTACK_DAMAGE, DEFAULT_BOSS_REWARD_TIERS,
-  type BossRewardTier,
+  DEFAULT_BOSS_PARTICIPATION_REWARD, DEFAULT_BOSS_IMPROVEMENT_REWARD, isLearningCompetency,
+  MAX_ACTIVITY_RECORDS, MAX_POINT_ADJUSTMENT_RECORDS,
+  type BossRewardTier, type BossReward,
 } from '../gameRules';
-import { AppData, Student, DisciplineRecord, PointAdjustmentRecord, WorldBoss } from './types';
+import { AppData, Student, DisciplineRecord, PointAdjustmentRecord, WorldBoss, ClassGoal } from './types';
 import { PET_TYPES, DEFAULT_CLASS_NAME, DEFAULT_MAX_TEAM_SIZE, DEFAULT_BATTLE_MODE } from './constants';
 
 export const getRandomPetType = (useRarity = false) => {
@@ -34,6 +36,14 @@ export const computeBadges = (student: Pick<Student, 'points' | 'pet' | 'stats'>
   if ((student.pet.level || 1) >= 10) badges.add('badgeMaxLevel');
 
   return Array.from(badges);
+};
+
+const normalizeBossReward = (reward: unknown, fallback: BossReward): BossReward => {
+  const rawReward = reward && typeof reward === 'object' ? reward as Partial<BossReward> : {};
+  return {
+    points: Math.max(0, Math.floor(toFiniteNumber(rawReward.points, fallback.points))),
+    happiness: Math.max(0, Math.floor(toFiniteNumber(rawReward.happiness, fallback.happiness))),
+  };
 };
 
 export const normalizeWorldBoss = (boss: unknown, fallbackIndex: number, now = Date.now()): WorldBoss | undefined => {
@@ -81,6 +91,8 @@ export const normalizeWorldBoss = (boss: unknown, fallbackIndex: number, now = D
     maxHp,
     currentHp,
     rewardTiers,
+    participationReward: normalizeBossReward(rawBoss.participationReward, DEFAULT_BOSS_PARTICIPATION_REWARD),
+    improvementReward: normalizeBossReward(rawBoss.improvementReward, DEFAULT_BOSS_IMPROVEMENT_REWARD),
     contributions,
     isActive: true,
   };
@@ -158,6 +170,7 @@ export const createInitialData = (now = Date.now()): AppData => ({
     teamBattleDefenderTeammateFullnessCost: TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST,
     bossAttackMaxTargets: DEFAULT_BOSS_ATTACK_MAX_TARGETS,
     bossAttackDamage: DEFAULT_BOSS_ATTACK_DAMAGE,
+    bossAttackMode: 'shared',
   },
 });
 
@@ -208,6 +221,7 @@ export const normalizeStudent = (student: any, fallbackIndex: number, now = Date
             warningCount: record?.warningCount == null ? undefined : Math.max(0, Math.floor(toFiniteNumber(record.warningCount, 0))),
           }))
           .sort((a: DisciplineRecord, b: DisciplineRecord) => b.createdAt - a.createdAt)
+          .slice(0, MAX_ACTIVITY_RECORDS)
       : [],
     pointAdjustmentRecords: Array.isArray(student?.pointAdjustmentRecords)
       ? student.pointAdjustmentRecords
@@ -221,13 +235,19 @@ export const normalizeStudent = (student: any, fallbackIndex: number, now = Date
             source: record?.source === 'manual' || record?.source === 'airdrop' ? record.source : 'quick',
             reasonId: typeof record?.reasonId === 'string' ? record.reasonId : undefined,
             reasonLabel: typeof record?.reasonLabel === 'string' ? record.reasonLabel : undefined,
+            competency: isLearningCompetency(record?.competency) ? record.competency : undefined,
           }))
           .sort((a: PointAdjustmentRecord, b: PointAdjustmentRecord) => b.createdAt - a.createdAt)
+          .slice(0, MAX_POINT_ADJUSTMENT_RECORDS)
       : [],
     dailyProgress: {
       lastClaimDate: typeof student?.dailyProgress?.lastClaimDate === 'string' ? student.dailyProgress.lastClaimDate : undefined,
       streak: Math.max(0, Math.floor(toFiniteNumber(student?.dailyProgress?.streak, 0))),
     },
+    lastBossDamage:
+      student?.lastBossDamage == null
+        ? undefined
+        : Math.max(0, Math.floor(toFiniteNumber(student.lastBossDamage, 0))),
     teamId: typeof student?.teamId === 'string' && student.teamId ? student.teamId : undefined,
     badges: [],
   };
@@ -273,12 +293,30 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
       const derivedTeamId = `legacy-team-${[student.id, mate.id].sort().join('-')}`;
       return { ...student, teamId: derivedTeamId };
     });
+    const rawGoal = classItem?.classGoal;
+    const classGoal: ClassGoal | undefined =
+      rawGoal && typeof rawGoal === 'object' && isLearningCompetency(rawGoal.competency)
+        ? {
+            id:
+              typeof rawGoal.id === 'string' && rawGoal.id
+                ? rawGoal.id
+                : `goal-${now}-${index}`,
+            title:
+              typeof rawGoal.title === 'string' && rawGoal.title.trim()
+                ? rawGoal.title.trim()
+                : 'Class goal',
+            competency: rawGoal.competency,
+            targetCount: Math.max(1, Math.floor(toFiniteNumber(rawGoal.targetCount, 10))),
+            createdAt: toFiniteNumber(rawGoal.createdAt, now),
+          }
+        : undefined;
 
     return {
       id: typeof classItem?.id === 'string' && classItem.id ? classItem.id : `class-${now}-${index}`,
       name: typeof classItem?.name === 'string' && classItem.name.trim() ? classItem.name.trim() : DEFAULT_CLASS_NAME,
       students: sanitizeTeamAssignments(withLegacyTeams, clampTeamSize(rawSettings?.maxTeamSize)),
       activeBoss: normalizeWorldBoss(classItem?.activeBoss, index, now),
+      classGoal,
     };
   });
 
@@ -358,6 +396,7 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
         0,
         Math.floor(toFiniteNumber(rawSettings?.bossAttackDamage, DEFAULT_BOSS_ATTACK_DAMAGE)),
       ),
+      bossAttackMode: rawSettings?.bossAttackMode === 'random' ? 'random' : 'shared',
       enableSeasonResetRewards: Boolean(rawSettings?.enableSeasonResetRewards),
       seasonResetRewards: rawSettings?.seasonResetRewards ?? { diamond: 500, platinum: 400, gold: 300, silver: 200, bronze: 100 },
       reviveCost: Math.max(0, toFiniteNumber(rawSettings?.reviveCost, 120)),

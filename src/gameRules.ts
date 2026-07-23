@@ -11,6 +11,30 @@ export type DisciplineRecord = {
 
 export type PointAdjustmentSource = 'quick' | 'manual' | 'airdrop';
 
+export type LearningCompetency =
+  | 'participation'
+  | 'collaboration'
+  | 'selfManagement'
+  | 'assignmentQuality';
+
+export const LEARNING_COMPETENCIES: LearningCompetency[] = [
+  'participation',
+  'collaboration',
+  'selfManagement',
+  'assignmentQuality',
+];
+
+export const isLearningCompetency = (value: unknown): value is LearningCompetency =>
+  LEARNING_COMPETENCIES.includes(value as LearningCompetency);
+
+export type ClassGoal = {
+  id: string;
+  title: string;
+  competency: LearningCompetency;
+  targetCount: number;
+  createdAt: number;
+};
+
 export type PointAdjustmentRecord = {
   id: string;
   amount: number;
@@ -18,6 +42,7 @@ export type PointAdjustmentRecord = {
   source: PointAdjustmentSource;
   reasonId?: string;
   reasonLabel?: string;
+  competency?: LearningCompetency;
 };
 
 export type PenaltyStatus = {
@@ -51,6 +76,7 @@ export type StudentRuleState = {
   disciplineRecords?: DisciplineRecord[];
   pointAdjustmentRecords?: PointAdjustmentRecord[];
   dailyProgress?: DailyProgress;
+  lastBossDamage?: number;
 };
 
 export type PenaltyAmounts = {
@@ -66,8 +92,17 @@ export type WorldBoss = {
   maxHp: number;
   currentHp: number;
   rewardTiers: BossRewardTier[];
+  participationReward?: BossReward;
+  improvementReward?: BossReward;
   contributions: Record<string, number>;
   isActive: boolean;
+};
+
+export type BossAttackMode = 'shared' | 'random';
+
+export type BossReward = {
+  points: number;
+  happiness: number;
 };
 
 export type BossRewardTier = {
@@ -83,6 +118,13 @@ export type BossContributionStanding = {
   damage: number;
   rewardPoints: number;
   rewardHappiness: number;
+  rankRewardPoints: number;
+  rankRewardHappiness: number;
+  participationRewardPoints: number;
+  participationRewardHappiness: number;
+  improvementRewardPoints: number;
+  improvementRewardHappiness: number;
+  receivedImprovementReward: boolean;
 };
 
 export type BattleOutcome = 'win' | 'loss' | 'draw';
@@ -132,6 +174,7 @@ export const PENALTY_DURATION_MS: Record<PenaltyStatusSource, number> = {
   discipline: 1000 * 60 * 60 * 48,
 };
 export const MAX_ACTIVITY_RECORDS = 20;
+export const MAX_POINT_ADJUSTMENT_RECORDS = 200;
 export const PET_DEATH_DELAY_MS = 1000 * 60 * 60 * 24;
 export const REVIVE_COST = 120;
 export const DAILY_TASK_REWARD_POINTS = 30;
@@ -157,6 +200,8 @@ export const TEAM_BATTLE_TEAM_BONUS_HAPPINESS = 6;
 export const BOSS_ATTACK_FULLNESS_COST = 20;
 export const DEFAULT_BOSS_ATTACK_MAX_TARGETS = 4;
 export const DEFAULT_BOSS_ATTACK_DAMAGE = 20;
+export const DEFAULT_BOSS_PARTICIPATION_REWARD: BossReward = { points: 10, happiness: 5 };
+export const DEFAULT_BOSS_IMPROVEMENT_REWARD: BossReward = { points: 15, happiness: 5 };
 export const DEFAULT_BOSS_REWARD_TIERS: BossRewardTier[] = [
   { rank: 1, points: 100, happiness: 30 },
   { rank: 2, points: 70, happiness: 20 },
@@ -190,7 +235,7 @@ export const createDisciplineRecord = (
 export const createPointAdjustmentRecord = (
   amount: number,
   source: PointAdjustmentSource,
-  reason?: { id?: string; label?: string },
+  reason?: { id?: string; label?: string; competency?: LearningCompetency },
   now = Date.now(),
 ): PointAdjustmentRecord => ({
   id: `points-${now}-${Math.random().toString(36).slice(2, 8)}`,
@@ -199,10 +244,14 @@ export const createPointAdjustmentRecord = (
   source,
   reasonId: reason?.id,
   reasonLabel: reason?.label,
+  competency: reason?.competency,
 });
 
-export const appendRecord = <T extends { createdAt: number }>(records: T[] | undefined, record: T) =>
-  [record, ...(records ?? [])].sort((a, b) => b.createdAt - a.createdAt).slice(0, MAX_ACTIVITY_RECORDS);
+export const appendRecord = <T extends { createdAt: number }>(
+  records: T[] | undefined,
+  record: T,
+  limit = MAX_ACTIVITY_RECORDS,
+) => [record, ...(records ?? [])].sort((a, b) => b.createdAt - a.createdAt).slice(0, limit);
 
 export const createPenaltyStatus = (source: PenaltyStatusSource, now = Date.now()): PenaltyStatus => ({
   source,
@@ -307,7 +356,11 @@ export const applyPointAdjustmentToStudent = <T extends StudentRuleState>(
 ) => ({
   ...student,
   points: clamp(student.points + amount, 0, maxPoints),
-  pointAdjustmentRecords: appendRecord(student.pointAdjustmentRecords, record),
+  pointAdjustmentRecords: appendRecord(
+    student.pointAdjustmentRecords,
+    record,
+    MAX_POINT_ADJUSTMENT_RECORDS,
+  ),
 });
 
 export const applyFeedToStudent = <T extends StudentRuleState>(
@@ -837,10 +890,42 @@ export const resolveBossAttack = <T extends StudentRuleState>(
   return { updated, targetIds, damage: safeDamage };
 };
 
+export const resolveSharedBossAttack = <T extends StudentRuleState>(
+  students: Array<TeamBattleMember<T>>,
+  totalDamage = DEFAULT_BOSS_ATTACK_DAMAGE,
+  now = Date.now(),
+): { updated: Record<string, T>; targetIds: string[]; damage: number } => {
+  const eligible = students.filter(({ student }) => !isPetDead(student.pet));
+  const safeTotalDamage = Math.max(0, Math.floor(toFiniteNumber(totalDamage, DEFAULT_BOSS_ATTACK_DAMAGE)));
+  const sharedDamage = eligible.length > 0 ? Math.ceil(safeTotalDamage / eligible.length) : 0;
+  const targetIds = eligible.map(({ id }) => id);
+  const targetIdSet = new Set(targetIds);
+  const updated: Record<string, T> = {};
+
+  students.forEach(({ id, student }) => {
+    updated[id] = targetIdSet.has(id)
+      ? {
+          ...student,
+          pet: syncPetLifeState(
+            {
+              ...student.pet,
+              fullness: student.pet.fullness - sharedDamage,
+            },
+            now,
+          ),
+        }
+      : student;
+  });
+
+  return { updated, targetIds, damage: sharedDamage };
+};
+
 export const getBossContributionStandings = <
-  T extends Pick<StudentRuleState, 'points' | 'pet'> & { id: string; name: string },
+  T extends Pick<StudentRuleState, 'points' | 'pet' | 'lastBossDamage'> & { id: string; name: string },
 >(students: T[], boss: WorldBoss): BossContributionStanding[] => {
   const rewardsByRank = new Map(boss.rewardTiers.map((tier) => [tier.rank, tier]));
+  const participationReward = boss.participationReward ?? DEFAULT_BOSS_PARTICIPATION_REWARD;
+  const improvementReward = boss.improvementReward ?? DEFAULT_BOSS_IMPROVEMENT_REWARD;
 
   return students
     .map((student) => ({
@@ -852,14 +937,27 @@ export const getBossContributionStandings = <
     .map(({ student, damage }, index) => {
       const rank = index + 1;
       const reward = rewardsByRank.get(rank);
+      const receivedImprovementReward =
+        (student.lastBossDamage ?? 0) > 0 && damage > (student.lastBossDamage ?? 0);
+      const rankRewardPoints = reward?.points ?? 0;
+      const rankRewardHappiness = reward?.happiness ?? 0;
+      const improvementRewardPoints = receivedImprovementReward ? improvementReward.points : 0;
+      const improvementRewardHappiness = receivedImprovementReward ? improvementReward.happiness : 0;
 
       return {
         rank,
         studentId: student.id,
         studentName: student.name,
         damage,
-        rewardPoints: reward?.points ?? 0,
-        rewardHappiness: reward?.happiness ?? 0,
+        rewardPoints: rankRewardPoints + participationReward.points + improvementRewardPoints,
+        rewardHappiness: rankRewardHappiness + participationReward.happiness + improvementRewardHappiness,
+        rankRewardPoints,
+        rankRewardHappiness,
+        participationRewardPoints: participationReward.points,
+        participationRewardHappiness: participationReward.happiness,
+        improvementRewardPoints,
+        improvementRewardHappiness,
+        receivedImprovementReward,
       };
     });
 };
@@ -884,6 +982,7 @@ export const applyBossContributionRewards = <
       return {
         ...student,
         points: clamp(student.points + standing.rewardPoints, 0, maxPoints),
+        lastBossDamage: standing.damage,
         pet: syncPetLifeState(
           {
             ...student.pet,

@@ -1,11 +1,13 @@
 import {
   WorldBoss, PenaltyStatus, DisciplineRecord, PointAdjustmentRecord, DailyProgress,
   PointAdjustmentSource, BossRewardTier, BossContributionStanding,
+  LearningCompetency, ClassGoal, BossAttackMode, BossReward,
 } from '../gameRules';
 
 export type {
   WorldBoss, PenaltyStatus, DisciplineRecord, PointAdjustmentRecord, DailyProgress,
   PointAdjustmentSource, BossRewardTier, BossContributionStanding,
+  LearningCompetency, ClassGoal, BossAttackMode, BossReward,
 };
 
 export type Pet = {
@@ -36,6 +38,7 @@ export type Student = {
   disciplineRecords?: DisciplineRecord[];
   pointAdjustmentRecords?: PointAdjustmentRecord[];
   dailyProgress?: DailyProgress;
+  lastBossDamage?: number;
   teamId?: string;
   teammateId?: string;
   badges?: string[];
@@ -57,6 +60,7 @@ export type ClassData = {
   name: string;
   students: Student[];
   activeBoss?: WorldBoss;
+  classGoal?: ClassGoal;
 };
 
 export type AppData = {
@@ -90,6 +94,7 @@ export type AppData = {
     teamBattleDefenderTeammateFullnessCost?: number;
     bossAttackMaxTargets?: number;
     bossAttackDamage?: number;
+    bossAttackMode?: BossAttackMode;
     enableSeasonResetRewards?: boolean;
     seasonResetRewards?: { diamond: number, platinum: number, gold: number, silver: number, bronze: number };
     reviveCost?: number;
@@ -100,6 +105,7 @@ export type PointReasonOption = {
   id: string;
   amount: number;
   labels: Record<Language, string>;
+  competency: LearningCompetency;
 };
 
 export type BossVictoryResult = {

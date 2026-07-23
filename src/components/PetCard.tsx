@@ -1,7 +1,8 @@
 import React from 'react';
 import { 
   Smile, Frown, Meh, Star, AlertCircle, Zap, Users, Crown, Heart, Trophy,
-  Swords, Gift, RefreshCw, Utensils, Dices, Medal, Ghost, Dumbbell, Sparkles
+  Swords, Gift, RefreshCw, Utensils, Dices, Medal, Ghost, Dumbbell, Sparkles,
+  Target,
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -13,6 +14,7 @@ import {
   SOLO_BATTLE_MIN_FULLNESS, TEAM_BATTLE_MIN_FULLNESS, TEAM_BATTLE_MIN_FULLNESS_ENABLED
 } from '../gameRules';
 import { computeBadges, getTeamMembers } from '../store/utils';
+import { getStudentGoalProgress } from '../educationInsights';
 
 const WARNING_THRESHOLD = 3;
 const DAILY_TASK_REWARD_POINTS = 30;
@@ -41,6 +43,9 @@ const selectSettings = (state: any) => ({
 
 const selectActiveBoss = (state: any) =>
   state.data.classes.find((c: any) => c.id === state.data.currentClassId)?.activeBoss;
+
+const selectClassGoal = (state: any) =>
+  state.data.classes.find((c: any) => c.id === state.data.currentClassId)?.classGoal;
 
 const selectAnimation = (studentId: string) => (state: any): PetAnimationMode | undefined =>
   state.animatingPets[studentId];
@@ -80,6 +85,7 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
   const student = useStore(selectStudent(studentId));
   const settings = useStore(useShallow(selectSettings));
   const activeBoss = useStore(selectActiveBoss);
+  const classGoal = useStore(selectClassGoal);
   const animationMode = useStore(selectAnimation(studentId));
   const teammateName = useStore(selectTeammateNames(studentId));
   const actions = useStore(useShallow(selectActions));
@@ -88,6 +94,12 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
 
   const { lang, feedCost, playCost, reviveCost, maxPoints, battleMode, teamBattleMinFullnessEnabled, teamBattleMinFullness } = settings;
   const tLang = translations[lang];
+  const competencyLabels = {
+    participation: tLang.competencyParticipation,
+    collaboration: tLang.competencyCollaboration,
+    selfManagement: tLang.competencySelfManagement,
+    assignmentQuality: tLang.competencyAssignmentQuality,
+  };
 
   const { name, points, pet, rankPoints = 0, warningPoints = 0, nextUpgradeGachaLevel = 2, penaltyStatus, dailyProgress } = student;
   const { fullness, type, level = 1, happiness = 80 } = pet;
@@ -125,6 +137,7 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
   const todayKey = getDateKey();
   const dailyClaimedToday = dailyProgress?.lastClaimDate === todayKey;
   const streak = dailyProgress?.streak ?? 0;
+  const goalProgress = getStudentGoalProgress(student, classGoal);
   const isRerollAnimation = animationMode === 'reroll';
   const isGachaAnimation = animationMode === 'gacha';
   const isFeedAnimation = animationMode === 'feed';
@@ -216,6 +229,26 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
           <span className="font-black text-indigo-700">{points}/{maxPoints}</span>
         </div>
       </div>
+
+      {classGoal && (
+        <div className="border-b border-emerald-100 bg-emerald-50/70 px-4 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <span className="flex min-w-0 items-center text-xs font-bold text-emerald-800">
+              <Target className="mr-1.5 h-4 w-4 shrink-0" />
+              <span className="truncate">{competencyLabels[classGoal.competency]}</span>
+            </span>
+            <span className="shrink-0 text-xs font-black text-emerald-950">
+              {tLang.feedbackCount.replace('{count}', goalProgress.toString())}
+            </span>
+          </div>
+          <p className="mt-1 text-xs leading-5 text-emerald-800">
+            {tLang.classGoalNextAction.replace(
+              '{competency}',
+              competencyLabels[classGoal.competency],
+            )}
+          </p>
+        </div>
+      )}
 
       {/* Badges Area */}
       {badges.length > 0 && (

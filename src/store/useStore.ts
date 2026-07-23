@@ -3,6 +3,7 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 import { 
   AppData, Student, ClassData, UpgradeRewardState, PetAnimationMode,
   PointAdjustmentSource, BattleMode, Language, BossRewardTier, BossVictoryResult,
+  ClassGoal, LearningCompetency, BossReward, BossAttackMode,
 } from './types';
 import { 
   translations, STORAGE_KEY, DEFAULT_MAX_TEAM_SIZE,
@@ -17,7 +18,8 @@ import {
   reviveStudentPet, applyPointAdjustmentToStudent, createPointAdjustmentRecord,
   applyPenaltyToStudent, createDisciplineRecord, getNextUpgradeGachaLevel,
   getUpcomingUpgradeGachaLevel, resolveBattle, resolveTeamBattle,
-  isBattleReady, attackWorldBoss, applyBossContributionRewards, resolveBossAttack, toFiniteNumber,
+  isBattleReady, attackWorldBoss, applyBossContributionRewards, resolveBossAttack, resolveSharedBossAttack,
+  toFiniteNumber,
   BOSS_ATTACK_FULLNESS_COST, DIRECT_DISCIPLINE_PENALTY, WARNING_THRESHOLD,
   WARNING_AUTO_PENALTY, MAX_ACTIVITY_RECORDS, UPGRADE_REWARD_LEVEL,
   UPGRADE_REWARD_FULLNESS, UPGRADE_REWARD_HAPPINESS, DAILY_TASK_REWARD_HAPPINESS,
@@ -26,6 +28,7 @@ import {
   TEAM_BATTLE_ATTACKER_FULLNESS_COST, TEAM_BATTLE_ATTACKER_TEAMMATE_FULLNESS_COST,
   TEAM_BATTLE_DEFENDER_FULLNESS_COST, TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST,
   DEFAULT_BOSS_ATTACK_MAX_TARGETS, DEFAULT_BOSS_ATTACK_DAMAGE,
+  DEFAULT_BOSS_PARTICIPATION_REWARD, DEFAULT_BOSS_IMPROVEMENT_REWARD,
 } from '../gameRules';
 
 type StoreState = {
@@ -51,6 +54,7 @@ type StoreState = {
   deleteClass: (classId: string) => void;
   importData: (importedData: any, now?: number) => void;
   updateSettings: (settings: Partial<NonNullable<AppData['settings']>>) => void;
+  setClassGoal: (goal: Pick<ClassGoal, 'title' | 'competency' | 'targetCount'> | null) => void;
 
   // Student CRUD
   addStudent: (student: Student) => void;
@@ -58,8 +62,13 @@ type StoreState = {
   editStudentName: (studentId: string, newName: string) => void;
   
   // Student Stats & Discipline
-  addPoints: (studentId: string, pointsToAdd: number, source?: PointAdjustmentSource, reason?: { id?: string; label?: string }) => void;
-  airdropPoints: (pointsToAdd: number, reasonLabel?: string) => void;
+  addPoints: (
+    studentId: string,
+    pointsToAdd: number,
+    source?: PointAdjustmentSource,
+    reason?: { id?: string; label?: string; competency?: LearningCompetency },
+  ) => void;
+  airdropPoints: (pointsToAdd: number, reasonLabel?: string, competency?: LearningCompetency) => void;
   decreaseLevel: (studentId: string) => void;
   warnStudent: (studentId: string) => void;
   removeWarning: (studentId: string) => void;
@@ -82,7 +91,13 @@ type StoreState = {
   battle: (attackerId: string, defenderId: string) => void;
   
   // Boss
-  summonBoss: (name: string, maxHp: number, rewardTiers: BossRewardTier[]) => void;
+  summonBoss: (
+    name: string,
+    maxHp: number,
+    rewardTiers: BossRewardTier[],
+    participationReward?: BossReward,
+    improvementReward?: BossReward,
+  ) => void;
   removeBoss: () => void;
   executeAttackBoss: (studentId: string) => void;
   executeBossAttack: () => void;
@@ -91,6 +106,11 @@ type StoreState = {
   // Lifecycle
   triggerDecay: () => void;
 };
+
+let toastTimer: ReturnType<typeof setTimeout> | undefined;
+const petAnimationTimers = new Map<string, ReturnType<typeof setTimeout>>();
+let bossHitFeedbackTimer: ReturnType<typeof setTimeout> | undefined;
+let bossAttackFeedbackTimer: ReturnType<typeof setTimeout> | undefined;
 
 export const useStore = create<StoreState>()(
   persist(
@@ -108,23 +128,31 @@ export const useStore = create<StoreState>()(
       setView: (view) => set({ view }),
       
       showToast: (message, type = 'success') => {
+        if (toastTimer) clearTimeout(toastTimer);
         set({ toast: { message, type } });
-        setTimeout(() => set({ toast: null }), 3000);
+        toastTimer = setTimeout(() => {
+          set({ toast: null });
+          toastTimer = undefined;
+        }, 3000);
       },
 
       setUpgradeReward: (reward) => set({ upgradeReward: reward }),
 
       triggerPetAnimation: (studentId, mode, durationMs) => {
+        const activeTimer = petAnimationTimers.get(studentId);
+        if (activeTimer) clearTimeout(activeTimer);
         set((state) => ({
           animatingPets: { ...state.animatingPets, [studentId]: mode }
         }));
-        setTimeout(() => {
+        const timer = setTimeout(() => {
           set((state) => {
             const next = { ...state.animatingPets };
             delete next[studentId];
             return { animatingPets: next };
           });
+          petAnimationTimers.delete(studentId);
         }, durationMs);
+        petAnimationTimers.set(studentId, timer);
       },
 
       switchClass: (classId) => set((state) => ({
@@ -226,6 +254,7 @@ export const useStore = create<StoreState>()(
               0,
               Math.floor(toFiniteNumber(merged.bossAttackDamage, DEFAULT_BOSS_ATTACK_DAMAGE)),
             ),
+            bossAttackMode: (merged.bossAttackMode === 'random' ? 'random' : 'shared') as BossAttackMode,
           }
         };
         get().showToast(translations[newData.settings.language || 'zh'].settingsSaved, 'success');
@@ -238,6 +267,33 @@ export const useStore = create<StoreState>()(
             }))
           }
         };
+      }),
+
+      setClassGoal: (goal) => set((state) => {
+        const currentClassIndex = state.data.classes.findIndex(
+          (classData) => classData.id === state.data.currentClassId,
+        );
+        if (currentClassIndex === -1) return state;
+
+        const now = Date.now();
+        const nextClasses = [...state.data.classes];
+        const currentGoal = nextClasses[currentClassIndex].classGoal;
+        const canKeepProgress = currentGoal?.competency === goal?.competency;
+        nextClasses[currentClassIndex] = {
+          ...nextClasses[currentClassIndex],
+          classGoal: goal
+            ? {
+                id: canKeepProgress && currentGoal ? currentGoal.id : `goal-${now}`,
+                title: goal.title.trim(),
+                competency: goal.competency,
+                targetCount: Math.max(1, Math.floor(toFiniteNumber(goal.targetCount, 10))),
+                createdAt: canKeepProgress && currentGoal ? currentGoal.createdAt : now,
+              }
+            : undefined,
+        };
+        const tLang = translations[state.data.settings?.language || 'zh'];
+        get().showToast(goal ? tLang.classGoalSaved : tLang.classGoalCleared, 'success');
+        return { data: { ...state.data, classes: nextClasses } };
       }),
 
       addStudent: (student) => set((state) => {
@@ -320,7 +376,7 @@ export const useStore = create<StoreState>()(
         return { data: { ...state.data, classes: nextClasses } };
       }),
 
-      airdropPoints: (pointsToAdd, reasonLabel) => set((state) => {
+      airdropPoints: (pointsToAdd, reasonLabel, competency) => set((state) => {
         const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
         if (currentClassIndex === -1) return state;
 
@@ -339,7 +395,9 @@ export const useStore = create<StoreState>()(
               createPointAdjustmentRecord(
                 amount,
                 'airdrop',
-                reasonLabel?.trim() ? { label: reasonLabel.trim() } : undefined,
+                reasonLabel?.trim() || competency
+                  ? { label: reasonLabel?.trim() || undefined, competency }
+                  : undefined,
                 now,
               ),
               state.data.settings?.maxPoints ?? 700,
@@ -924,7 +982,13 @@ export const useStore = create<StoreState>()(
         return { data: { ...state.data, classes: nextClasses } };
       }),
 
-      summonBoss: (name, maxHp, rewardTiers) => set((state) => {
+      summonBoss: (
+        name,
+        maxHp,
+        rewardTiers,
+        participationReward = DEFAULT_BOSS_PARTICIPATION_REWARD,
+        improvementReward = DEFAULT_BOSS_IMPROVEMENT_REWARD,
+      ) => set((state) => {
         const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
         if (currentClassIndex === -1) return state;
 
@@ -937,6 +1001,8 @@ export const useStore = create<StoreState>()(
             maxHp: safeMaxHp,
             currentHp: safeMaxHp,
             rewardTiers,
+            participationReward,
+            improvementReward,
             contributions: {},
             isActive: true,
           },
@@ -974,13 +1040,21 @@ export const useStore = create<StoreState>()(
         const currentClass = state.data.classes[currentClassIndex];
         if (!currentClass.activeBoss?.isActive) return state;
 
-        const result = resolveBossAttack(
-          currentClass.students.map((student) => ({ id: student.id, student })),
-          state.data.settings?.bossAttackMaxTargets ?? DEFAULT_BOSS_ATTACK_MAX_TARGETS,
-          state.data.settings?.bossAttackDamage ?? DEFAULT_BOSS_ATTACK_DAMAGE,
-          Math.random,
-          Date.now(),
-        );
+        const members = currentClass.students.map((student) => ({ id: student.id, student }));
+        const isSharedAttack = state.data.settings?.bossAttackMode !== 'random';
+        const result = isSharedAttack
+          ? resolveSharedBossAttack(
+              members,
+              state.data.settings?.bossAttackDamage ?? DEFAULT_BOSS_ATTACK_DAMAGE,
+              Date.now(),
+            )
+          : resolveBossAttack(
+              members,
+              state.data.settings?.bossAttackMaxTargets ?? DEFAULT_BOSS_ATTACK_MAX_TARGETS,
+              state.data.settings?.bossAttackDamage ?? DEFAULT_BOSS_ATTACK_DAMAGE,
+              Math.random,
+              Date.now(),
+            );
         const targetIdSet = new Set(result.targetIds);
         const targetNames = currentClass.students
           .filter((student) => targetIdSet.has(student.id))
@@ -993,15 +1067,24 @@ export const useStore = create<StoreState>()(
         };
 
         const lang = state.data.settings?.language || 'zh';
+        const tLang = translations[lang];
         get().showToast(
           targetNames.length === 0
             ? (lang === 'en' ? 'The boss attack missed every pet.' : '魔王本次攻擊沒有命中任何寵物。')
-            : (lang === 'en'
-                ? `Boss hit ${targetNames.join(', ')} for ${result.damage} fullness.`
-                : `魔王攻擊 ${targetNames.join('、')}，各造成 ${result.damage} 點飽食度傷害。`),
+            : isSharedAttack
+              ? tLang.bossAttackSharedResult
+                  .replace('{count}', targetNames.length.toString())
+                  .replace('{damage}', result.damage.toString())
+              : (lang === 'en'
+                  ? `Boss hit ${targetNames.join(', ')} for ${result.damage} fullness.`
+                  : `魔王攻擊 ${targetNames.join('、')}，各造成 ${result.damage} 點飽食度傷害。`),
           targetNames.length === 0 ? 'success' : 'error',
         );
-        setTimeout(() => set({ bossAttackFeedback: null }), 3000);
+        if (bossAttackFeedbackTimer) clearTimeout(bossAttackFeedbackTimer);
+        bossAttackFeedbackTimer = setTimeout(() => {
+          set({ bossAttackFeedback: null });
+          bossAttackFeedbackTimer = undefined;
+        }, 3000);
 
         return {
           bossAttackFeedback: feedback,
@@ -1031,7 +1114,11 @@ export const useStore = create<StoreState>()(
           get().showToast((tLang.bossDamage ?? 'Dealt {damage} damage!').replace('{damage}', (result.damageDealt || 0).toString()), 'success');
           
           set({ bossHitFeedback: { damage: result.damageDealt || 0, id: Date.now() } });
-          setTimeout(() => set({ bossHitFeedback: null }), 800);
+          if (bossHitFeedbackTimer) clearTimeout(bossHitFeedbackTimer);
+          bossHitFeedbackTimer = setTimeout(() => {
+            set({ bossHitFeedback: null });
+            bossHitFeedbackTimer = undefined;
+          }, 800);
 
           const nextClasses = [...state.data.classes];
           const newBoss = result.updatedBoss;
