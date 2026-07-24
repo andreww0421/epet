@@ -506,6 +506,7 @@ test('normalizeAppData sanitizes active boss data and drops defeated bosses', ()
       lastOpened: 1000,
       currentClassId: 'class-a',
       settings: {
+        battleEnabled: false,
         soloBattleFullnessCost: '17',
         teamBattleAttackerFullnessCost: '11',
         teamBattleAttackerTeammateFullnessCost: '5',
@@ -566,6 +567,20 @@ test('normalizeAppData sanitizes active boss data and drops defeated bosses', ()
   assert.equal(normalized.settings?.teamBattleDefenderFullnessCost, 13);
   assert.equal(normalized.settings?.teamBattleDefenderTeammateFullnessCost, 0);
   assert.equal(normalized.settings?.bossAttackMode, 'shared');
+  assert.equal(normalized.settings?.battleEnabled, false);
+});
+
+test('normalizeAppData keeps battles enabled for legacy saves without the switch', () => {
+  const normalized = normalizeAppData(
+    {
+      currentClassId: 'class-a',
+      classes: [{ id: 'class-a', name: 'Class A', students: [] }],
+      settings: {},
+    },
+    2000,
+  );
+
+  assert.equal(normalized.settings?.battleEnabled, true);
 });
 
 test('computeBadges derives badges from the current student state', () => {

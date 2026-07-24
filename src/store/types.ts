@@ -75,6 +75,7 @@ export type AppData = {
     feedGain?: number;
     playCost?: number;
     playGain?: number;
+    battleEnabled?: boolean;
     battleMode?: BattleMode;
     maxTeamSize?: number;
     maxPoints?: number;

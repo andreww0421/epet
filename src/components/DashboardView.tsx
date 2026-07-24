@@ -78,6 +78,7 @@ export const DashboardView: React.FC = () => {
   const [feedGain, setFeedGain] = useState(data.settings?.feedGain ?? 20);
   const [playCost, setPlayCost] = useState(data.settings?.playCost ?? 5);
   const [playGain, setPlayGain] = useState(data.settings?.playGain ?? 15);
+  const [battleEnabled, setBattleEnabled] = useState(data.settings?.battleEnabled !== false);
   const [battleMode, setBattleMode] = useState<BattleMode>(data.settings?.battleMode ?? DEFAULT_BATTLE_MODE);
   const [maxTeamSize, setMaxTeamSize] = useState(data.settings?.maxTeamSize ?? DEFAULT_MAX_TEAM_SIZE);
   const [currentLang, setCurrentLang] = useState<Language>(lang);
@@ -305,6 +306,7 @@ export const DashboardView: React.FC = () => {
       feedGain: Number(feedGain),
       playCost: Number(playCost),
       playGain: Number(playGain),
+      battleEnabled,
       battleMode,
       maxTeamSize: Number(maxTeamSize),
       maxPoints: Number(maxPoints),
@@ -1560,6 +1562,32 @@ export const DashboardView: React.FC = () => {
             <h4 className="text-sm font-bold text-slate-700 pb-2 border-b border-slate-200">
               {lang === 'en' ? 'Battle Settings' : '對戰與組隊設定'}
             </h4>
+            <div className="flex items-start justify-between gap-4 rounded-md border border-slate-200 bg-white p-3">
+              <div>
+                <p className="text-sm font-bold text-slate-800">{tLang.battleEnabled}</p>
+                <p className="mt-1 text-xs leading-5 text-slate-500">{tLang.battleEnabledHint}</p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={battleEnabled}
+                aria-label={tLang.battleEnabled}
+                onClick={() => setBattleEnabled((enabled) => !enabled)}
+                className={`relative mt-0.5 h-6 w-11 shrink-0 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 ${
+                  battleEnabled ? 'bg-indigo-600' : 'bg-slate-300'
+                }`}
+              >
+                <span
+                  className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${
+                    battleEnabled ? 'translate-x-5' : 'translate-x-0.5'
+                  }`}
+                />
+              </button>
+            </div>
+            <fieldset
+              disabled={!battleEnabled}
+              className={`space-y-4 transition-opacity ${battleEnabled ? '' : 'opacity-45'}`}
+            >
             <div className="flex flex-col gap-1">
               <label htmlFor="battleMode" className="text-sm font-medium text-slate-700">
                 {lang === 'en' ? 'Battle Mode' : '支援對戰模式'}
@@ -1757,6 +1785,7 @@ export const DashboardView: React.FC = () => {
                 </div>
               )}
             </div>
+            </fieldset>
           </div>
 
           {/* 段位與賽季設定 */}

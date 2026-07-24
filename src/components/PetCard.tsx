@@ -36,6 +36,7 @@ const selectSettings = (state: any) => ({
   reviveCost: state.data.settings?.reviveCost ?? 120,
   maxPoints: state.data.settings?.maxPoints ?? 700,
   maxTeamSize: state.data.settings?.maxTeamSize ?? 6,
+  battleEnabled: state.data.settings?.battleEnabled !== false,
   battleMode: state.data.settings?.battleMode ?? DEFAULT_BATTLE_MODE,
   teamBattleMinFullnessEnabled: state.data.settings?.teamBattleMinFullnessEnabled ?? TEAM_BATTLE_MIN_FULLNESS_ENABLED,
   teamBattleMinFullness: state.data.settings?.teamBattleMinFullness ?? TEAM_BATTLE_MIN_FULLNESS,
@@ -92,7 +93,17 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
 
   if (!student) return null;
 
-  const { lang, feedCost, playCost, reviveCost, maxPoints, battleMode, teamBattleMinFullnessEnabled, teamBattleMinFullness } = settings;
+  const {
+    lang,
+    feedCost,
+    playCost,
+    reviveCost,
+    maxPoints,
+    battleEnabled,
+    battleMode,
+    teamBattleMinFullnessEnabled,
+    teamBattleMinFullness,
+  } = settings;
   const tLang = translations[lang];
   const competencyLabels = {
     participation: tLang.competencyParticipation,
@@ -123,12 +134,13 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
     minimumFullness: teamBattleMinFullness,
     ignoreFullness: !teamBattleMinFullnessEnabled,
   });
-  const canBattle =
+  const canBattle = battleEnabled && (
     battleMode === 'team'
       ? teamBattleReady
       : battleMode === 'solo'
         ? soloBattleReady
-        : soloBattleReady || teamBattleReady;
+        : soloBattleReady || teamBattleReady
+  );
   const upgradeCost = 100 + (level - 1) * 50;
   const canUpgrade = level < 10 && fullness >= 100 && points >= upgradeCost && happiness >= 40 && !isDead;
   const canGacha = points >= 200 && !isDead;
@@ -463,15 +475,17 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
                 : `${tLang.dailyTask} (+${DAILY_TASK_REWARD_POINTS})`}
             </button>
 
-            <button
-              onClick={() => onTeamUp(studentId)}
-              className="w-full flex items-center justify-center py-2 px-4 rounded-xl font-bold text-sm transition-all duration-200 bg-sky-100 hover:bg-sky-200 text-sky-900 shadow-sm hover:shadow active:scale-95"
-            >
-              <Users className="h-4 w-4 mr-2" />
-              {teammateName
-                ? (lang === 'en' ? 'Manage Team' : '管理隊伍')
-                : (lang === 'en' ? 'Create Team' : '建立隊伍')}
-            </button>
+            {battleEnabled && (
+              <button
+                onClick={() => onTeamUp(studentId)}
+                className="w-full flex items-center justify-center py-2 px-4 rounded-xl font-bold text-sm transition-all duration-200 bg-sky-100 hover:bg-sky-200 text-sky-900 shadow-sm hover:shadow active:scale-95"
+              >
+                <Users className="h-4 w-4 mr-2" />
+                {teammateName
+                  ? (lang === 'en' ? 'Manage Team' : '管理隊伍')
+                  : (lang === 'en' ? 'Create Team' : '建立隊伍')}
+              </button>
+            )}
 
             {isDead ? (
               <button
@@ -549,7 +563,7 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
                 }`}
               >
                 <Swords className="h-3 w-3 mr-1" />
-                {tLang.battle}
+                {battleEnabled ? tLang.battle : tLang.battleOff}
               </button>
             </div>
 
@@ -572,9 +586,10 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
               <p className="text-center text-[10px] text-red-500 mt-2 flex flex-col items-center justify-center space-y-0.5">
                 {!canFeed && fullness < 100 && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.feedNeedPoints.replace('{cost}', feedCost.toString())}</span>}
                 {!canPlay && happiness < 100 && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.playNeedPoints.replace('{cost}', playCost.toString())}</span>}
-                {!canBattle && hasActivePenalty && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.battleBlockedByPenalty}</span>}
-                {!canBattle && !hasActivePenalty && isLowMood && <span><AlertCircle className="h-3 w-3 inline mr-1" />{lang === 'en' ? 'Mood too low, refusing to battle!' : '心情過低，罷工拒絕出戰！'}</span>}
-                {!canBattle && !hasActivePenalty && !isLowMood && !isDead && (
+                {!battleEnabled && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.battleDisabledByTeacher}</span>}
+                {battleEnabled && !canBattle && hasActivePenalty && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.battleBlockedByPenalty}</span>}
+                {battleEnabled && !canBattle && !hasActivePenalty && isLowMood && <span><AlertCircle className="h-3 w-3 inline mr-1" />{lang === 'en' ? 'Mood too low, refusing to battle!' : '心情過低，罷工拒絕出戰！'}</span>}
+                {battleEnabled && !canBattle && !hasActivePenalty && !isLowMood && !isDead && (
                   (
                     battleMode === 'solo' && fullness < SOLO_BATTLE_MIN_FULLNESS
                   ) || (

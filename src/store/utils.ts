@@ -154,6 +154,7 @@ export const createInitialData = (now = Date.now()): AppData => ({
     feedGain: 20,
     playCost: 5,
     playGain: 15,
+    battleEnabled: true,
     battleMode: DEFAULT_BATTLE_MODE,
     maxTeamSize: DEFAULT_MAX_TEAM_SIZE,
     maxPoints: 700,
@@ -340,6 +341,7 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
       feedGain: Math.max(1, toFiniteNumber(rawSettings?.feedGain, initialData.settings?.feedGain ?? 20)),
       playCost: Math.max(1, toFiniteNumber(rawSettings?.playCost, initialData.settings?.playCost ?? 5)),
       playGain: Math.max(1, toFiniteNumber(rawSettings?.playGain, initialData.settings?.playGain ?? 15)),
+      battleEnabled: rawSettings?.battleEnabled !== false,
       battleMode:
         rawSettings?.battleMode === 'solo' || rawSettings?.battleMode === 'team' || rawSettings?.battleMode === 'both'
           ? rawSettings.battleMode

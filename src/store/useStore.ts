@@ -206,6 +206,7 @@ export const useStore = create<StoreState>()(
             feedGain: Math.max(1, toFiniteNumber(merged.feedGain, 20)),
             playCost: Math.max(1, toFiniteNumber(merged.playCost, 5)),
             playGain: Math.max(1, toFiniteNumber(merged.playGain, 15)),
+            battleEnabled: merged.battleEnabled !== false,
             maxTeamSize: safeMaxTeamSize,
             maxPoints: Math.max(10, toFiniteNumber(merged.maxPoints, 700)),
             reviveCost: Math.max(0, toFiniteNumber(merged.reviveCost, 120)),
@@ -841,6 +842,12 @@ export const useStore = create<StoreState>()(
       battle: (attackerId, defenderId) => set((state) => {
         const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
         if (currentClassIndex === -1) return state;
+
+        const tLang = translations[state.data.settings?.language || 'zh'];
+        if (state.data.settings?.battleEnabled === false) {
+          get().showToast(tLang.battleDisabledByTeacher, 'error');
+          return state;
+        }
         
         const currentClass = state.data.classes[currentClassIndex];
         const attacker = currentClass.students.find(s => s.id === attackerId);
@@ -848,7 +855,6 @@ export const useStore = create<StoreState>()(
         if (!attacker || !defender) return state;
 
         const now = Date.now();
-        const tLang = translations[state.data.settings?.language || 'zh'];
         const maxTeamSize = state.data.settings?.maxTeamSize ?? DEFAULT_MAX_TEAM_SIZE;
         const battleMode = state.data.settings?.battleMode ?? DEFAULT_BATTLE_MODE;
         const teamBattleMinFullnessEnabled = state.data.settings?.teamBattleMinFullnessEnabled ?? TEAM_BATTLE_MIN_FULLNESS_ENABLED;
