@@ -1573,13 +1573,13 @@ export const DashboardView: React.FC = () => {
                 aria-checked={battleEnabled}
                 aria-label={tLang.battleEnabled}
                 onClick={() => setBattleEnabled((enabled) => !enabled)}
-                className={`relative mt-0.5 h-6 w-11 shrink-0 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 ${
+                className={`relative mt-0.5 inline-flex h-6 w-11 shrink-0 items-center justify-start rounded-full p-0.5 transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 ${
                   battleEnabled ? 'bg-indigo-600' : 'bg-slate-300'
                 }`}
               >
                 <span
-                  className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${
-                    battleEnabled ? 'translate-x-5' : 'translate-x-0.5'
+                  className={`block h-5 w-5 shrink-0 rounded-full bg-white shadow-sm transition-transform ${
+                    battleEnabled ? 'translate-x-5' : 'translate-x-0'
                   }`}
                 />
               </button>
