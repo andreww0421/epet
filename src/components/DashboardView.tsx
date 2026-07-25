@@ -151,11 +151,17 @@ export const DashboardView: React.FC = () => {
   const [bossParticipationPoints, setBossParticipationPoints] = useState(
     DEFAULT_BOSS_PARTICIPATION_REWARD.points,
   );
+  const [bossParticipationRankPoints, setBossParticipationRankPoints] = useState(
+    DEFAULT_BOSS_PARTICIPATION_REWARD.rankPoints,
+  );
   const [bossParticipationHappiness, setBossParticipationHappiness] = useState(
     DEFAULT_BOSS_PARTICIPATION_REWARD.happiness,
   );
   const [bossImprovementPoints, setBossImprovementPoints] = useState(
     DEFAULT_BOSS_IMPROVEMENT_REWARD.points,
+  );
+  const [bossImprovementRankPoints, setBossImprovementRankPoints] = useState(
+    DEFAULT_BOSS_IMPROVEMENT_REWARD.rankPoints,
   );
   const [bossImprovementHappiness, setBossImprovementHappiness] = useState(
     DEFAULT_BOSS_IMPROVEMENT_REWARD.happiness,
@@ -1217,7 +1223,7 @@ export const DashboardView: React.FC = () => {
               <div className="border-l-4 border-emerald-500 bg-emerald-50 p-4">
                 <h4 className="text-sm font-bold text-emerald-900">{tLang.bossParticipationReward}</h4>
                 <p className="mt-1 text-xs text-emerald-800">{tLang.bossParticipationRewardHint}</p>
-                <div className="mt-3 grid grid-cols-2 gap-3">
+                <div className="mt-3 grid grid-cols-3 gap-3">
                   <label className="text-xs font-medium text-slate-700">
                     {tLang.rewardPoints}
                     <input
@@ -1225,6 +1231,16 @@ export const DashboardView: React.FC = () => {
                       min="0"
                       value={bossParticipationPoints}
                       onChange={(event) => setBossParticipationPoints(Number(event.target.value))}
+                      className="mt-1 w-full rounded-md border border-emerald-200 bg-white p-2 text-sm"
+                    />
+                  </label>
+                  <label className="text-xs font-medium text-slate-700">
+                    {tLang.rewardRankPoints}
+                    <input
+                      type="number"
+                      min="0"
+                      value={bossParticipationRankPoints}
+                      onChange={(event) => setBossParticipationRankPoints(Number(event.target.value))}
                       className="mt-1 w-full rounded-md border border-emerald-200 bg-white p-2 text-sm"
                     />
                   </label>
@@ -1243,7 +1259,7 @@ export const DashboardView: React.FC = () => {
               <div className="border-l-4 border-sky-500 bg-sky-50 p-4">
                 <h4 className="text-sm font-bold text-sky-900">{tLang.bossImprovementReward}</h4>
                 <p className="mt-1 text-xs text-sky-800">{tLang.bossImprovementRewardHint}</p>
-                <div className="mt-3 grid grid-cols-2 gap-3">
+                <div className="mt-3 grid grid-cols-3 gap-3">
                   <label className="text-xs font-medium text-slate-700">
                     {tLang.rewardPoints}
                     <input
@@ -1251,6 +1267,16 @@ export const DashboardView: React.FC = () => {
                       min="0"
                       value={bossImprovementPoints}
                       onChange={(event) => setBossImprovementPoints(Number(event.target.value))}
+                      className="mt-1 w-full rounded-md border border-sky-200 bg-white p-2 text-sm"
+                    />
+                  </label>
+                  <label className="text-xs font-medium text-slate-700">
+                    {tLang.rewardRankPoints}
+                    <input
+                      type="number"
+                      min="0"
+                      value={bossImprovementRankPoints}
+                      onChange={(event) => setBossImprovementRankPoints(Number(event.target.value))}
                       className="mt-1 w-full rounded-md border border-sky-200 bg-white p-2 text-sm"
                     />
                   </label>
@@ -1281,7 +1307,12 @@ export const DashboardView: React.FC = () => {
                     const nextRank = Array.from({ length: Math.max(10, currentStudents.length) }, (_, index) => index + 1)
                       .find((rank) => !usedRanks.has(rank));
                     if (nextRank) {
-                      setBossRewardTiers((tiers) => [...tiers, { rank: nextRank, points: 0, happiness: 0 }]);
+                      setBossRewardTiers((tiers) => [...tiers, {
+                        rank: nextRank,
+                        points: 0,
+                        happiness: 0,
+                        rankPoints: 0,
+                      }]);
                     }
                   }}
                   className="inline-flex shrink-0 items-center rounded-md border border-rose-200 bg-white px-3 py-2 text-xs font-medium text-rose-700 hover:bg-rose-50"
@@ -1295,7 +1326,7 @@ export const DashboardView: React.FC = () => {
                   .slice()
                   .sort((left, right) => left.rank - right.rank)
                   .map((tier) => (
-                    <div key={tier.rank} className="grid grid-cols-[minmax(88px,0.8fr)_1fr_1fr_36px] items-end gap-2 rounded-md border border-slate-200 bg-slate-50 p-3">
+                    <div key={tier.rank} className="grid grid-cols-2 items-end gap-2 rounded-md border border-slate-200 bg-slate-50 p-3 md:grid-cols-[minmax(88px,0.8fr)_repeat(3,minmax(0,1fr))_36px]">
                       <label className="text-xs font-medium text-slate-600">
                         {tLang.rewardRank}
                         <select
@@ -1324,6 +1355,16 @@ export const DashboardView: React.FC = () => {
                         />
                       </label>
                       <label className="text-xs font-medium text-slate-600">
+                        {tLang.rewardRankPoints}
+                        <input
+                          type="number"
+                          min="0"
+                          value={tier.rankPoints}
+                          onChange={(e) => setBossRewardTiers((tiers) => tiers.map((item) => item.rank === tier.rank ? { ...item, rankPoints: Number(e.target.value) } : item))}
+                          className="mt-1 w-full min-w-0 rounded-md border border-slate-300 bg-white p-2 text-sm"
+                        />
+                      </label>
+                      <label className="text-xs font-medium text-slate-600">
                         {tLang.rewardHappiness}
                         <input
                           type="number"
@@ -1336,7 +1377,7 @@ export const DashboardView: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => setBossRewardTiers((tiers) => tiers.filter((item) => item.rank !== tier.rank))}
-                        className="flex h-9 w-9 items-center justify-center rounded-md text-slate-400 hover:bg-rose-100 hover:text-rose-600"
+                        className="col-span-2 flex h-9 w-9 items-center justify-center justify-self-end rounded-md text-slate-400 hover:bg-rose-100 hover:text-rose-600 md:col-span-1 md:justify-self-auto"
                         title={tLang.removeRewardTier}
                       >
                         <Trash2 className="h-4 w-4" />
@@ -1355,10 +1396,12 @@ export const DashboardView: React.FC = () => {
                   {
                     points: Math.max(0, Number(bossParticipationPoints)),
                     happiness: Math.max(0, Number(bossParticipationHappiness)),
+                    rankPoints: Math.max(0, Number(bossParticipationRankPoints)),
                   },
                   {
                     points: Math.max(0, Number(bossImprovementPoints)),
                     happiness: Math.max(0, Number(bossImprovementHappiness)),
+                    rankPoints: Math.max(0, Number(bossImprovementRankPoints)),
                   },
                 );
                 setBossNameInput('');

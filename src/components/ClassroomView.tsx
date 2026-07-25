@@ -301,21 +301,21 @@ export const ClassroomView: React.FC = () => {
               <div className="overflow-y-auto p-5 sm:p-6">
                 <p className="mb-4 text-sm text-slate-300">{tLang.bossDefeatedSubtitle}</p>
                 <div className="overflow-x-auto rounded-lg border border-slate-700">
-                  <div className="grid min-w-[500px] grid-cols-[52px_minmax(0,1fr)_90px_minmax(115px,auto)] gap-2 bg-slate-800 px-3 py-2 text-xs font-bold text-slate-400">
+                  <div className="grid min-w-[620px] grid-cols-[52px_minmax(0,1fr)_90px_minmax(220px,auto)] gap-2 bg-slate-800 px-3 py-2 text-xs font-bold text-slate-400">
                     <span>#</span>
                     <span>{tLang.studentName}</span>
                     <span className="text-right">{tLang.damageContribution.replace('{damage}', '')}</span>
-                    <span className="text-right">{tLang.rewardPoints} / {tLang.rewardHappiness}</span>
+                    <span className="text-right">{tLang.rewardPoints} / {tLang.rewardRankPoints} / {tLang.rewardHappiness}</span>
                   </div>
                   {bossVictoryResult.standings.map((standing) => (
-                    <div key={standing.studentId} className="grid min-w-[500px] grid-cols-[52px_minmax(0,1fr)_90px_minmax(115px,auto)] items-center gap-2 border-t border-slate-700 px-3 py-3 text-sm">
+                    <div key={standing.studentId} className="grid min-w-[620px] grid-cols-[52px_minmax(0,1fr)_90px_minmax(220px,auto)] items-center gap-2 border-t border-slate-700 px-3 py-3 text-sm">
                       <span className="font-black text-amber-300">{standing.rank}</span>
                       <span className="truncate font-medium text-white">{standing.studentName}</span>
                       <span className="text-right font-mono text-rose-300">{standing.damage}</span>
                       <div className="text-right text-slate-200">
-                        <div>+{standing.rewardPoints} / +{standing.rewardHappiness}</div>
+                        <div>+{standing.rewardPoints} / +{standing.rewardRankPoints} RP / +{standing.rewardHappiness}</div>
                         <div className="mt-1 flex flex-wrap justify-end gap-1 text-[10px]">
-                          {standing.rankRewardPoints + standing.rankRewardHappiness > 0 && (
+                          {standing.rankRewardPoints + standing.rankRewardRankPoints + standing.rankRewardHappiness > 0 && (
                             <span className="rounded bg-amber-400/15 px-1.5 py-0.5 text-amber-300">
                               {tLang.bossRankBonus}
                             </span>

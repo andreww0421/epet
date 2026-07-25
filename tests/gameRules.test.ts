@@ -59,8 +59,8 @@ const createBoss = () => ({
   maxHp: 100,
   currentHp: 100,
   rewardTiers: [
-    { rank: 1, points: 50, happiness: 10 },
-    { rank: 2, points: 30, happiness: 5 },
+    { rank: 1, points: 50, happiness: 10, rankPoints: 25 },
+    { rank: 2, points: 30, happiness: 5, rankPoints: 10 },
   ],
   contributions: {},
   isActive: true,
@@ -413,16 +413,25 @@ test('applyBossContributionRewards ranks damage and applies each configured rewa
   const result = applyBossContributionRewards(students, boss, 2000, 700);
 
   assert.deepEqual(
-    result.standings.map(({ studentId, rank, rewardPoints, rewardHappiness }) => ({ studentId, rank, rewardPoints, rewardHappiness })),
+    result.standings.map(({ studentId, rank, rewardPoints, rewardRankPoints, rewardHappiness }) => ({
+      studentId,
+      rank,
+      rewardPoints,
+      rewardRankPoints,
+      rewardHappiness,
+    })),
     [
-      { studentId: 'b', rank: 1, rewardPoints: 60, rewardHappiness: 15 },
-      { studentId: 'a', rank: 2, rewardPoints: 40, rewardHappiness: 10 },
-      { studentId: 'c', rank: 3, rewardPoints: 10, rewardHappiness: 5 },
+      { studentId: 'b', rank: 1, rewardPoints: 60, rewardRankPoints: 30, rewardHappiness: 15 },
+      { studentId: 'a', rank: 2, rewardPoints: 40, rewardRankPoints: 15, rewardHappiness: 10 },
+      { studentId: 'c', rank: 3, rewardPoints: 10, rewardRankPoints: 5, rewardHappiness: 5 },
     ],
   );
   assert.equal(result.students.find((student) => student.id === 'b')?.points, 260);
   assert.equal(result.students.find((student) => student.id === 'a')?.points, 240);
   assert.equal(result.students.find((student) => student.id === 'c')?.points, 210);
+  assert.equal(result.students.find((student) => student.id === 'b')?.rankPoints, 130);
+  assert.equal(result.students.find((student) => student.id === 'a')?.rankPoints, 115);
+  assert.equal(result.students.find((student) => student.id === 'c')?.rankPoints, 105);
   assert.equal(result.students.find((student) => student.id === 'b')?.lastBossDamage, 90);
 });
 
@@ -433,8 +442,8 @@ test('applyBossContributionRewards adds improvement rewards only after a better 
   ];
   const boss = {
     ...createBoss(),
-    participationReward: { points: 5, happiness: 2 },
-    improvementReward: { points: 12, happiness: 4 },
+    participationReward: { points: 5, happiness: 2, rankPoints: 3 },
+    improvementReward: { points: 12, happiness: 4, rankPoints: 7 },
     contributions: { a: 60, b: 80 },
   };
   const result = applyBossContributionRewards(students, boss, 2000, 700);
@@ -443,8 +452,12 @@ test('applyBossContributionRewards adds improvement rewards only after a better 
 
   assert.equal(alpha?.receivedImprovementReward, true);
   assert.equal(alpha?.improvementRewardPoints, 12);
+  assert.equal(alpha?.improvementRewardRankPoints, 7);
   assert.equal(beta?.receivedImprovementReward, false);
   assert.equal(beta?.improvementRewardPoints, 0);
+  assert.equal(beta?.improvementRewardRankPoints, 0);
+  assert.equal(result.students.find((student) => student.id === 'a')?.rankPoints, 120);
+  assert.equal(result.students.find((student) => student.id === 'b')?.rankPoints, 128);
 });
 
 test('competency-tagged feedback drives class goals and weekly education insights', () => {
@@ -552,9 +565,9 @@ test('normalizeAppData sanitizes active boss data and drops defeated bosses', ()
     name: 'Dragon',
     maxHp: 50,
     currentHp: 50,
-    rewardTiers: [{ rank: 1, points: 0, happiness: 12 }],
-    participationReward: { points: 10, happiness: 5 },
-    improvementReward: { points: 15, happiness: 5 },
+    rewardTiers: [{ rank: 1, points: 0, happiness: 12, rankPoints: 30 }],
+    participationReward: { points: 10, happiness: 5, rankPoints: 5 },
+    improvementReward: { points: 15, happiness: 5, rankPoints: 5 },
     contributions: {},
     isActive: true,
   });

@@ -43,6 +43,7 @@ const normalizeBossReward = (reward: unknown, fallback: BossReward): BossReward 
   return {
     points: Math.max(0, Math.floor(toFiniteNumber(rawReward.points, fallback.points))),
     happiness: Math.max(0, Math.floor(toFiniteNumber(rawReward.happiness, fallback.happiness))),
+    rankPoints: Math.max(0, Math.floor(toFiniteNumber(rawReward.rankPoints, fallback.rankPoints))),
   };
 };
 
@@ -62,15 +63,21 @@ export const normalizeWorldBoss = (boss: unknown, fallbackIndex: number, now = D
         rank: 1,
         points: Math.max(0, Math.floor(toFiniteNumber(rawBoss.rewardPoints, 0))),
         happiness: Math.max(0, Math.floor(toFiniteNumber(rawBoss.rewardHappiness, 0))),
+        rankPoints: DEFAULT_BOSS_REWARD_TIERS[0].rankPoints,
       }]
     : DEFAULT_BOSS_REWARD_TIERS;
   const seenRanks = new Set<number>();
   const rewardTiers = (Array.isArray(rawBoss.rewardTiers) ? rawBoss.rewardTiers : legacyRewardTier)
-    .map((tier) => ({
-      rank: Math.max(1, Math.floor(toFiniteNumber(tier?.rank, 1))),
-      points: Math.max(0, Math.floor(toFiniteNumber(tier?.points, 0))),
-      happiness: Math.max(0, Math.floor(toFiniteNumber(tier?.happiness, 0))),
-    }))
+    .map((tier) => {
+      const rank = Math.max(1, Math.floor(toFiniteNumber(tier?.rank, 1)));
+      const defaultTier = DEFAULT_BOSS_REWARD_TIERS.find((candidate) => candidate.rank === rank);
+      return {
+        rank,
+        points: Math.max(0, Math.floor(toFiniteNumber(tier?.points, 0))),
+        happiness: Math.max(0, Math.floor(toFiniteNumber(tier?.happiness, 0))),
+        rankPoints: Math.max(0, Math.floor(toFiniteNumber(tier?.rankPoints, defaultTier?.rankPoints ?? 0))),
+      };
+    })
     .filter((tier) => {
       if (seenRanks.has(tier.rank)) return false;
       seenRanks.add(tier.rank);

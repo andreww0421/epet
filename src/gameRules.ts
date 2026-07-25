@@ -103,12 +103,14 @@ export type BossAttackMode = 'shared' | 'random';
 export type BossReward = {
   points: number;
   happiness: number;
+  rankPoints: number;
 };
 
 export type BossRewardTier = {
   rank: number;
   points: number;
   happiness: number;
+  rankPoints: number;
 };
 
 export type BossContributionStanding = {
@@ -117,12 +119,16 @@ export type BossContributionStanding = {
   studentName: string;
   damage: number;
   rewardPoints: number;
+  rewardRankPoints: number;
   rewardHappiness: number;
   rankRewardPoints: number;
+  rankRewardRankPoints: number;
   rankRewardHappiness: number;
   participationRewardPoints: number;
+  participationRewardRankPoints: number;
   participationRewardHappiness: number;
   improvementRewardPoints: number;
+  improvementRewardRankPoints: number;
   improvementRewardHappiness: number;
   receivedImprovementReward: boolean;
 };
@@ -200,12 +206,12 @@ export const TEAM_BATTLE_TEAM_BONUS_HAPPINESS = 6;
 export const BOSS_ATTACK_FULLNESS_COST = 20;
 export const DEFAULT_BOSS_ATTACK_MAX_TARGETS = 4;
 export const DEFAULT_BOSS_ATTACK_DAMAGE = 20;
-export const DEFAULT_BOSS_PARTICIPATION_REWARD: BossReward = { points: 10, happiness: 5 };
-export const DEFAULT_BOSS_IMPROVEMENT_REWARD: BossReward = { points: 15, happiness: 5 };
+export const DEFAULT_BOSS_PARTICIPATION_REWARD: BossReward = { points: 10, happiness: 5, rankPoints: 5 };
+export const DEFAULT_BOSS_IMPROVEMENT_REWARD: BossReward = { points: 15, happiness: 5, rankPoints: 5 };
 export const DEFAULT_BOSS_REWARD_TIERS: BossRewardTier[] = [
-  { rank: 1, points: 100, happiness: 30 },
-  { rank: 2, points: 70, happiness: 20 },
-  { rank: 3, points: 50, happiness: 10 },
+  { rank: 1, points: 100, happiness: 30, rankPoints: 30 },
+  { rank: 2, points: 70, happiness: 20, rankPoints: 20 },
+  { rank: 3, points: 50, happiness: 10, rankPoints: 10 },
 ];
 
 export const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
@@ -940,9 +946,12 @@ export const getBossContributionStandings = <
       const receivedImprovementReward =
         (student.lastBossDamage ?? 0) > 0 && damage > (student.lastBossDamage ?? 0);
       const rankRewardPoints = reward?.points ?? 0;
+      const rankRewardRankPoints = reward?.rankPoints ?? 0;
       const rankRewardHappiness = reward?.happiness ?? 0;
       const improvementRewardPoints = receivedImprovementReward ? improvementReward.points : 0;
+      const improvementRewardRankPoints = receivedImprovementReward ? (improvementReward.rankPoints ?? 0) : 0;
       const improvementRewardHappiness = receivedImprovementReward ? improvementReward.happiness : 0;
+      const participationRewardRankPoints = participationReward.rankPoints ?? 0;
 
       return {
         rank,
@@ -950,12 +959,17 @@ export const getBossContributionStandings = <
         studentName: student.name,
         damage,
         rewardPoints: rankRewardPoints + participationReward.points + improvementRewardPoints,
+        rewardRankPoints:
+          rankRewardRankPoints + participationRewardRankPoints + improvementRewardRankPoints,
         rewardHappiness: rankRewardHappiness + participationReward.happiness + improvementRewardHappiness,
         rankRewardPoints,
+        rankRewardRankPoints,
         rankRewardHappiness,
         participationRewardPoints: participationReward.points,
+        participationRewardRankPoints,
         participationRewardHappiness: participationReward.happiness,
         improvementRewardPoints,
+        improvementRewardRankPoints,
         improvementRewardHappiness,
         receivedImprovementReward,
       };
@@ -982,6 +996,7 @@ export const applyBossContributionRewards = <
       return {
         ...student,
         points: clamp(student.points + standing.rewardPoints, 0, maxPoints),
+        rankPoints: Math.max(0, (student.rankPoints ?? 0) + standing.rewardRankPoints),
         lastBossDamage: standing.damage,
         pet: syncPetLifeState(
           {
