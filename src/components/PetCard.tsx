@@ -2,19 +2,26 @@ import React from 'react';
 import { 
   Smile, Frown, Meh, Star, AlertCircle, Zap, Users, Crown, Heart, Trophy,
   Swords, Gift, RefreshCw, Utensils, Dices, Medal, Ghost, Dumbbell, Sparkles,
-  Target,
+  Target, Moon, BookOpen, X,
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { useShallow } from 'zustand/react/shallow';
 import { translations } from '../i18n/translations';
 import { PET_TYPES, DEFAULT_BATTLE_MODE } from '../store/constants';
-import { Student, PetAnimationMode } from '../store/types';
+import {
+  Student, PetAnimationMode, PublicNameMode, DailySelfAssessment, LearningCompetency,
+} from '../store/types';
 import {
   isPenaltyActive, isPetDead, clamp, getDateKey, isBattleReady,
-  SOLO_BATTLE_MIN_FULLNESS, TEAM_BATTLE_MIN_FULLNESS, TEAM_BATTLE_MIN_FULLNESS_ENABLED
+  SOLO_BATTLE_MIN_FULLNESS, TEAM_BATTLE_MIN_FULLNESS, TEAM_BATTLE_MIN_FULLNESS_ENABLED,
 } from '../gameRules';
 import { computeBadges, getTeamMembers } from '../store/utils';
-import { getStudentGoalProgress } from '../educationInsights';
+import {
+  getLatestPositiveFeedback,
+  getNextStudentGoal,
+  getRecordCompetency,
+} from '../educationInsights';
+import { getPublicStudentName } from '../studentPresentation';
 
 const WARNING_THRESHOLD = 3;
 const DAILY_TASK_REWARD_POINTS = 30;
@@ -38,6 +45,11 @@ const selectSettings = (state: any) => ({
   maxTeamSize: state.data.settings?.maxTeamSize ?? 6,
   battleEnabled: state.data.settings?.battleEnabled !== false,
   battleMode: state.data.settings?.battleMode ?? DEFAULT_BATTLE_MODE,
+  inclusiveMode: state.data.settings?.inclusiveMode !== false,
+  petCareMode: state.data.settings?.petCareMode === 'death' ? 'death' : 'rest',
+  publicNameMode: (
+    state.data.settings?.publicNameMode === 'full' ? 'full' : 'masked'
+  ) as PublicNameMode,
   teamBattleMinFullnessEnabled: state.data.settings?.teamBattleMinFullnessEnabled ?? TEAM_BATTLE_MIN_FULLNESS_ENABLED,
   teamBattleMinFullness: state.data.settings?.teamBattleMinFullness ?? TEAM_BATTLE_MIN_FULLNESS,
 });
@@ -45,8 +57,8 @@ const selectSettings = (state: any) => ({
 const selectActiveBoss = (state: any) =>
   state.data.classes.find((c: any) => c.id === state.data.currentClassId)?.activeBoss;
 
-const selectClassGoal = (state: any) =>
-  state.data.classes.find((c: any) => c.id === state.data.currentClassId)?.classGoal;
+const selectClassGoals = (state: any) =>
+  state.data.classes.find((c: any) => c.id === state.data.currentClassId)?.classGoals ?? [];
 
 const selectAnimation = (studentId: string) => (state: any): PetAnimationMode | undefined =>
   state.animatingPets[studentId];
@@ -57,9 +69,10 @@ const selectTeammateNames = (studentId: string) => (state: any): string | undefi
   const student = cls.students.find((s: any) => s.id === studentId);
   if (!student?.teamId) return undefined;
   const maxTeamSize = state.data.settings?.maxTeamSize ?? 6;
+  const publicNameMode = state.data.settings?.publicNameMode === 'full' ? 'full' : 'masked';
   return getTeamMembers(cls.students, student, maxTeamSize)
     .filter((m: any) => m.id !== studentId)
-    .map((m: any) => m.name)
+    .map((m: any) => getPublicStudentName(m.name, publicNameMode))
     .join(', ') || undefined;
 };
 
@@ -86,10 +99,16 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
   const student = useStore(selectStudent(studentId));
   const settings = useStore(useShallow(selectSettings));
   const activeBoss = useStore(selectActiveBoss);
-  const classGoal = useStore(selectClassGoal);
+  const classGoals = useStore(selectClassGoals);
   const animationMode = useStore(selectAnimation(studentId));
   const teammateName = useStore(selectTeammateNames(studentId));
   const actions = useStore(useShallow(selectActions));
+  const [reflectionOpen, setReflectionOpen] = React.useState(false);
+  const [reflectionCompetency, setReflectionCompetency] =
+    React.useState<LearningCompetency>('growth');
+  const [reflectionAssessment, setReflectionAssessment] =
+    React.useState<DailySelfAssessment | null>(null);
+  const [reflectionText, setReflectionText] = React.useState('');
 
   if (!student) return null;
 
@@ -101,19 +120,23 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
     maxPoints,
     battleEnabled,
     battleMode,
+    inclusiveMode,
+    petCareMode,
+    publicNameMode,
     teamBattleMinFullnessEnabled,
     teamBattleMinFullness,
   } = settings;
   const tLang = translations[lang];
-  const competencyLabels = {
+  const competencyLabels: Record<LearningCompetency, string> = {
     participation: tLang.competencyParticipation,
     collaboration: tLang.competencyCollaboration,
     selfManagement: tLang.competencySelfManagement,
     assignmentQuality: tLang.competencyAssignmentQuality,
+    growth: tLang.competencyGrowth,
   };
-
   const { name, points, pet, rankPoints = 0, warningPoints = 0, nextUpgradeGachaLevel = 2, penaltyStatus, dailyProgress } = student;
   const { fullness, type, level = 1, happiness = 80 } = pet;
+  const publicStudentName = getPublicStudentName(name, publicNameMode);
   const badges = computeBadges(student);
 
   const petConfig = PET_TYPES.find(p => p.id === type) || PET_TYPES[0];
@@ -126,8 +149,9 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
   const isHungry = fullness < 30 || isLowMood;
   const hasActivePenalty = isPenaltyActive(penaltyStatus);
   const isDead = isPetDead(pet);
+  const isResting = petCareMode === 'rest' && fullness <= 0 && !isDead;
   const canFeed = points >= feedCost && !isDead;
-  const canPlay = points >= playCost && !isDead;
+  const canPlay = points >= playCost && !isDead && !isResting;
   const now = Date.now();
   const soloBattleReady = isBattleReady(student, now, { minimumFullness: SOLO_BATTLE_MIN_FULLNESS });
   const teamBattleReady = isBattleReady(student, now, {
@@ -149,7 +173,17 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
   const todayKey = getDateKey();
   const dailyClaimedToday = dailyProgress?.lastClaimDate === todayKey;
   const streak = dailyProgress?.streak ?? 0;
-  const goalProgress = getStudentGoalProgress(student, classGoal);
+  const nextGoal = getNextStudentGoal(student, classGoals);
+  const latestPositiveFeedback = getLatestPositiveFeedback(student);
+  const latestPositiveCompetency = latestPositiveFeedback
+    ? getRecordCompetency(latestPositiveFeedback)
+    : undefined;
+  const latestPositiveReason =
+    !inclusiveMode && latestPositiveFeedback?.reasonLabel
+      ? latestPositiveFeedback.reasonLabel
+      : latestPositiveCompetency
+        ? competencyLabels[latestPositiveCompetency]
+        : undefined;
   const isRerollAnimation = animationMode === 'reroll';
   const isGachaAnimation = animationMode === 'gacha';
   const isFeedAnimation = animationMode === 'feed';
@@ -171,6 +205,18 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
           )
         : (tLang.battleNeedFullness ?? '').replace('{value}', SOLO_BATTLE_MIN_FULLNESS.toString());
 
+  const submitDailyReflection = () => {
+    if (!reflectionAssessment) return;
+    actions.claimDailyTask(studentId, {
+      competency: reflectionCompetency,
+      selfAssessment: reflectionAssessment,
+      text: reflectionText,
+    });
+    setReflectionOpen(false);
+    setReflectionAssessment(null);
+    setReflectionText('');
+  };
+
   let StatusIcon = Smile;
   let statusText = tLang.statusHappy;
   let statusColor = "text-green-500";
@@ -183,6 +229,12 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
     statusColor = "text-slate-500";
     bgColor = "bg-slate-100";
     borderColor = "border-slate-300";
+  } else if (isResting) {
+    StatusIcon = Moon;
+    statusText = tLang.petResting;
+    statusColor = "text-indigo-600";
+    bgColor = "bg-indigo-50";
+    borderColor = "border-indigo-200";
   } else if (isHungry) {
     StatusIcon = Frown;
     statusText = tLang.statusHungry;
@@ -206,7 +258,7 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
       <div className={`px-4 py-3 border-b ${borderColor} ${bgColor} flex justify-between items-center`}>
         <div className="flex flex-col">
           <span className="font-bold text-gray-800 text-lg">
-            {name}
+            {publicStudentName}
           </span>
           <span className="text-xs font-bold text-amber-600 flex items-center">
             <Star className="h-3 w-3 mr-1 fill-amber-500" /> Lv. {level}
@@ -242,23 +294,35 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
         </div>
       </div>
 
-      {classGoal && (
+      {(nextGoal || latestPositiveReason) && (
         <div className="border-b border-emerald-100 bg-emerald-50/70 px-4 py-3">
-          <div className="flex items-center justify-between gap-3">
-            <span className="flex min-w-0 items-center text-xs font-bold text-emerald-800">
-              <Target className="mr-1.5 h-4 w-4 shrink-0" />
-              <span className="truncate">{competencyLabels[classGoal.competency]}</span>
-            </span>
-            <span className="shrink-0 text-xs font-black text-emerald-950">
-              {tLang.feedbackCount.replace('{count}', goalProgress.toString())}
-            </span>
+          {nextGoal && (
+            <>
+              <div className="flex items-center justify-between gap-3">
+                <span className="flex min-w-0 items-center text-xs font-bold text-emerald-800">
+                  <Target className="mr-1.5 h-4 w-4 shrink-0" />
+                  <span className="truncate">{nextGoal.goal.title}</span>
+                </span>
+                <span className="shrink-0 text-xs font-black text-emerald-950">
+                  {tLang.feedbackCount.replace('{count}', nextGoal.progress.toString())}
+                </span>
+              </div>
+              <p className="mt-1 text-xs leading-5 text-emerald-800">
+                {tLang.classGoalNextAction.replace(
+                  '{competency}',
+                  competencyLabels[nextGoal.goal.competency],
+                )}
+              </p>
+            </>
+          )}
+          <div className={`${nextGoal ? 'mt-2 border-t border-emerald-100 pt-2' : ''}`}>
+            <p className="text-[10px] font-bold uppercase text-emerald-700">
+              {tLang.latestPositiveFeedback}
+            </p>
+            <p className="mt-0.5 truncate text-xs font-medium text-emerald-950">
+              {latestPositiveReason ?? tLang.noPositiveFeedback}
+            </p>
           </div>
-          <p className="mt-1 text-xs leading-5 text-emerald-800">
-            {tLang.classGoalNextAction.replace(
-              '{competency}',
-              competencyLabels[classGoal.competency],
-            )}
-          </p>
         </div>
       )}
 
@@ -459,9 +523,18 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
                 </div>
               </div>
             )}
+            {isResting && (
+              <div className="rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-center">
+                <div className="flex items-center justify-center gap-2 text-sm font-bold text-indigo-800">
+                  <Moon className="h-4 w-4" />
+                  {tLang.petResting}
+                </div>
+                <div className="mt-1 text-[11px] text-indigo-700">{tLang.petRestingHint}</div>
+              </div>
+            )}
 
             <button
-              onClick={() => actions.claimDailyTask(studentId)}
+              onClick={() => setReflectionOpen((open) => !open)}
               disabled={dailyClaimedToday}
               className={`w-full flex items-center justify-center py-2 px-4 rounded-xl font-bold text-sm transition-all duration-200 ${
                 dailyClaimedToday
@@ -474,6 +547,90 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
                 ? tLang.dailyTaskDone
                 : `${tLang.dailyTask} (+${DAILY_TASK_REWARD_POINTS})`}
             </button>
+
+            {reflectionOpen && !dailyClaimedToday && (
+              <div className="border border-emerald-200 bg-white p-3 shadow-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="flex items-center text-sm font-bold text-emerald-950">
+                      <BookOpen className="mr-2 h-4 w-4 text-emerald-600" />
+                      {tLang.dailyReflectionTitle}
+                    </p>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">
+                      {tLang.dailyReflectionHint}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setReflectionOpen(false)}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                    title={tLang.cancel}
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+
+                <label className="mt-3 block text-xs font-bold text-slate-700">
+                  {tLang.dailyReflectionCompetency}
+                  <select
+                    value={reflectionCompetency}
+                    onChange={(event) =>
+                      setReflectionCompetency(event.target.value as LearningCompetency)
+                    }
+                    className="mt-1 w-full rounded-md border border-slate-300 bg-white p-2 text-sm font-medium text-slate-800 focus:border-emerald-500 focus:ring-emerald-500"
+                  >
+                    {(Object.keys(competencyLabels) as LearningCompetency[]).map((competency) => (
+                      <option key={competency} value={competency}>
+                        {competencyLabels[competency]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <div className="mt-3 grid grid-cols-3 gap-1" role="group" aria-label={tLang.dailyReflectionTitle}>
+                  {([
+                    ['needsSupport', tLang.dailyReflectionNeedsSupport],
+                    ['progressing', tLang.dailyReflectionProgressing],
+                    ['confident', tLang.dailyReflectionConfident],
+                  ] as Array<[DailySelfAssessment, string]>).map(([assessment, label]) => (
+                    <button
+                      key={assessment}
+                      type="button"
+                      aria-pressed={reflectionAssessment === assessment}
+                      onClick={() => setReflectionAssessment(assessment)}
+                      className={`min-h-10 rounded-md px-1.5 py-2 text-[11px] font-bold transition-colors ${
+                        reflectionAssessment === assessment
+                          ? 'bg-emerald-600 text-white'
+                          : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                <label className="mt-3 block text-xs font-bold text-slate-700">
+                  {tLang.dailyReflectionPrompt}
+                  <textarea
+                    value={reflectionText}
+                    onChange={(event) => setReflectionText(event.target.value.slice(0, 160))}
+                    maxLength={160}
+                    rows={2}
+                    placeholder={tLang.dailyReflectionPlaceholder}
+                    className="mt-1 w-full resize-none rounded-md border border-slate-300 p-2 text-sm text-slate-800 focus:border-emerald-500 focus:ring-emerald-500"
+                  />
+                </label>
+
+                <button
+                  type="button"
+                  onClick={submitDailyReflection}
+                  disabled={!reflectionAssessment}
+                  className="mt-3 inline-flex min-h-10 w-full items-center justify-center rounded-md bg-emerald-600 px-3 py-2 text-sm font-bold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                >
+                  {tLang.dailyReflectionSubmit}
+                </button>
+              </div>
+            )}
 
             {battleEnabled && (
               <button

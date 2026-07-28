@@ -2,15 +2,16 @@ import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { 
   Users, Settings, AlertCircle, Trash2, Star, Shield, Zap, X, Plus, Minus,
   Download, Upload, ChevronsDown, Edit2, Save, BookOpen, RefreshCw, Skull, Swords,
-  Gift, Crosshair, Target, BarChart3,
+  Gift, Crosshair, Target, BarChart3, Pin, Undo2,
 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store/useStore';
 import { translations, petNames, POINT_REASON_OPTIONS } from '../i18n/translations';
 import { PET_TYPES, DEFAULT_BATTLE_MODE, DEFAULT_MAX_TEAM_SIZE } from '../store/constants';
-import { normalizeAppData, applyDecay } from '../store/utils';
+import { normalizeAppData, applyDecay, getSettingsImpactPreview } from '../store/utils';
 import {
   Student, Language, BattleMode, BossRewardTier, LearningCompetency, BossAttackMode,
+  PublicNameMode, PublicLeaderboardMode, PetCareMode, BossRewardRecord, ClassGoal,
 } from '../store/types';
 import { 
   isPenaltyActive, WARNING_THRESHOLD, WARNING_AUTO_PENALTY, DIRECT_DISCIPLINE_PENALTY,
@@ -23,12 +24,18 @@ import {
   type DisciplineRecordType
 } from '../gameRules';
 import {
-  getClassGoalProgress, getRecordCompetency, getWeeklyEducationInsights,
+  getClassGoalCoverage, getClassGoalProgress, getRecordCompetency, getWeeklyEducationInsights,
 } from '../educationInsights';
 
 type PointAdjustmentTarget =
   | { kind: 'student'; id: string; name: string }
+  | { kind: 'batch'; ids: string[]; count: number }
   | { kind: 'class'; count: number };
+
+type BossRewardRecordWithStudent = BossRewardRecord & {
+  studentId: string;
+  studentName: string;
+};
 
 export const DashboardView: React.FC = () => {
   const store = useStore(
@@ -36,6 +43,7 @@ export const DashboardView: React.FC = () => {
       data: state.data,
       addClass: state.addClass,
       addPoints: state.addPoints,
+      adjustPointsForStudents: state.adjustPointsForStudents,
       addStudent: state.addStudent,
       airdropPoints: state.airdropPoints,
       decreaseLevel: state.decreaseLevel,
@@ -52,6 +60,9 @@ export const DashboardView: React.FC = () => {
       showToast: state.showToast,
       summonBoss: state.summonBoss,
       switchClass: state.switchClass,
+      togglePinnedReason: state.togglePinnedReason,
+      undoAction: state.undoAction,
+      undoLastPointAdjustment: state.undoLastPointAdjustment,
       updateSettings: state.updateSettings,
       warnStudent: state.warnStudent,
     })),
@@ -60,6 +71,7 @@ export const DashboardView: React.FC = () => {
   const lang = data.settings?.language || 'zh';
   const tLang = translations[lang];
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const selectAllCheckboxRef = useRef<HTMLInputElement>(null);
 
   const [newStudentName, setNewStudentName] = useState('');
   const [studentToDelete, setStudentToDelete] = useState<string | null>(null);
@@ -70,9 +82,25 @@ export const DashboardView: React.FC = () => {
     useState<LearningCompetency>('participation');
   const [dashboardSection, setDashboardSection] =
     useState<'students' | 'rewards' | 'activities' | 'rules' | 'records'>('students');
-  const [recordView, setRecordView] = useState<'discipline' | 'points'>('discipline');
+  const [recordView, setRecordView] = useState<'discipline' | 'points' | 'boss'>('discipline');
   const [decayAmount, setDecayAmount] = useState(data.settings?.decayAmount ?? 2);
   const [decayType, setDecayType] = useState<'hourly' | 'daily'>(data.settings?.decayType ?? 'hourly');
+  const [inclusiveMode, setInclusiveMode] = useState(data.settings?.inclusiveMode !== false);
+  const [pauseDecayOnWeekends, setPauseDecayOnWeekends] = useState(
+    data.settings?.pauseDecayOnWeekends !== false,
+  );
+  const [petCareMode, setPetCareMode] = useState<PetCareMode>(
+    data.settings?.petCareMode === 'death' ? 'death' : 'rest',
+  );
+  const [publicNameMode, setPublicNameMode] = useState<PublicNameMode>(
+    data.settings?.publicNameMode === 'full' ? 'full' : 'masked',
+  );
+  const [publicLeaderboardMode, setPublicLeaderboardMode] = useState<PublicLeaderboardMode>(
+    data.settings?.publicLeaderboardMode === 'rank' ||
+    data.settings?.publicLeaderboardMode === 'hidden'
+      ? data.settings.publicLeaderboardMode
+      : 'growth',
+  );
   const [maxPoints, setMaxPoints] = useState(data.settings?.maxPoints ?? 700);
   const [feedCost, setFeedCost] = useState(data.settings?.feedCost ?? 10);
   const [feedGain, setFeedGain] = useState(data.settings?.feedGain ?? 20);
@@ -138,6 +166,7 @@ export const DashboardView: React.FC = () => {
   const [rewardBronze, setRewardBronze] = useState(defaultRewards.bronze);
 
   const [selectedReasons, setSelectedReasons] = useState<Record<string, string>>({});
+  const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
   
   const [newClassName, setNewClassName] = useState('');
   const [showAddClass, setShowAddClass] = useState(false);
@@ -170,6 +199,7 @@ export const DashboardView: React.FC = () => {
   const [classGoalCompetency, setClassGoalCompetency] =
     useState<LearningCompetency>('collaboration');
   const [classGoalTarget, setClassGoalTarget] = useState(20);
+  const [editingClassGoalId, setEditingClassGoalId] = useState<string | null>(null);
 
   const currentClass = data.classes.find((c: any) => c.id === data.currentClassId);
   const currentStudents = useMemo(() => currentClass?.students || [], [currentClass]);
@@ -178,37 +208,80 @@ export const DashboardView: React.FC = () => {
     collaboration: tLang.competencyCollaboration,
     selfManagement: tLang.competencySelfManagement,
     assignmentQuality: tLang.competencyAssignmentQuality,
+    growth: tLang.competencyGrowth,
   }), [tLang]);
   const weeklyInsights = useMemo(
     () => getWeeklyEducationInsights(currentStudents),
     [currentStudents],
   );
-  const classGoalProgress = useMemo(
-    () => getClassGoalProgress(currentStudents, currentClass?.classGoal),
-    [currentClass?.classGoal, currentStudents],
+  const currentStudentIds = useMemo(
+    () => new Set(currentStudents.map((student: Student) => student.id)),
+    [currentStudents],
   );
-  const estimatedDailyDecay = Math.max(0, Number(decayAmount)) * (decayType === 'hourly' ? 24 : 1);
-  const estimatedUpgradeActions = Math.max(
-    1,
-    Math.ceil(
-      (
-        100 +
-        Math.max(0, Number(feedCost)) *
-          Math.ceil(100 / Math.max(1, Number(feedGain)))
-      ) / 20,
+  const selectedStudentIdsInClass = useMemo(
+    () => selectedStudentIds.filter((studentId) => currentStudentIds.has(studentId)),
+    [currentStudentIds, selectedStudentIds],
+  );
+  const selectedStudentIdSet = useMemo(
+    () => new Set(selectedStudentIdsInClass),
+    [selectedStudentIdsInClass],
+  );
+  const allStudentsSelected =
+    currentStudents.length > 0 && selectedStudentIdsInClass.length === currentStudents.length;
+  const someStudentsSelected =
+    selectedStudentIdsInClass.length > 0 && !allStudentsSelected;
+  const classGoalMetrics = useMemo(
+    () => (currentClass?.classGoals ?? []).map((goal: ClassGoal) => ({
+      goal,
+      progress: getClassGoalProgress(currentStudents, goal),
+      coverage: getClassGoalCoverage(currentStudents, goal),
+    })),
+    [currentClass?.classGoals, currentStudents],
+  );
+  const settingsPreviewNow = useMemo(() => Date.now(), [currentClass?.id]);
+  const settingsImpactPreview = useMemo(
+    () => getSettingsImpactPreview(
+      currentStudents,
+      {
+        decayAmount: Math.max(0, Number(decayAmount)),
+        decayType,
+        pauseDecayOnWeekends: inclusiveMode || pauseDecayOnWeekends,
+        feedCost: Math.max(0, Number(feedCost)),
+        feedGain: Math.max(1, Number(feedGain)),
+      },
+      weeklyInsights.positiveCount,
+      settingsPreviewNow,
     ),
+    [
+      currentStudents,
+      decayAmount,
+      decayType,
+      feedCost,
+      feedGain,
+      inclusiveMode,
+      pauseDecayOnWeekends,
+      settingsPreviewNow,
+      weeklyInsights.positiveCount,
+    ],
   );
 
   useEffect(() => {
-    setClassGoalTitle(currentClass?.classGoal?.title ?? '');
-    setClassGoalCompetency(currentClass?.classGoal?.competency ?? 'collaboration');
-    setClassGoalTarget(currentClass?.classGoal?.targetCount ?? 20);
-  }, [
-    currentClass?.id,
-    currentClass?.classGoal?.title,
-    currentClass?.classGoal?.competency,
-    currentClass?.classGoal?.targetCount,
-  ]);
+    setEditingClassGoalId(null);
+    setClassGoalTitle('');
+    setClassGoalCompetency('collaboration');
+    setClassGoalTarget(20);
+  }, [currentClass?.id]);
+  useEffect(() => {
+    setSelectedStudentIds([]);
+    setPointAdjustmentTarget(null);
+    setPointAdjustmentAmount('');
+    setPointAdjustmentReason('');
+  }, [currentClass?.id]);
+  useEffect(() => {
+    if (selectAllCheckboxRef.current) {
+      selectAllCheckboxRef.current.indeterminate = someStudentsSelected;
+    }
+  }, [someStudentsSelected]);
   const disciplineRecords = useMemo(
     () => currentStudents
       .flatMap((student: any) =>
@@ -230,6 +303,19 @@ export const DashboardView: React.FC = () => {
         })),
       )
       .sort((a: any, b: any) => b.createdAt - a.createdAt)
+      .slice(0, 12),
+    [currentStudents],
+  );
+  const bossRewardRecords = useMemo(
+    () => currentStudents
+      .flatMap((student) =>
+        (student.bossRewardRecords ?? []).map((record): BossRewardRecordWithStudent => ({
+          ...record,
+          studentId: student.id,
+          studentName: student.name,
+        })),
+      )
+      .sort((a, b) => b.createdAt - a.createdAt)
       .slice(0, 12),
     [currentStudents],
   );
@@ -262,13 +348,38 @@ export const DashboardView: React.FC = () => {
       .replace('{happiness}', penalty.happiness.toString())
       .replace('{rankPoints}', penalty.rankPoints.toString());
 
+  const bossRewardSummary = (points: number, rankPoints: number, happiness: number) =>
+    tLang.bossRewardBreakdownSummary
+      .replace('{points}', points.toString())
+      .replace('{rankPoints}', rankPoints.toString())
+      .replace('{happiness}', happiness.toString());
+
+  const pinnedReasonIds = data.settings?.pinnedReasonIds ?? [];
+  const recentReasonIds = data.settings?.recentReasonIds ?? [];
   const pointReasonOptions = useMemo(
-    () => POINT_REASON_OPTIONS.map((option) => ({
-      ...option,
-      label: option.labels[currentLang] ?? option.labels.zh,
-    })),
-    [currentLang],
+    () => POINT_REASON_OPTIONS
+      .map((option, originalIndex) => ({
+        ...option,
+        label: option.labels[currentLang] ?? option.labels.zh,
+        isPinned: pinnedReasonIds.includes(option.id),
+        isRecent: recentReasonIds.includes(option.id),
+        originalIndex,
+      }))
+      .sort((left, right) => {
+        const leftGroup = left.isPinned ? 0 : left.isRecent ? 1 : 2;
+        const rightGroup = right.isPinned ? 0 : right.isRecent ? 1 : 2;
+        if (leftGroup !== rightGroup) return leftGroup - rightGroup;
+        if (left.isPinned && right.isPinned) {
+          return pinnedReasonIds.indexOf(left.id) - pinnedReasonIds.indexOf(right.id);
+        }
+        if (left.isRecent && right.isRecent) {
+          return recentReasonIds.indexOf(left.id) - recentReasonIds.indexOf(right.id);
+        }
+        return left.originalIndex - right.originalIndex;
+      }),
+    [currentLang, pinnedReasonIds, recentReasonIds],
   );
+  const defaultPointReasonId = pointReasonOptions[0]?.id ?? POINT_REASON_OPTIONS[0].id;
   const guideStudentItems =
     lang === 'en'
       ? [
@@ -277,14 +388,18 @@ export const DashboardView: React.FC = () => {
           'Battle mode is controlled in System Settings and can run as solo only, team only, or automatic fallback.',
           'Team battles use a weighted support formula, so larger teams help without multiplying total power linearly.',
           'Winning as a full team grants an exclusive bonus of +10 points and +6 mood to each winning member.',
-          'Free reroll milestones are consumed in order at level 2, 4, 6, then 8. Dead pets must be revived before they can act again.',
+          petCareMode === 'death'
+            ? 'Free reroll milestones are consumed at levels 2, 4, 6, then 8. Dead pets must be revived before acting again.'
+            : 'Free reroll milestones are consumed at levels 2, 4, 6, then 8. At zero fullness, pets rest until they are fed.',
         ]
       : [
           '學生可用積分餵食、升級、復活與扭蛋；資料匯出後再匯入也會依時間持續扣除飽食度。',
           '雙方互相選定隊友後會形成隊伍；若兩邊都有可出戰隊友，對戰會自動切換成隊伍模式。',
           '隊伍對戰採用主將全額、隊友加權的戰力公式，隊友能支援但不會直接把總戰力翻倍。',
           '完整雙人隊伍獲勝時，每位獲勝成員都會獲得隊伍專屬獎勵：+10 積分、+6 心情。',
-          '免費重抽會依序在 2、4、6、8 級觸發；寵物死亡後必須先復活，才能再次行動。',
+          petCareMode === 'death'
+            ? '免費重抽會依序在 2、4、6、8 級觸發；寵物死亡後必須先復活，才能再次行動。'
+            : '免費重抽會依序在 2、4、6、8 級觸發；飽食度歸零時寵物會休息，餵食後即可恢復。',
         ];
   const guideTeacherItems =
     lang === 'en'
@@ -307,6 +422,11 @@ export const DashboardView: React.FC = () => {
     store.updateSettings({
       decayAmount: Number(decayAmount),
       decayType,
+      inclusiveMode,
+      pauseDecayOnWeekends,
+      petCareMode,
+      publicNameMode,
+      publicLeaderboardMode,
       language: currentLang,
       feedCost: Number(feedCost),
       feedGain: Number(feedGain),
@@ -375,6 +495,7 @@ export const DashboardView: React.FC = () => {
       penaltyStatus: undefined,
       disciplineRecords: [],
       pointAdjustmentRecords: [],
+      bossRewardRecords: [],
       dailyProgress: { streak: 0 },
       teamId: undefined,
       badges: []
@@ -429,6 +550,7 @@ export const DashboardView: React.FC = () => {
     name: string,
   ) => {
     if (preset === 'lowCompetition') {
+      setInclusiveMode(true);
       setBattleMode('both');
       setBattleRankPointsWin(8);
       setBattleRankPointsLoss(0);
@@ -438,7 +560,12 @@ export const DashboardView: React.FC = () => {
       setBossAttackDamage(12);
       setDecayType('daily');
       setDecayAmount(2);
+      setPauseDecayOnWeekends(true);
+      setPetCareMode('rest');
+      setPublicNameMode('masked');
+      setPublicLeaderboardMode('growth');
     } else if (preset === 'cooperative') {
+      setInclusiveMode(true);
       setBattleMode('team');
       setMaxTeamSize(4);
       setBattleRankPointsWin(5);
@@ -450,7 +577,12 @@ export const DashboardView: React.FC = () => {
       setTeamBattleDefenderTeammateFullnessCost(8);
       setBossAttackMode('shared');
       setBossAttackDamage(16);
+      setPauseDecayOnWeekends(true);
+      setPetCareMode('rest');
+      setPublicNameMode('masked');
+      setPublicLeaderboardMode('growth');
     } else {
+      setInclusiveMode(true);
       setDecayType('daily');
       setDecayAmount(5);
       setMaxPoints(400);
@@ -461,6 +593,10 @@ export const DashboardView: React.FC = () => {
       setBattleMode('both');
       setBossAttackMode('shared');
       setBossAttackDamage(20);
+      setPauseDecayOnWeekends(true);
+      setPetCareMode('rest');
+      setPublicNameMode('masked');
+      setPublicLeaderboardMode('growth');
     }
 
     store.showToast(tLang.presetApplied.replace('{name}', name), 'success');
@@ -472,14 +608,41 @@ export const DashboardView: React.FC = () => {
       title: classGoalTitle.trim(),
       competency: classGoalCompetency,
       targetCount: Math.max(1, Number(classGoalTarget)),
-    });
-  };
-
-  const handleClearClassGoal = () => {
-    store.setClassGoal(null);
+    }, editingClassGoalId ?? undefined);
+    setEditingClassGoalId(null);
     setClassGoalTitle('');
     setClassGoalCompetency('collaboration');
     setClassGoalTarget(20);
+  };
+
+  const handleEditClassGoal = (goal: ClassGoal) => {
+    setEditingClassGoalId(goal.id);
+    setClassGoalTitle(goal.title);
+    setClassGoalCompetency(goal.competency);
+    setClassGoalTarget(goal.targetCount);
+  };
+
+  const handleClearClassGoal = (goalId: string) => {
+    store.setClassGoal(null, goalId);
+    if (editingClassGoalId !== goalId) return;
+    setEditingClassGoalId(null);
+    setClassGoalTitle('');
+    setClassGoalCompetency('collaboration');
+    setClassGoalTarget(20);
+  };
+
+  const handleInclusiveModeToggle = () => {
+    setInclusiveMode((enabled) => {
+      const nextEnabled = !enabled;
+      if (nextEnabled) {
+        setPauseDecayOnWeekends(true);
+        setPetCareMode('rest');
+        setPublicNameMode('masked');
+        setPublicLeaderboardMode('growth');
+        setBossAttackMode('shared');
+      }
+      return nextEnabled;
+    });
   };
 
   return (
@@ -543,6 +706,26 @@ export const DashboardView: React.FC = () => {
           </button>
         ))}
       </div>
+
+      {store.undoAction && (
+        <div
+          className="mb-6 flex items-center gap-3 border-l-4 border-indigo-500 bg-indigo-50 px-4 py-3 text-indigo-950"
+          role="status"
+        >
+          <Undo2 className="h-5 w-5 shrink-0 text-indigo-600" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-bold">{store.undoAction.label}</p>
+            <p className="mt-0.5 text-xs text-indigo-700">{tLang.undoAvailable}</p>
+          </div>
+          <button
+            type="button"
+            onClick={store.undoLastPointAdjustment}
+            className="shrink-0 rounded-md border border-indigo-300 bg-white px-3 py-1.5 text-sm font-bold text-indigo-700 hover:bg-indigo-100"
+          >
+            {tLang.undo}
+          </button>
+        </div>
+      )}
 
       {/* Class Management */}
       <div className={`${dashboardSection === 'students' ? '' : 'hidden'} bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200 mb-6 p-5`}>
@@ -637,10 +820,92 @@ export const DashboardView: React.FC = () => {
             {tLang.airdropAll}
           </button>
         </div>
+        <div className="border-b border-slate-200 px-5 py-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="mr-1 inline-flex items-center text-xs font-bold text-slate-700">
+              <Pin className="mr-1.5 h-3.5 w-3.5" />
+              {tLang.reasonShortcuts}
+            </span>
+            {pointReasonOptions.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                aria-pressed={option.isPinned}
+                onClick={() => store.togglePinnedReason(option.id)}
+                title={option.isPinned ? tLang.unpinReason : tLang.pinReason}
+                className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium transition-colors ${
+                  option.isPinned
+                    ? 'border-indigo-300 bg-indigo-50 text-indigo-800'
+                    : option.isRecent
+                      ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                <Pin
+                  className="h-3 w-3"
+                  fill={option.isPinned ? 'currentColor' : 'none'}
+                />
+                {option.label}
+                {(option.isPinned || option.isRecent) && (
+                  <span className="text-[10px] opacity-70">
+                    {option.isPinned ? tLang.pinnedReason : tLang.recentReason}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+          <p className="mt-2 text-xs text-slate-500">{tLang.reasonShortcutsHint}</p>
+        </div>
+        {selectedStudentIdsInClass.length > 0 && (
+          <div className="flex flex-col gap-3 border-b border-indigo-200 bg-indigo-50 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm font-bold text-indigo-950">
+              {tLang.selectedStudents.replace(
+                '{count}',
+                selectedStudentIdsInClass.length.toString(),
+              )}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setSelectedStudentIds([])}
+                className="rounded-md border border-indigo-200 bg-white px-3 py-1.5 text-sm font-medium text-indigo-700 hover:bg-indigo-100"
+              >
+                {tLang.clearSelection}
+              </button>
+              <button
+                type="button"
+                onClick={() => setPointAdjustmentTarget({
+                  kind: 'batch',
+                  ids: selectedStudentIdsInClass,
+                  count: selectedStudentIdsInClass.length,
+                })}
+                className="inline-flex items-center rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-bold text-white hover:bg-indigo-700"
+              >
+                <Edit2 className="mr-2 h-4 w-4" />
+                {tLang.batchAdjust}
+              </button>
+            </div>
+          </div>
+        )}
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-slate-200">
             <thead className="bg-slate-50">
               <tr>
+                <th scope="col" className="w-12 px-4 py-3 text-center">
+                  <input
+                    ref={selectAllCheckboxRef}
+                    type="checkbox"
+                    checked={allStudentsSelected}
+                    aria-checked={someStudentsSelected ? 'mixed' : allStudentsSelected}
+                    aria-label={tLang.selectAllStudents}
+                    onChange={() => setSelectedStudentIds(
+                      allStudentsSelected
+                        ? []
+                        : currentStudents.map((student: Student) => student.id),
+                    )}
+                    className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                  />
+                </th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">{tLang.studentName}</th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">{tLang.petType}</th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">{tLang.level}</th>
@@ -652,7 +917,7 @@ export const DashboardView: React.FC = () => {
             <tbody className="bg-white divide-y divide-slate-200">
               {currentStudents.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-6 py-8 text-center text-slate-500">
+                  <td colSpan={7} className="px-6 py-8 text-center text-slate-500">
                     {tLang.noStudents}
                   </td>
                 </tr>
@@ -664,7 +929,27 @@ export const DashboardView: React.FC = () => {
                   const activePenalty = isPenaltyActive(student.penaltyStatus);
                   
                   return (
-                    <tr key={student.id} className="hover:bg-slate-50 transition-colors">
+                    <tr
+                      key={student.id}
+                      className={`transition-colors ${
+                        selectedStudentIdSet.has(student.id)
+                          ? 'bg-indigo-50/70 hover:bg-indigo-50'
+                          : 'hover:bg-slate-50'
+                      }`}
+                    >
+                      <td className="px-4 py-4 text-center">
+                        <input
+                          type="checkbox"
+                          checked={selectedStudentIdSet.has(student.id)}
+                          aria-label={`${tLang.batchAdjust}: ${student.name}`}
+                          onChange={() => setSelectedStudentIds((current) =>
+                            current.includes(student.id)
+                              ? current.filter((studentId) => studentId !== student.id)
+                              : [...current, student.id],
+                          )}
+                          className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                        />
+                      </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="flex items-center gap-2">
                           <div className="text-sm font-medium text-slate-900">{student.name}</div>
@@ -752,7 +1037,7 @@ export const DashboardView: React.FC = () => {
                         <div className="flex justify-end items-center space-x-3">
                           <div className="flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 p-2">
                             <select
-                              value={selectedReasons[student.id] ?? POINT_REASON_OPTIONS[0].id}
+                              value={selectedReasons[student.id] ?? defaultPointReasonId}
                               onChange={(e) =>
                                 setSelectedReasons((prev) => ({
                                   ...prev,
@@ -764,13 +1049,17 @@ export const DashboardView: React.FC = () => {
                             >
                               {pointReasonOptions.map((option) => (
                                 <option key={option.id} value={option.id}>
-                                  {option.label}
+                                  {option.isPinned
+                                    ? `${tLang.pinnedReason} · ${option.label}`
+                                    : option.isRecent
+                                      ? `${tLang.recentReason} · ${option.label}`
+                                      : option.label}
                                 </option>
                               ))}
                             </select>
                             <button
                               onClick={() => {
-                                const selectedReasonId = selectedReasons[student.id] ?? POINT_REASON_OPTIONS[0].id;
+                                const selectedReasonId = selectedReasons[student.id] ?? defaultPointReasonId;
                                 const selectedReason = pointReasonOptions.find((option) => option.id === selectedReasonId) ?? pointReasonOptions[0];
                                 store.addPoints(student.id, selectedReason.amount, 'quick', {
                                   id: selectedReason.id,
@@ -780,7 +1069,7 @@ export const DashboardView: React.FC = () => {
                               }}
                               disabled={
                                 (() => {
-                                  const selectedReasonId = selectedReasons[student.id] ?? POINT_REASON_OPTIONS[0].id;
+                                  const selectedReasonId = selectedReasons[student.id] ?? defaultPointReasonId;
                                   const selectedReason = pointReasonOptions.find((option) => option.id === selectedReasonId) ?? pointReasonOptions[0];
                                   return selectedReason.amount < 0 && student.points < Math.abs(selectedReason.amount);
                                 })()
@@ -861,11 +1150,18 @@ export const DashboardView: React.FC = () => {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-px bg-slate-200 sm:grid-cols-4">
+        <div className="grid grid-cols-2 gap-px bg-slate-200 sm:grid-cols-3 lg:grid-cols-6">
           {[
             [tLang.positiveFeedback, weeklyInsights.positiveCount, 'text-emerald-700'],
             [tLang.correctiveFeedback, weeklyInsights.negativeCount, 'text-rose-700'],
             [tLang.positiveRatio, `${Math.round(weeklyInsights.positiveRatio * 100)}%`, 'text-indigo-700'],
+            [
+              tLang.feedbackCoverage,
+              tLang.studentsReached
+                .replace('{current}', weeklyInsights.feedbackStudents.toString())
+                .replace('{total}', currentStudents.length.toString()),
+              'text-teal-700',
+            ],
             [
               tLang.collaborationReach,
               tLang.studentsReached
@@ -873,6 +1169,7 @@ export const DashboardView: React.FC = () => {
                 .replace('{total}', currentStudents.length.toString()),
               'text-sky-700',
             ],
+            [tLang.reflectionCount, weeklyInsights.reflectionCount, 'text-violet-700'],
           ].map(([label, value, tone]) => (
             <div key={String(label)} className="bg-white px-4 py-4">
               <p className="text-xs font-medium text-slate-500">{label}</p>
@@ -880,6 +1177,28 @@ export const DashboardView: React.FC = () => {
             </div>
           ))}
         </div>
+        <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-xs font-medium text-slate-600">
+          <span>
+            {tLang.positiveFeedback}: {tLang.comparedPreviousWeek.replace(
+              '{value}',
+              `${weeklyInsights.positiveFeedbackTrend >= 0 ? '+' : ''}${weeklyInsights.positiveFeedbackTrend}`,
+            )}
+          </span>
+          <span>
+            {tLang.feedbackCoverage}: {tLang.comparedPreviousWeek.replace(
+              '{value}',
+              `${weeklyInsights.feedbackCoverageTrend >= 0 ? '+' : ''}${weeklyInsights.feedbackCoverageTrend}`,
+            )}
+          </span>
+        </div>
+
+        {weeklyInsights.positiveCount + weeklyInsights.negativeCount >= 3 &&
+          weeklyInsights.positiveRatio < 0.7 && (
+            <div className="mt-4 flex items-start gap-3 border-l-4 border-amber-400 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <p>{tLang.feedbackBalanceWarning}</p>
+            </div>
+          )}
 
         <div className="mt-5 grid gap-6 lg:grid-cols-3">
           <div>
@@ -948,6 +1267,41 @@ export const DashboardView: React.FC = () => {
                 ))}
               </div>
             )}
+            <h4 className="mb-3 mt-5 text-sm font-bold text-slate-800">{tLang.needsPositiveFeedback}</h4>
+            {weeklyInsights.needsPositiveFeedbackStudents.length === 0 ? (
+              <p className="text-sm font-medium text-emerald-700">{tLang.noPositiveFeedbackGap}</p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {weeklyInsights.needsPositiveFeedbackStudents.map((student) => (
+                  <span
+                    key={student.id}
+                    className="rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-xs font-bold text-rose-800"
+                  >
+                    {student.name}
+                  </span>
+                ))}
+              </div>
+            )}
+            <h4 className="mb-3 mt-5 text-sm font-bold text-slate-800">{tLang.needsSupportReflection}</h4>
+            {weeklyInsights.needsSupportReflectionStudents.length === 0 ? (
+              <p className="text-sm font-medium text-emerald-700">{tLang.noNeedsSupportReflection}</p>
+            ) : (
+              <div className="divide-y divide-violet-100 border-y border-violet-100">
+                {weeklyInsights.needsSupportReflectionStudents.map((student) => (
+                  <div key={student.id} className="py-2 text-xs">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-bold text-violet-900">{student.name}</span>
+                      <span className="rounded bg-violet-50 px-1.5 py-0.5 font-bold text-violet-700">
+                        {competencyLabels[student.competency]}
+                      </span>
+                    </div>
+                    {student.text && (
+                      <p className="mt-1 line-clamp-2 leading-5 text-slate-600">{student.text}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </section>
@@ -955,8 +1309,14 @@ export const DashboardView: React.FC = () => {
       <div className={`${dashboardSection === 'records' ? '' : 'hidden'} mt-6 bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200`}>
         <div className="px-5 py-4 border-b border-slate-200 bg-slate-50 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <h3 className="text-lg font-medium text-slate-900 flex items-center">
-            <Shield className="h-5 w-5 mr-2 text-rose-500" />
-            {recordView === 'discipline' ? tLang.disciplineRecords : tLang.pointAdjustmentRecords}
+            {recordView === 'boss'
+              ? <Swords className="h-5 w-5 mr-2 text-amber-600" />
+              : <Shield className="h-5 w-5 mr-2 text-rose-500" />}
+            {recordView === 'discipline'
+              ? tLang.disciplineRecords
+              : recordView === 'points'
+                ? tLang.pointAdjustmentRecords
+                : tLang.bossRewardRecords}
           </h3>
           <div className="inline-flex rounded-full bg-white p-1 border border-slate-200">
             <button
@@ -974,6 +1334,14 @@ export const DashboardView: React.FC = () => {
               }`}
             >
               {tLang.recordMenuPoints}
+            </button>
+            <button
+              onClick={() => setRecordView('boss')}
+              className={`rounded-full px-3 py-1 text-xs font-bold transition-colors ${
+                recordView === 'boss' ? 'bg-amber-100 text-amber-800' : 'text-slate-500 hover:bg-slate-100'
+              }`}
+            >
+              {tLang.recordMenuBossRewards}
             </button>
           </div>
         </div>
@@ -1009,7 +1377,7 @@ export const DashboardView: React.FC = () => {
               ))}
             </div>
           )
-        ) : (
+        ) : recordView === 'points' ? (
           pointAdjustmentRecords.length === 0 ? (
             <div className="px-5 py-8 text-sm text-slate-500 text-center">{tLang.noPointAdjustmentRecords}</div>
           ) : (
@@ -1023,6 +1391,8 @@ export const DashboardView: React.FC = () => {
                       }`}>
                         {record.source === 'airdrop'
                           ? tLang.recordAirdrop
+                          : record.source === 'dailyTask'
+                            ? tLang.dailyReflectionRecord
                           : record.source === 'manual'
                             ? tLang.recordManualAdjust
                             : tLang.recordQuickAdjust}
@@ -1047,6 +1417,80 @@ export const DashboardView: React.FC = () => {
               ))}
             </div>
           )
+        ) : (
+          bossRewardRecords.length === 0 ? (
+            <div className="px-5 py-8 text-sm text-slate-500 text-center">{tLang.noBossRewardRecords}</div>
+          ) : (
+            <div className="divide-y divide-slate-200">
+              {bossRewardRecords.map((record) => {
+                const rewardParts = [
+                  {
+                    label: tLang.bossRankBonus,
+                    points: record.rankRewardPoints,
+                    rankPoints: record.rankRewardRankPoints,
+                    happiness: record.rankRewardHappiness,
+                  },
+                  {
+                    label: tLang.bossParticipationBonus,
+                    points: record.participationRewardPoints,
+                    rankPoints: record.participationRewardRankPoints,
+                    happiness: record.participationRewardHappiness,
+                  },
+                  {
+                    label: tLang.bossImprovementBonus,
+                    points: record.improvementRewardPoints,
+                    rankPoints: record.improvementRewardRankPoints,
+                    happiness: record.improvementRewardHappiness,
+                  },
+                ];
+
+                return (
+                  <div key={`${record.studentId}-${record.id}`} className="px-5 py-4">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-800">
+                            {tLang.bossRewardRecordMeta
+                              .replace('{damage}', record.damage.toString())
+                              .replace('{rank}', record.rank.toString())}
+                          </span>
+                          <span className="font-medium text-slate-900">{record.studentName}</span>
+                          <span className="text-sm text-slate-500">{record.bossName}</span>
+                        </div>
+                        <div className="mt-1 text-sm font-semibold text-slate-700">
+                          {tLang.bossRewardRecordSummary
+                            .replace('{points}', record.rewardPoints.toString())
+                            .replace('{rankPoints}', record.rewardRankPoints.toString())
+                            .replace('{happiness}', record.rewardHappiness.toString())}
+                        </div>
+                      </div>
+                      <div className="text-xs font-medium text-slate-400">{formatRecordTime(record.createdAt)}</div>
+                    </div>
+                    <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                      {rewardParts.map((part) => {
+                        const hasReward = part.points > 0 || part.rankPoints > 0 || part.happiness > 0;
+                        return (
+                          <div
+                            key={part.label}
+                            className={`border-l-2 px-3 py-2 ${
+                              hasReward
+                                ? 'border-amber-300 bg-amber-50 text-amber-950'
+                                : 'border-slate-200 bg-slate-50 text-slate-400'
+                            }`}
+                          >
+                            <div className="text-xs font-bold">{part.label}</div>
+                            <div className="mt-1 text-xs">
+                              {bossRewardSummary(part.points, part.rankPoints, part.happiness)}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )
         )}
       </div>
 
@@ -1059,16 +1503,70 @@ export const DashboardView: React.FC = () => {
             </h3>
             <p className="mt-1 text-sm text-slate-500">{tLang.classGoalHint}</p>
           </div>
-          {currentClass?.classGoal && (
-            <div className="text-sm font-bold text-emerald-700">
-              {classGoalProgress >= currentClass.classGoal.targetCount
-                ? tLang.classGoalCompleted
-                : tLang.classGoalProgress
-                    .replace('{current}', classGoalProgress.toString())
-                    .replace('{target}', currentClass.classGoal.targetCount.toString())}
-            </div>
-          )}
+          <div className="text-sm font-bold text-emerald-700">
+            {tLang.classGoalCount.replace('{current}', classGoalMetrics.length.toString())}
+          </div>
         </div>
+
+        {classGoalMetrics.length > 0 && (
+          <div className="mb-5 divide-y divide-emerald-100 border-y border-emerald-100">
+            {classGoalMetrics.map(({ goal, progress, coverage }) => {
+              const completed = progress >= goal.targetCount;
+              const progressPercent = Math.min(100, Math.round((progress / goal.targetCount) * 100));
+              return (
+                <div key={goal.id} className="grid gap-3 py-4 md:grid-cols-[minmax(0,1fr)_minmax(220px,0.6fr)_auto] md:items-center">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-bold text-slate-900">{goal.title}</p>
+                    <p className="mt-1 text-xs font-medium text-emerald-700">
+                      {competencyLabels[goal.competency]}
+                    </p>
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between gap-3 text-xs font-bold text-slate-600">
+                      <span>
+                        {completed
+                          ? tLang.classGoalCompleted
+                          : tLang.classGoalProgress
+                              .replace('{current}', progress.toString())
+                              .replace('{target}', goal.targetCount.toString())}
+                      </span>
+                      <span>{progressPercent}%</span>
+                    </div>
+                    <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-emerald-100">
+                      <div
+                        className="h-full rounded-full bg-emerald-600"
+                        style={{ width: `${progressPercent}%` }}
+                      />
+                    </div>
+                    <p className="mt-1.5 text-xs text-slate-500">
+                      {tLang.classGoalCoverage
+                        .replace('{current}', coverage.studentsReached.toString())
+                        .replace('{total}', coverage.totalStudents.toString())}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1 md:justify-end">
+                    <button
+                      type="button"
+                      onClick={() => handleEditClassGoal(goal)}
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-md text-slate-500 hover:bg-emerald-50 hover:text-emerald-700"
+                      title={tLang.editClassGoal}
+                    >
+                      <Edit2 className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleClearClassGoal(goal.id)}
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-md text-slate-500 hover:bg-rose-50 hover:text-rose-700"
+                      title={tLang.clearClassGoal}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         <div className="grid gap-4 md:grid-cols-[minmax(0,1.6fr)_minmax(180px,0.8fr)_minmax(150px,0.5fr)]">
           <label className="text-sm font-medium text-slate-700">
@@ -1110,21 +1608,33 @@ export const DashboardView: React.FC = () => {
           <button
             type="button"
             onClick={handleSaveClassGoal}
-            disabled={!classGoalTitle.trim() || classGoalTarget < 1}
+            disabled={
+              !classGoalTitle.trim() ||
+              classGoalTarget < 1 ||
+              (!editingClassGoalId && classGoalMetrics.length >= 3)
+            }
             className="inline-flex items-center rounded-md bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
           >
-            <Save className="mr-2 h-4 w-4" />
-            {tLang.saveClassGoal}
+            {editingClassGoalId
+              ? <Save className="mr-2 h-4 w-4" />
+              : <Plus className="mr-2 h-4 w-4" />}
+            {editingClassGoalId ? tLang.updateClassGoal : tLang.addClassGoal}
           </button>
-          <button
-            type="button"
-            onClick={handleClearClassGoal}
-            disabled={!currentClass?.classGoal}
-            className="inline-flex items-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            <Trash2 className="mr-2 h-4 w-4" />
-            {tLang.clearClassGoal}
-          </button>
+          {editingClassGoalId && (
+            <button
+              type="button"
+              onClick={() => {
+                setEditingClassGoalId(null);
+                setClassGoalTitle('');
+                setClassGoalCompetency('collaboration');
+                setClassGoalTarget(20);
+              }}
+              className="inline-flex items-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50"
+            >
+              <X className="mr-2 h-4 w-4" />
+              {tLang.cancel}
+            </button>
+          )}
         </div>
       </section>
 
@@ -1450,16 +1960,160 @@ export const DashboardView: React.FC = () => {
             <h4 className="text-sm font-bold text-slate-800">{tLang.settingsImpact}</h4>
             <div className="mt-3 grid grid-cols-2 gap-px bg-slate-200">
               <div className="bg-white p-3">
-                <p className="text-xs text-slate-500">{tLang.estimatedDailyDecay}</p>
-                <p className="mt-1 text-xl font-black text-rose-700">-{estimatedDailyDecay}</p>
+                <p className="text-xs text-slate-500">{tLang.currentAverageFullness}</p>
+                <p className="mt-1 text-xl font-black text-slate-800">
+                  {currentStudents.length > 0
+                    ? `${settingsImpactPreview.currentAverageFullness}%`
+                    : '-'}
+                </p>
+              </div>
+              <div className="bg-white p-3">
+                <p className="text-xs text-slate-500">{tLang.projectedWeeklyFullness}</p>
+                <p className="mt-1 text-xl font-black text-rose-700">
+                  {currentStudents.length > 0
+                    ? `${settingsImpactPreview.projectedAverageFullness}%`
+                    : '-'}
+                </p>
+                {currentStudents.length > 0 && (
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    {tLang.sevenDayDecayTotal.replace(
+                      '{value}',
+                      settingsImpactPreview.sevenDayDecay.toString(),
+                    )}
+                  </p>
+                )}
               </div>
               <div className="bg-white p-3">
                 <p className="text-xs text-slate-500">{tLang.upgradePositiveActions}</p>
-                <p className="mt-1 text-xl font-black text-emerald-700">{estimatedUpgradeActions}</p>
+                <p className="mt-1 text-xl font-black text-emerald-700">
+                  {currentStudents.length > 0 ? settingsImpactPreview.estimatedUpgradeActions : '-'}
+                </p>
+              </div>
+              <div className="bg-white p-3">
+                <p className="text-xs text-slate-500">{tLang.estimatedUpgradeDays}</p>
+                <p className="mt-1 text-xl font-black text-indigo-700">
+                  {currentStudents.length > 0
+                    ? tLang.daysValue.replace(
+                        '{value}',
+                        settingsImpactPreview.estimatedUpgradeDays.toString(),
+                      )
+                    : '-'}
+                </p>
               </div>
             </div>
             <p className="mt-2 text-xs text-slate-500">{tLang.settingsImpactHint}</p>
           </div>
+        </div>
+
+        <div className="mb-6 border-y border-slate-200 py-5">
+          <div>
+            <h4 className="flex items-center text-sm font-bold text-slate-800">
+              <Shield className="mr-2 h-4 w-4 text-emerald-600" />
+              {tLang.educationSafetySettings}
+            </h4>
+            <p className="mt-1 text-xs text-slate-500">{tLang.educationSafetyHint}</p>
+          </div>
+          <div className="mt-4 flex items-start justify-between gap-4 border-l-4 border-emerald-400 bg-emerald-50 px-4 py-3">
+            <div>
+              <p className="text-sm font-bold text-emerald-950">{tLang.inclusiveMode}</p>
+              <p className="mt-1 max-w-3xl text-xs leading-5 text-emerald-800">
+                {tLang.inclusiveModeHint}
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={inclusiveMode}
+              aria-label={tLang.inclusiveMode}
+              onClick={handleInclusiveModeToggle}
+              className={`relative mt-0.5 inline-flex h-6 w-11 shrink-0 items-center justify-start rounded-full p-0.5 transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 ${
+                inclusiveMode ? 'bg-emerald-600' : 'bg-slate-300'
+              }`}
+            >
+              <span
+                className={`block h-5 w-5 shrink-0 rounded-full bg-white shadow-sm transition-transform ${
+                  inclusiveMode ? 'translate-x-5' : 'translate-x-0'
+                }`}
+              />
+            </button>
+          </div>
+          {inclusiveMode && (
+            <p className="mt-2 text-xs font-medium text-emerald-700">
+              {tLang.inclusiveModeLockedHint}
+            </p>
+          )}
+          <fieldset
+            disabled={inclusiveMode}
+            className={`mt-4 grid gap-4 transition-opacity md:grid-cols-2 xl:grid-cols-4 ${
+              inclusiveMode ? 'opacity-50' : ''
+            }`}
+          >
+            <div className="flex flex-col gap-1">
+              <label htmlFor="publicNameMode" className="text-sm font-medium text-slate-700">
+                {tLang.publicNameMode}
+              </label>
+              <select
+                id="publicNameMode"
+                value={publicNameMode}
+                onChange={(event) => setPublicNameMode(event.target.value as PublicNameMode)}
+                className="w-full rounded-md border border-slate-300 bg-white p-2 text-sm shadow-sm focus:border-emerald-500 focus:ring-emerald-500"
+              >
+                <option value="masked">{tLang.publicNameMasked}</option>
+                <option value="full">{tLang.publicNameFull}</option>
+              </select>
+              <p className="text-xs text-slate-500">{tLang.publicNameHint}</p>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="publicLeaderboardMode" className="text-sm font-medium text-slate-700">
+                {tLang.publicLeaderboardMode}
+              </label>
+              <select
+                id="publicLeaderboardMode"
+                value={publicLeaderboardMode}
+                onChange={(event) =>
+                  setPublicLeaderboardMode(event.target.value as PublicLeaderboardMode)
+                }
+                className="w-full rounded-md border border-slate-300 bg-white p-2 text-sm shadow-sm focus:border-emerald-500 focus:ring-emerald-500"
+              >
+                <option value="growth">{tLang.leaderboardGrowth}</option>
+                <option value="rank">{tLang.leaderboardRank}</option>
+                <option value="hidden">{tLang.leaderboardHidden}</option>
+              </select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="petCareMode" className="text-sm font-medium text-slate-700">
+                {tLang.petCareMode}
+              </label>
+              <select
+                id="petCareMode"
+                value={petCareMode}
+                onChange={(event) => setPetCareMode(event.target.value as PetCareMode)}
+                className="w-full rounded-md border border-slate-300 bg-white p-2 text-sm shadow-sm focus:border-emerald-500 focus:ring-emerald-500"
+              >
+                <option value="rest">{tLang.petCareRest}</option>
+                <option value="death">{tLang.petCareDeath}</option>
+              </select>
+              <p className="text-xs text-slate-500">
+                {petCareMode === 'rest' ? tLang.petCareRestHint : tLang.petCareDeathHint}
+              </p>
+            </div>
+            <label className="flex min-h-[84px] cursor-pointer items-start gap-3 border-l-4 border-emerald-300 bg-emerald-50 p-3">
+              <input
+                type="checkbox"
+                checked={pauseDecayOnWeekends}
+                onChange={(event) => setPauseDecayOnWeekends(event.target.checked)}
+                className="mt-1 h-4 w-4 rounded border-emerald-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              <span>
+                <span className="block text-sm font-bold text-emerald-950">
+                  {tLang.pauseDecayOnWeekends}
+                </span>
+                <span className="mt-1 block text-xs text-emerald-800">
+                  {tLang.pauseDecayOnWeekendsHint}
+                </span>
+              </span>
+            </label>
+          </fieldset>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-6">
@@ -1537,10 +2191,12 @@ export const DashboardView: React.FC = () => {
               <label htmlFor="playGain" className="text-sm font-medium text-slate-700">{tLang.playGain ?? '玩耍回復心情'}</label>
               <input type="number" id="playGain" min="1" value={playGain} onChange={(e) => setPlayGain(Number(e.target.value))} className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2" />
             </div>
-            <div className="flex flex-col gap-1">
-              <label htmlFor="reviveCost" className="text-sm font-medium text-slate-700">{lang === 'en' ? 'Revive Cost' : '復活需要積分'}</label>
-              <input type="number" id="reviveCost" min="0" value={reviveCost} onChange={(e) => setReviveCost(Number(e.target.value))} className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2" />
-            </div>
+            {petCareMode === 'death' && (
+              <div className="flex flex-col gap-1">
+                <label htmlFor="reviveCost" className="text-sm font-medium text-slate-700">{lang === 'en' ? 'Revive Cost' : '復活需要積分'}</label>
+                <input type="number" id="reviveCost" min="0" value={reviveCost} onChange={(e) => setReviveCost(Number(e.target.value))} className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2" />
+              </div>
+            )}
           </div>
 
           {/* 魔王設定 */}
@@ -1557,7 +2213,8 @@ export const DashboardView: React.FC = () => {
                 id="bossAttackMode"
                 value={bossAttackMode}
                 onChange={(event) => setBossAttackMode(event.target.value as BossAttackMode)}
-                className="w-full rounded-md border border-slate-300 bg-white p-2 text-sm shadow-sm focus:border-rose-500 focus:ring-rose-500"
+                disabled={inclusiveMode}
+                className="w-full rounded-md border border-slate-300 bg-white p-2 text-sm shadow-sm focus:border-rose-500 focus:ring-rose-500 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
               >
                 <option value="shared">{tLang.bossAttackShared}</option>
                 <option value="random">{tLang.bossAttackRandom}</option>
@@ -1962,15 +2619,23 @@ export const DashboardView: React.FC = () => {
               }`}>
                 {pointAdjustmentTarget.kind === 'class'
                   ? <Gift className="h-5 w-5" />
-                  : <Edit2 className="h-5 w-5" />}
+                  : pointAdjustmentTarget.kind === 'batch'
+                    ? <Users className="h-5 w-5" />
+                    : <Edit2 className="h-5 w-5" />}
               </div>
               <h3 className="text-lg font-bold text-slate-900">
-                {pointAdjustmentTarget.kind === 'class' ? tLang.airdropTitle : tLang.manualAdjustTitle}
+                {pointAdjustmentTarget.kind === 'class'
+                  ? tLang.airdropTitle
+                  : pointAdjustmentTarget.kind === 'batch'
+                    ? tLang.batchAdjustTitle
+                    : tLang.manualAdjustTitle}
               </h3>
               <p className="mt-2 text-sm text-slate-600">
                 {pointAdjustmentTarget.kind === 'class'
                   ? tLang.airdropDesc.replace('{count}', pointAdjustmentTarget.count.toString())
-                  : tLang.manualAdjustDesc.replace('{name}', pointAdjustmentTarget.name)}
+                  : pointAdjustmentTarget.kind === 'batch'
+                    ? tLang.batchAdjustDesc.replace('{count}', pointAdjustmentTarget.count.toString())
+                    : tLang.manualAdjustDesc.replace('{name}', pointAdjustmentTarget.name)}
               </p>
               <label className="mt-5 block text-sm font-medium text-slate-700">
                 {tLang.airdropAmount}
@@ -1993,6 +2658,9 @@ export const DashboardView: React.FC = () => {
                   className="mt-1 w-full rounded-md border border-slate-300 p-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
                   placeholder={tLang.airdropReasonPlaceholder}
                 />
+                <span className="mt-1 block text-xs font-normal text-slate-500">
+                  {tLang.feedbackReasonRequired}
+                </span>
               </label>
               <label className="mt-4 block text-sm font-medium text-slate-700">
                 {tLang.feedbackCompetency}
@@ -2024,6 +2692,17 @@ export const DashboardView: React.FC = () => {
                   const amount = Math.trunc(Number(pointAdjustmentAmount));
                   if (pointAdjustmentTarget.kind === 'class') {
                     store.airdropPoints(amount, pointAdjustmentReason, pointAdjustmentCompetency);
+                  } else if (pointAdjustmentTarget.kind === 'batch') {
+                    store.adjustPointsForStudents(
+                      pointAdjustmentTarget.ids,
+                      amount,
+                      'manual',
+                      {
+                        label: pointAdjustmentReason.trim() || undefined,
+                        competency: pointAdjustmentCompetency,
+                      },
+                    );
+                    setSelectedStudentIds([]);
                   } else {
                     store.addPoints(
                       pointAdjustmentTarget.id,
@@ -2042,7 +2721,8 @@ export const DashboardView: React.FC = () => {
                 }}
                 disabled={
                   !Number.isFinite(Number(pointAdjustmentAmount)) ||
-                  Math.trunc(Number(pointAdjustmentAmount)) === 0
+                  Math.trunc(Number(pointAdjustmentAmount)) === 0 ||
+                  !pointAdjustmentReason.trim()
                 }
                 className={`rounded-md px-4 py-2 text-sm font-medium text-white disabled:bg-slate-300 ${
                   pointAdjustmentTarget.kind === 'class'
@@ -2050,7 +2730,11 @@ export const DashboardView: React.FC = () => {
                     : 'bg-indigo-600 hover:bg-indigo-700'
                 }`}
               >
-                {pointAdjustmentTarget.kind === 'class' ? tLang.confirmAirdrop : tLang.confirmAdjustment}
+                {pointAdjustmentTarget.kind === 'class'
+                  ? tLang.confirmAirdrop
+                  : pointAdjustmentTarget.kind === 'batch'
+                    ? tLang.confirmBatchAdjustment
+                    : tLang.confirmAdjustment}
               </button>
             </div>
           </div>

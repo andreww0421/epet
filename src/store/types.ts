@@ -1,13 +1,15 @@
 import {
   WorldBoss, PenaltyStatus, DisciplineRecord, PointAdjustmentRecord, DailyProgress,
   PointAdjustmentSource, BossRewardTier, BossContributionStanding,
-  LearningCompetency, ClassGoal, BossAttackMode, BossReward,
+  BossRewardRecord, LearningCompetency, ClassGoal, BossAttackMode, BossReward,
+  DailyReflection, DailyReflectionInput, DailySelfAssessment,
 } from '../gameRules';
 
 export type {
   WorldBoss, PenaltyStatus, DisciplineRecord, PointAdjustmentRecord, DailyProgress,
   PointAdjustmentSource, BossRewardTier, BossContributionStanding,
-  LearningCompetency, ClassGoal, BossAttackMode, BossReward,
+  BossRewardRecord, LearningCompetency, ClassGoal, BossAttackMode, BossReward,
+  DailyReflection, DailyReflectionInput, DailySelfAssessment,
 };
 
 export type Pet = {
@@ -37,6 +39,7 @@ export type Student = {
   penaltyStatus?: PenaltyStatus;
   disciplineRecords?: DisciplineRecord[];
   pointAdjustmentRecords?: PointAdjustmentRecord[];
+  bossRewardRecords?: BossRewardRecord[];
   dailyProgress?: DailyProgress;
   lastBossDamage?: number;
   teamId?: string;
@@ -54,13 +57,16 @@ export type PetAnimationMode = 'feed' | 'play' | 'gacha' | 'reroll' | 'attack';
 
 export type Language = 'zh' | 'en';
 export type BattleMode = 'solo' | 'team' | 'both';
+export type PublicNameMode = 'full' | 'masked';
+export type PublicLeaderboardMode = 'growth' | 'rank' | 'hidden';
+export type PetCareMode = 'rest' | 'death';
 
 export type ClassData = {
   id: string;
   name: string;
   students: Student[];
   activeBoss?: WorldBoss;
-  classGoal?: ClassGoal;
+  classGoals?: ClassGoal[];
 };
 
 export type AppData = {
@@ -70,6 +76,11 @@ export type AppData = {
   settings?: {
     decayAmount: number;
     decayType: 'hourly' | 'daily';
+    inclusiveMode?: boolean;
+    pauseDecayOnWeekends?: boolean;
+    petCareMode?: PetCareMode;
+    publicNameMode?: PublicNameMode;
+    publicLeaderboardMode?: PublicLeaderboardMode;
     language?: Language;
     feedCost?: number;
     feedGain?: number;
@@ -96,6 +107,8 @@ export type AppData = {
     bossAttackMaxTargets?: number;
     bossAttackDamage?: number;
     bossAttackMode?: BossAttackMode;
+    pinnedReasonIds?: string[];
+    recentReasonIds?: string[];
     enableSeasonResetRewards?: boolean;
     seasonResetRewards?: { diamond: number, platinum: number, gold: number, silver: number, bronze: number };
     reviveCost?: number;

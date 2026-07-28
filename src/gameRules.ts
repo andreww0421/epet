@@ -9,19 +9,21 @@ export type DisciplineRecord = {
   warningCount?: number;
 };
 
-export type PointAdjustmentSource = 'quick' | 'manual' | 'airdrop';
+export type PointAdjustmentSource = 'quick' | 'manual' | 'airdrop' | 'dailyTask';
 
 export type LearningCompetency =
   | 'participation'
   | 'collaboration'
   | 'selfManagement'
-  | 'assignmentQuality';
+  | 'assignmentQuality'
+  | 'growth';
 
 export const LEARNING_COMPETENCIES: LearningCompetency[] = [
   'participation',
   'collaboration',
   'selfManagement',
   'assignmentQuality',
+  'growth',
 ];
 
 export const isLearningCompetency = (value: unknown): value is LearningCompetency =>
@@ -53,6 +55,25 @@ export type PenaltyStatus = {
 export type DailyProgress = {
   lastClaimDate?: string;
   streak: number;
+  reflections?: DailyReflection[];
+};
+
+export type DailySelfAssessment = 'needsSupport' | 'progressing' | 'confident';
+
+export type DailyReflection = {
+  id: string;
+  date: string;
+  createdAt: number;
+  competency: LearningCompetency;
+  selfAssessment: DailySelfAssessment;
+  text?: string;
+};
+
+export type DailyReflectionInput = {
+  competency: LearningCompetency;
+  selfAssessment: DailySelfAssessment;
+  text?: string;
+  reasonLabel?: string;
 };
 
 export type StudentRuleState = {
@@ -75,6 +96,7 @@ export type StudentRuleState = {
   penaltyStatus?: PenaltyStatus;
   disciplineRecords?: DisciplineRecord[];
   pointAdjustmentRecords?: PointAdjustmentRecord[];
+  bossRewardRecords?: BossRewardRecord[];
   dailyProgress?: DailyProgress;
   lastBossDamage?: number;
 };
@@ -118,6 +140,8 @@ export type BossContributionStanding = {
   studentId: string;
   studentName: string;
   damage: number;
+  previousDamage: number;
+  improvementAmount: number;
   rewardPoints: number;
   rewardRankPoints: number;
   rewardHappiness: number;
@@ -131,6 +155,13 @@ export type BossContributionStanding = {
   improvementRewardRankPoints: number;
   improvementRewardHappiness: number;
   receivedImprovementReward: boolean;
+};
+
+export type BossRewardRecord = Omit<BossContributionStanding, 'studentId' | 'studentName'> & {
+  id: string;
+  bossId: string;
+  bossName: string;
+  createdAt: number;
 };
 
 export type BattleOutcome = 'win' | 'loss' | 'draw';
@@ -181,6 +212,8 @@ export const PENALTY_DURATION_MS: Record<PenaltyStatusSource, number> = {
 };
 export const MAX_ACTIVITY_RECORDS = 20;
 export const MAX_POINT_ADJUSTMENT_RECORDS = 200;
+export const MAX_BOSS_REWARD_RECORDS = 100;
+export const MAX_DAILY_REFLECTIONS = 60;
 export const PET_DEATH_DELAY_MS = 1000 * 60 * 60 * 24;
 export const REVIVE_COST = 120;
 export const DAILY_TASK_REWARD_POINTS = 30;
@@ -331,6 +364,7 @@ export const syncPetLifeState = <
 >(
   pet: TPet,
   now = Date.now(),
+  allowDeath = true,
 ) => {
   const fullness = clamp(pet.fullness, 0, 100);
 
@@ -344,7 +378,9 @@ export const syncPetLifeState = <
   }
 
   const zeroFullnessSince = pet.zeroFullnessSince ?? now;
-  const isDead = Boolean(pet.isDead) || now - zeroFullnessSince >= PET_DEATH_DELAY_MS;
+  const isDead =
+    allowDeath &&
+    (Boolean(pet.isDead) || now - zeroFullnessSince >= PET_DEATH_DELAY_MS);
 
   return {
     ...pet,
@@ -738,7 +774,12 @@ export const resolveTeamBattle = <
   };
 };
 
-export const applyDecayToStudent = <T extends StudentRuleState>(student: T, decayAmount: number, now = Date.now()) => {
+export const applyDecayToStudent = <T extends StudentRuleState>(
+  student: T,
+  decayAmount: number,
+  now = Date.now(),
+  options?: { allowDeath?: boolean },
+) => {
   const activeWarnings = (student.activeWarningTimestamps || []).filter(t => now - t < 1000 * 60 * 60 * 24);
   const newFullness = student.pet.fullness - decayAmount;
   const actualDecay = Math.max(0, -newFullness);
@@ -755,6 +796,7 @@ export const applyDecayToStudent = <T extends StudentRuleState>(student: T, deca
         happiness: actualDecay > 0 ? clamp(student.pet.happiness - actualDecay, 0, 100) : student.pet.happiness,
       },
       now,
+      options?.allowDeath ?? true,
     ),
   };
 };
@@ -771,7 +813,12 @@ export const reviveStudentPet = <T extends StudentRuleState>(student: T, reviveC
   },
 });
 
-export const claimDailyTaskForStudent = <T extends StudentRuleState>(student: T, now = Date.now(), maxPoints = 700) => {
+export const claimDailyTaskForStudent = <T extends StudentRuleState>(
+  student: T,
+  now = Date.now(),
+  maxPoints = 700,
+  reflection?: DailyReflectionInput,
+) => {
   const today = getDateKey(now);
   const yesterday = getDateKey(now - 1000 * 60 * 60 * 24);
   const lastClaimDate = student.dailyProgress?.lastClaimDate;
@@ -783,14 +830,38 @@ export const claimDailyTaskForStudent = <T extends StudentRuleState>(student: T,
 
   const nextStreak = lastClaimDate === yesterday ? currentStreak + 1 : 1;
   const streakBonus = Math.min(20, (nextStreak - 1) * 5);
+  const rewardPoints = DAILY_TASK_REWARD_POINTS + streakBonus;
+  const reflectionText = reflection?.text?.trim().slice(0, 160) || undefined;
+  const dailyReflection: DailyReflection | undefined = reflection
+    ? {
+        id: `reflection-${now}-${Math.random().toString(36).slice(2, 8)}`,
+        date: today,
+        createdAt: now,
+        competency: reflection.competency,
+        selfAssessment: reflection.selfAssessment,
+        text: reflectionText,
+      }
+    : undefined;
+  const rewardRecord = reflection
+    ? createPointAdjustmentRecord(
+        rewardPoints,
+        'dailyTask',
+        {
+          id: 'daily-reflection',
+          label: reflection.reasonLabel?.trim() || undefined,
+          competency: reflection.competency,
+        },
+        now,
+      )
+    : undefined;
 
   return {
     claimed: true as const,
-    rewardPoints: DAILY_TASK_REWARD_POINTS + streakBonus,
+    rewardPoints,
     streak: nextStreak,
     student: {
       ...student,
-      points: clamp(student.points + DAILY_TASK_REWARD_POINTS + streakBonus, 0, maxPoints),
+      points: clamp(student.points + rewardPoints, 0, maxPoints),
       pet: syncPetLifeState(
         {
           ...student.pet,
@@ -801,7 +872,13 @@ export const claimDailyTaskForStudent = <T extends StudentRuleState>(student: T,
       dailyProgress: {
         lastClaimDate: today,
         streak: nextStreak,
+        reflections: dailyReflection
+          ? [dailyReflection, ...(student.dailyProgress?.reflections ?? [])].slice(0, MAX_DAILY_REFLECTIONS)
+          : student.dailyProgress?.reflections,
       },
+      pointAdjustmentRecords: rewardRecord
+        ? [rewardRecord, ...(student.pointAdjustmentRecords ?? [])].slice(0, MAX_POINT_ADJUSTMENT_RECORDS)
+        : student.pointAdjustmentRecords,
     },
   };
 };
@@ -943,8 +1020,10 @@ export const getBossContributionStandings = <
     .map(({ student, damage }, index) => {
       const rank = index + 1;
       const reward = rewardsByRank.get(rank);
+      const previousDamage = Math.max(0, Math.floor(toFiniteNumber(student.lastBossDamage, 0)));
+      const improvementAmount = previousDamage > 0 ? Math.max(0, damage - previousDamage) : 0;
       const receivedImprovementReward =
-        (student.lastBossDamage ?? 0) > 0 && damage > (student.lastBossDamage ?? 0);
+        previousDamage > 0 && improvementAmount > 0;
       const rankRewardPoints = reward?.points ?? 0;
       const rankRewardRankPoints = reward?.rankPoints ?? 0;
       const rankRewardHappiness = reward?.happiness ?? 0;
@@ -958,6 +1037,8 @@ export const getBossContributionStandings = <
         studentId: student.id,
         studentName: student.name,
         damage,
+        previousDamage,
+        improvementAmount,
         rewardPoints: rankRewardPoints + participationReward.points + improvementRewardPoints,
         rewardRankPoints:
           rankRewardRankPoints + participationRewardRankPoints + improvementRewardRankPoints,
@@ -998,6 +1079,33 @@ export const applyBossContributionRewards = <
         points: clamp(student.points + standing.rewardPoints, 0, maxPoints),
         rankPoints: Math.max(0, (student.rankPoints ?? 0) + standing.rewardRankPoints),
         lastBossDamage: standing.damage,
+        bossRewardRecords: appendRecord(
+          student.bossRewardRecords,
+          {
+            id: `boss-reward-${boss.id}-${student.id}`,
+            bossId: boss.id,
+            bossName: boss.name,
+            createdAt: now,
+            rank: standing.rank,
+            damage: standing.damage,
+            previousDamage: standing.previousDamage,
+            improvementAmount: standing.improvementAmount,
+            rewardPoints: standing.rewardPoints,
+            rewardRankPoints: standing.rewardRankPoints,
+            rewardHappiness: standing.rewardHappiness,
+            rankRewardPoints: standing.rankRewardPoints,
+            rankRewardRankPoints: standing.rankRewardRankPoints,
+            rankRewardHappiness: standing.rankRewardHappiness,
+            participationRewardPoints: standing.participationRewardPoints,
+            participationRewardRankPoints: standing.participationRewardRankPoints,
+            participationRewardHappiness: standing.participationRewardHappiness,
+            improvementRewardPoints: standing.improvementRewardPoints,
+            improvementRewardRankPoints: standing.improvementRewardRankPoints,
+            improvementRewardHappiness: standing.improvementRewardHappiness,
+            receivedImprovementReward: standing.receivedImprovementReward,
+          },
+          MAX_BOSS_REWARD_RECORDS,
+        ),
         pet: syncPetLifeState(
           {
             ...student.pet,

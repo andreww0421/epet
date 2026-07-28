@@ -15,7 +15,12 @@ import {
   TEAM_BATTLE_ATTACKER_TEAMMATE_FULLNESS_COST, TEAM_BATTLE_DEFENDER_FULLNESS_COST,
   TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST, getBossContributionStandings
 } from '../gameRules';
-import { getClassGoalProgress } from '../educationInsights';
+import {
+  getClassGoalCoverage,
+  getClassGoalProgress,
+  getWeeklyStudentGrowth,
+} from '../educationInsights';
+import { getPublicStudentName } from '../studentPresentation';
 import { PetCard } from './PetCard';
 
 export const ClassroomView: React.FC = () => {
@@ -55,15 +60,24 @@ export const ClassroomView: React.FC = () => {
   const [viewMode, setViewMode] = useState<'grid' | 'leaderboard' | 'teams'>('grid');
 
   const students = useMemo(() => currentClass?.students || [], [currentClass]);
-  const classGoalProgress = useMemo(
-    () => getClassGoalProgress(students, currentClass?.classGoal),
-    [currentClass?.classGoal, students],
+  const classGoalMetrics = useMemo(
+    () => (currentClass?.classGoals ?? []).map((goal) => ({
+      goal,
+      progress: getClassGoalProgress(students, goal),
+      coverage: getClassGoalCoverage(students, goal),
+    })),
+    [currentClass?.classGoals, students],
+  );
+  const weeklyStudentGrowth = useMemo(
+    () => getWeeklyStudentGrowth(students),
+    [students],
   );
   const competencyLabels = useMemo(() => ({
     participation: tLang.competencyParticipation,
     collaboration: tLang.competencyCollaboration,
     selfManagement: tLang.competencySelfManagement,
     assignmentQuality: tLang.competencyAssignmentQuality,
+    growth: tLang.competencyGrowth,
   }), [tLang]);
   const bossContributionStandings = useMemo(
     () => currentClass?.activeBoss
@@ -71,12 +85,29 @@ export const ClassroomView: React.FC = () => {
       : [],
     [currentClass?.activeBoss, students],
   );
+  const topBossImprovement = useMemo(
+    () => Math.max(
+      0,
+      ...(bossVictoryResult?.standings.map((standing) => standing.improvementAmount) ?? []),
+    ),
+    [bossVictoryResult],
+  );
   const attackerStudent = useMemo(
     () => attackerId ? students.find((student: any) => student.id === attackerId) : null,
     [attackerId, students],
   );
   const readinessNow = useMemo(() => Date.now(), [battleModalOpen, students, viewMode]);
   const currentBattleMode = settings?.battleMode ?? DEFAULT_BATTLE_MODE;
+  const publicNameMode = settings?.publicNameMode === 'full' ? 'full' : 'masked';
+  const publicLeaderboardMode =
+    settings?.publicLeaderboardMode === 'rank' ||
+    settings?.publicLeaderboardMode === 'hidden'
+      ? settings.publicLeaderboardMode
+      : 'growth';
+  const displayStudentName = useCallback(
+    (name: string) => getPublicStudentName(name, publicNameMode),
+    [publicNameMode],
+  );
   const currentMaxTeamSize = settings?.maxTeamSize ?? DEFAULT_MAX_TEAM_SIZE;
   const currentSoloBattleFullnessCost = settings?.soloBattleFullnessCost ?? SOLO_BATTLE_FULLNESS_COST;
   const currentSoloBattleAttackerFullnessCost =
@@ -186,6 +217,12 @@ export const ClassroomView: React.FC = () => {
     setSelectedTeammateIds(currentTeamMembers.map((member) => member.id));
   }, [currentTeamMembers, teamModalStudent]);
 
+  useEffect(() => {
+    if (publicLeaderboardMode === 'hidden' && viewMode === 'leaderboard') {
+      setViewMode('grid');
+    }
+  }, [publicLeaderboardMode, viewMode]);
+
   const sortedByRank = useMemo(
     () => [...students].sort((a, b) => (b.rankPoints || 0) - (a.rankPoints || 0)),
     [students],
@@ -215,7 +252,7 @@ export const ClassroomView: React.FC = () => {
         return [{
           id: teamId,
           members,
-          name: members.map((member: any) => member.name).join(' / '),
+          name: members.map((member: any) => displayStudentName(member.name)).join(' / '),
           totalRankPoints,
           totalBattles,
           wins,
@@ -231,7 +268,7 @@ export const ClassroomView: React.FC = () => {
         b.winRate - a.winRate ||
         b.averageLevel - a.averageLevel,
       );
-  }, [currentMaxTeamSize, readinessNow, students, teamBattleReadyOptions]);
+  }, [currentMaxTeamSize, displayStudentName, readinessNow, students, teamBattleReadyOptions]);
 
   const getRankInfo = useCallback((rp: number = 0) => {
     const brackets = settings?.rankBrackets ?? { diamond: 400, platinum: 300, gold: 200, silver: 100 };
@@ -260,13 +297,15 @@ export const ClassroomView: React.FC = () => {
               <Users className="h-4 w-4 inline mr-2" />
               {tLang.classroomTitle}
             </button>
-            <button
-              onClick={() => setViewMode('leaderboard')}
-              className={`px-4 py-2 rounded-full font-medium transition-colors ${viewMode === 'leaderboard' ? 'bg-amber-500 text-white shadow-md' : 'bg-white text-amber-700 hover:bg-amber-100'}`}
-            >
-              <BarChart3 className="h-4 w-4 inline mr-2" />
-              {tLang.leaderboard}
-            </button>
+            {publicLeaderboardMode !== 'hidden' && (
+              <button
+                onClick={() => setViewMode('leaderboard')}
+                className={`px-4 py-2 rounded-full font-medium transition-colors ${viewMode === 'leaderboard' ? 'bg-amber-500 text-white shadow-md' : 'bg-white text-amber-700 hover:bg-amber-100'}`}
+              >
+                <BarChart3 className="h-4 w-4 inline mr-2" />
+                {publicLeaderboardMode === 'growth' ? tLang.leaderboardGrowth : tLang.leaderboard}
+              </button>
+            )}
             <button
               onClick={() => setViewMode('teams')}
               className={`px-4 py-2 rounded-full font-medium transition-colors ${viewMode === 'teams' ? 'bg-amber-500 text-white shadow-md' : 'bg-white text-amber-700 hover:bg-amber-100'}`}
@@ -310,7 +349,9 @@ export const ClassroomView: React.FC = () => {
                   {bossVictoryResult.standings.map((standing) => (
                     <div key={standing.studentId} className="grid min-w-[620px] grid-cols-[52px_minmax(0,1fr)_90px_minmax(220px,auto)] items-center gap-2 border-t border-slate-700 px-3 py-3 text-sm">
                       <span className="font-black text-amber-300">{standing.rank}</span>
-                      <span className="truncate font-medium text-white">{standing.studentName}</span>
+                      <span className="truncate font-medium text-white">
+                        {displayStudentName(standing.studentName)}
+                      </span>
                       <span className="text-right font-mono text-rose-300">{standing.damage}</span>
                       <div className="text-right text-slate-200">
                         <div>+{standing.rewardPoints} / +{standing.rewardRankPoints} RP / +{standing.rewardHappiness}</div>
@@ -328,7 +369,21 @@ export const ClassroomView: React.FC = () => {
                               {tLang.bossImprovementBonus}
                             </span>
                           )}
+                          {standing.improvementAmount > 0 &&
+                            standing.improvementAmount === topBossImprovement && (
+                                <span className="rounded bg-violet-400/15 px-1.5 py-0.5 text-violet-300">
+                                  {tLang.bossMostImproved}
+                                </span>
+                              )}
                         </div>
+                        {standing.improvementAmount > 0 && (
+                          <div className="mt-1 text-[10px] text-sky-300">
+                            {tLang.bossImprovementAmount.replace(
+                              '{amount}',
+                              standing.improvementAmount.toString(),
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -343,39 +398,50 @@ export const ClassroomView: React.FC = () => {
           </div>
         )}
 
-        {currentClass?.classGoal && (
+        {classGoalMetrics.length > 0 && (
           <section className="mb-4 border-y border-emerald-200 bg-emerald-50 px-4 py-4 sm:px-5">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex min-w-0 items-start gap-3">
-                <Target className="mt-0.5 h-5 w-5 shrink-0 text-emerald-700" />
-                <div className="min-w-0">
-                  <p className="text-xs font-bold uppercase text-emerald-700">{tLang.classGoal}</p>
-                  <h2 className="truncate text-lg font-black text-emerald-950">{currentClass.classGoal.title}</h2>
-                  <p className="text-sm text-emerald-800">
-                    {competencyLabels[currentClass.classGoal.competency]}
-                  </p>
-                </div>
-              </div>
-              <div className="w-full sm:max-w-xs">
-                <div className="mb-1 flex items-center justify-between text-sm font-bold text-emerald-900">
-                  <span>
-                    {classGoalProgress >= currentClass.classGoal.targetCount
-                      ? tLang.classGoalCompleted
-                      : tLang.classGoalProgress
-                          .replace('{current}', classGoalProgress.toString())
-                          .replace('{target}', currentClass.classGoal.targetCount.toString())}
-                  </span>
-                  <span>{Math.min(100, Math.round((classGoalProgress / currentClass.classGoal.targetCount) * 100))}%</span>
-                </div>
-                <div className="h-2 overflow-hidden rounded-full bg-emerald-200">
+            <div className="mb-3 flex items-center gap-2 text-xs font-bold uppercase text-emerald-700">
+              <Target className="h-4 w-4" />
+              {tLang.classGoal}
+            </div>
+            <div className="divide-y divide-emerald-200">
+              {classGoalMetrics.map(({ goal, progress, coverage }) => {
+                const progressPercent = Math.min(100, Math.round((progress / goal.targetCount) * 100));
+                return (
                   <div
-                    className="h-full rounded-full bg-emerald-600 transition-[width] duration-300"
-                    style={{
-                      width: `${Math.min(100, (classGoalProgress / currentClass.classGoal.targetCount) * 100)}%`,
-                    }}
-                  />
-                </div>
-              </div>
+                    key={goal.id}
+                    className="grid gap-2 py-3 first:pt-0 last:pb-0 sm:grid-cols-[minmax(0,1fr)_minmax(230px,0.55fr)] sm:items-center sm:gap-6"
+                  >
+                    <div className="min-w-0">
+                      <h2 className="truncate text-base font-black text-emerald-950">{goal.title}</h2>
+                      <p className="text-sm text-emerald-800">{competencyLabels[goal.competency]}</p>
+                    </div>
+                    <div>
+                      <div className="mb-1 flex items-center justify-between text-xs font-bold text-emerald-900">
+                        <span>
+                          {progress >= goal.targetCount
+                            ? tLang.classGoalCompleted
+                            : tLang.classGoalProgress
+                                .replace('{current}', progress.toString())
+                                .replace('{target}', goal.targetCount.toString())}
+                        </span>
+                        <span>{progressPercent}%</span>
+                      </div>
+                      <div className="h-2 overflow-hidden rounded-full bg-emerald-200">
+                        <div
+                          className="h-full rounded-full bg-emerald-600 transition-[width] duration-300"
+                          style={{ width: `${progressPercent}%` }}
+                        />
+                      </div>
+                      <p className="mt-1.5 text-xs font-medium text-emerald-800">
+                        {tLang.classGoalCoverage
+                          .replace('{current}', coverage.studentsReached.toString())
+                          .replace('{total}', coverage.totalStudents.toString())}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </section>
         )}
@@ -439,7 +505,9 @@ export const ClassroomView: React.FC = () => {
                     {bossContributionStandings.map((standing) => (
                       <div key={standing.studentId} className="grid grid-cols-[28px_minmax(0,1fr)_auto] items-center gap-2 rounded bg-slate-800/80 px-2 py-1.5 text-xs">
                         <span className="font-black text-amber-300">{standing.rank}</span>
-                        <span className="truncate font-medium text-slate-100">{standing.studentName}</span>
+                        <span className="truncate font-medium text-slate-100">
+                          {displayStudentName(standing.studentName)}
+                        </span>
                         <span className="font-mono text-rose-300">{standing.damage}</span>
                       </div>
                     ))}
@@ -478,71 +546,107 @@ export const ClassroomView: React.FC = () => {
             <div className="px-6 py-5 border-b border-amber-100 bg-amber-50 flex items-center justify-between">
               <h3 className="text-lg leading-6 font-medium text-amber-900 flex items-center">
                 <Trophy className="h-5 w-5 mr-2 text-amber-500" />
-                {tLang.leaderboard}
+                {publicLeaderboardMode === 'growth'
+                  ? tLang.leaderboardGrowthTitle
+                  : tLang.leaderboard}
               </h3>
             </div>
             <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">#</th>
-                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{tLang.studentName}</th>
-                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{tLang.rank}</th>
-                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{tLang.rankPoints}</th>
-                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{tLang.winRate}</th>
-                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{tLang.level}</th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {sortedByRank.map((student: any, idx: number) => {
-                    const rankInfo = getRankInfo(student.rankPoints);
-                    const RankIcon = rankInfo.icon;
-                    const wins = student.stats?.wins || 0;
-                    const losses = student.stats?.losses || 0;
-                    const totalBattles = wins + losses;
-                    const winRate = totalBattles > 0 ? Math.round((wins / totalBattles) * 100) : 0;
-                    
-                    return (
-                      <tr key={student.id} className={idx < 3 ? 'bg-amber-50/30' : ''}>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                          {idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : idx + 1}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <div className="flex items-center">
-                            <div className="flex-shrink-0 h-8 w-8 bg-gray-100 rounded-full flex items-center justify-center">
-                              {(() => {
-                                const PetIcon = PET_TYPES.find(p => p.id === student.pet.type)?.icon || Dog;
-                                return <PetIcon className="h-4 w-4 text-gray-600" />;
-                              })()}
+              {publicLeaderboardMode === 'growth' ? (
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">#</th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{tLang.studentName}</th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{tLang.weeklyPositiveFeedback}</th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{tLang.competenciesReached}</th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{tLang.netPointChange}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200 bg-white">
+                    {weeklyStudentGrowth.map((growth, index) => {
+                      const student = students.find((item: any) => item.id === growth.studentId);
+                      if (!student) return null;
+                      const PetIcon = PET_TYPES.find((pet) => pet.id === student.pet.type)?.icon || Dog;
+                      return (
+                        <tr key={growth.studentId}>
+                          <td className="px-6 py-4 text-sm font-bold text-slate-500">{index + 1}</td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <div className="flex items-center">
+                              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-50">
+                                <PetIcon className="h-4 w-4 text-emerald-700" />
+                              </div>
+                              <span className="ml-3 text-sm font-medium text-gray-900">
+                                {displayStudentName(student.name)}
+                              </span>
                             </div>
-                            <div className="ml-3">
-                              <div className="text-sm font-medium text-gray-900">{student.name}</div>
+                          </td>
+                          <td className="px-6 py-4 text-sm font-black text-emerald-700">
+                            {growth.positiveFeedbackCount}
+                          </td>
+                          <td className="px-6 py-4 text-sm font-medium text-sky-700">
+                            {growth.competencyCount}
+                          </td>
+                          <td className={`px-6 py-4 font-mono text-sm font-bold ${
+                            growth.netPoints >= 0 ? 'text-emerald-700' : 'text-rose-700'
+                          }`}>
+                            {growth.netPoints > 0 ? '+' : ''}{growth.netPoints}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              ) : (
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">#</th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{tLang.studentName}</th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{tLang.rank}</th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{tLang.rankPoints}</th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{tLang.winRate}</th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{tLang.level}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {sortedByRank.map((student: any, idx: number) => {
+                      const rankInfo = getRankInfo(student.rankPoints);
+                      const RankIcon = rankInfo.icon;
+                      const wins = student.stats?.wins || 0;
+                      const losses = student.stats?.losses || 0;
+                      const totalBattles = wins + losses;
+                      const winRate = totalBattles > 0 ? Math.round((wins / totalBattles) * 100) : 0;
+                      const PetIcon = PET_TYPES.find((pet) => pet.id === student.pet.type)?.icon || Dog;
+
+                      return (
+                        <tr key={student.id} className={idx < 3 ? 'bg-amber-50/30' : ''}>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{idx + 1}</td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <div className="flex items-center">
+                              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gray-100">
+                                <PetIcon className="h-4 w-4 text-gray-600" />
+                              </div>
+                              <span className="ml-3 text-sm font-medium text-gray-900">
+                                {displayStudentName(student.name)}
+                              </span>
                             </div>
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${rankInfo.bg} ${rankInfo.color}`}>
-                            <RankIcon className="h-3 w-3 mr-1" />
-                            {rankInfo.name}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 font-mono">
-                          {student.rankPoints || 0}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                          <div className="flex items-center">
-                            <span className="mr-2">{winRate}%</span>
-                            <span className="text-xs text-gray-400">({wins}W {losses}L)</span>
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                          Lv. {student.pet.level || 1}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${rankInfo.bg} ${rankInfo.color}`}>
+                              <RankIcon className="h-3 w-3 mr-1" />
+                              {rankInfo.name}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 font-mono">{student.rankPoints || 0}</td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{winRate}% <span className="text-xs text-gray-400">({wins}W {losses}L)</span></td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">Lv. {student.pet.level || 1}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
             </div>
           </div>
         ) : (
@@ -608,7 +712,7 @@ export const ClassroomView: React.FC = () => {
                           <td className="px-6 py-4">
                             <div className="text-sm font-semibold text-slate-900">{team.name}</div>
                             <div className="mt-1 text-xs text-slate-500">
-                              {team.members.map((member: any) => member.name).join(' / ')}
+                              {team.members.map((member: any) => displayStudentName(member.name)).join(' / ')}
                             </div>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-slate-700">
@@ -700,7 +804,7 @@ export const ClassroomView: React.FC = () => {
                         })()}
                       </div>
                       <div>
-                        <div className="font-medium text-gray-900">{student.name}</div>
+                        <div className="font-medium text-gray-900">{displayStudentName(student.name)}</div>
                         <div className="text-xs text-gray-500">
                           Lv. {student.pet.level || 1} | {tLang.petFullness}: {student.pet.fullness}
                           {student.teamId
@@ -752,12 +856,12 @@ export const ClassroomView: React.FC = () => {
             <div className="p-6">
               <p className="text-sm text-gray-600 mb-4">
                 {lang === 'en'
-                  ? `${teamModalStudent.name} can build a team of up to ${currentMaxTeamSize} members.`
-                  : `${teamModalStudent.name} 可建立最多 ${currentMaxTeamSize} 人的隊伍。`}
+                  ? `${displayStudentName(teamModalStudent.name)} can build a team of up to ${currentMaxTeamSize} members.`
+                  : `${displayStudentName(teamModalStudent.name)} 可建立最多 ${currentMaxTeamSize} 人的隊伍。`}
               </p>
               {currentTeamMembers.length > 0 && (
                 <div className="mb-4 rounded-xl bg-sky-50 px-4 py-3 text-sm text-sky-800">
-                  {lang === 'en' ? 'Current Team' : '目前隊伍'}: {currentTeamMembers.map((member: any) => member.name).join(', ')}
+                  {lang === 'en' ? 'Current Team' : '目前隊伍'}: {currentTeamMembers.map((member: any) => displayStudentName(member.name)).join(', ')}
                 </div>
               )}
               {currentTeamMembers.length > 0 && (
@@ -794,7 +898,7 @@ export const ClassroomView: React.FC = () => {
                     }`}
                   >
                     <div className="flex items-center justify-between">
-                      <div className="font-medium text-slate-900">{candidate.name}</div>
+                      <div className="font-medium text-slate-900">{displayStudentName(candidate.name)}</div>
                       <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${
                         selectedTeammateIds.includes(candidate.id) ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-500'
                       }`}>

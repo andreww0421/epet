@@ -6,8 +6,8 @@ import {
   TEAM_BATTLE_DEFENDER_FULLNESS_COST, TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST,
   DEFAULT_BOSS_ATTACK_MAX_TARGETS, DEFAULT_BOSS_ATTACK_DAMAGE, DEFAULT_BOSS_REWARD_TIERS,
   DEFAULT_BOSS_PARTICIPATION_REWARD, DEFAULT_BOSS_IMPROVEMENT_REWARD, isLearningCompetency,
-  MAX_ACTIVITY_RECORDS, MAX_POINT_ADJUSTMENT_RECORDS,
-  type BossRewardTier, type BossReward,
+  MAX_ACTIVITY_RECORDS, MAX_POINT_ADJUSTMENT_RECORDS, MAX_BOSS_REWARD_RECORDS,
+  MAX_DAILY_REFLECTIONS, type BossRewardTier, type BossReward, type BossRewardRecord,
 } from '../gameRules';
 import { AppData, Student, DisciplineRecord, PointAdjustmentRecord, WorldBoss, ClassGoal } from './types';
 import { PET_TYPES, DEFAULT_CLASS_NAME, DEFAULT_MAX_TEAM_SIZE, DEFAULT_BATTLE_MODE } from './constants';
@@ -156,6 +156,11 @@ export const createInitialData = (now = Date.now()): AppData => ({
   settings: {
     decayAmount: 2,
     decayType: 'hourly',
+    inclusiveMode: true,
+    pauseDecayOnWeekends: true,
+    petCareMode: 'rest',
+    publicNameMode: 'masked',
+    publicLeaderboardMode: 'growth',
     language: 'zh',
     feedCost: 10,
     feedGain: 20,
@@ -179,6 +184,8 @@ export const createInitialData = (now = Date.now()): AppData => ({
     bossAttackMaxTargets: DEFAULT_BOSS_ATTACK_MAX_TARGETS,
     bossAttackDamage: DEFAULT_BOSS_ATTACK_DAMAGE,
     bossAttackMode: 'shared',
+    pinnedReasonIds: ['homework', 'participation', 'helpful'],
+    recentReasonIds: [],
   },
 });
 
@@ -240,7 +247,12 @@ export const normalizeStudent = (student: any, fallbackIndex: number, now = Date
                 : `points-${now}-${fallbackIndex}-${index}`,
             amount: toFiniteNumber(record?.amount, 0),
             createdAt: toFiniteNumber(record?.createdAt, now),
-            source: record?.source === 'manual' || record?.source === 'airdrop' ? record.source : 'quick',
+            source:
+              record?.source === 'manual' ||
+              record?.source === 'airdrop' ||
+              record?.source === 'dailyTask'
+                ? record.source
+                : 'quick',
             reasonId: typeof record?.reasonId === 'string' ? record.reasonId : undefined,
             reasonLabel: typeof record?.reasonLabel === 'string' ? record.reasonLabel : undefined,
             competency: isLearningCompetency(record?.competency) ? record.competency : undefined,
@@ -248,9 +260,77 @@ export const normalizeStudent = (student: any, fallbackIndex: number, now = Date
           .sort((a: PointAdjustmentRecord, b: PointAdjustmentRecord) => b.createdAt - a.createdAt)
           .slice(0, MAX_POINT_ADJUSTMENT_RECORDS)
       : [],
+    bossRewardRecords: Array.isArray(student?.bossRewardRecords)
+      ? student.bossRewardRecords
+          .map((record: any, index: number): BossRewardRecord => ({
+            id:
+              typeof record?.id === 'string' && record.id
+                ? record.id
+                : `boss-reward-${now}-${fallbackIndex}-${index}`,
+            bossId:
+              typeof record?.bossId === 'string' && record.bossId
+                ? record.bossId
+                : `legacy-boss-${fallbackIndex}-${index}`,
+            bossName:
+              typeof record?.bossName === 'string' && record.bossName.trim()
+                ? record.bossName.trim()
+                : 'Unknown Boss',
+            createdAt: toFiniteNumber(record?.createdAt, now),
+            rank: Math.max(1, Math.floor(toFiniteNumber(record?.rank, 1))),
+            damage: Math.max(0, Math.floor(toFiniteNumber(record?.damage, 0))),
+            previousDamage: Math.max(0, Math.floor(toFiniteNumber(record?.previousDamage, 0))),
+            improvementAmount: Math.max(0, Math.floor(toFiniteNumber(record?.improvementAmount, 0))),
+            rewardPoints: Math.max(0, Math.floor(toFiniteNumber(record?.rewardPoints, 0))),
+            rewardRankPoints: Math.max(0, Math.floor(toFiniteNumber(record?.rewardRankPoints, 0))),
+            rewardHappiness: Math.max(0, Math.floor(toFiniteNumber(record?.rewardHappiness, 0))),
+            rankRewardPoints: Math.max(0, Math.floor(toFiniteNumber(record?.rankRewardPoints, 0))),
+            rankRewardRankPoints: Math.max(0, Math.floor(toFiniteNumber(record?.rankRewardRankPoints, 0))),
+            rankRewardHappiness: Math.max(0, Math.floor(toFiniteNumber(record?.rankRewardHappiness, 0))),
+            participationRewardPoints: Math.max(0, Math.floor(toFiniteNumber(record?.participationRewardPoints, 0))),
+            participationRewardRankPoints: Math.max(0, Math.floor(toFiniteNumber(record?.participationRewardRankPoints, 0))),
+            participationRewardHappiness: Math.max(0, Math.floor(toFiniteNumber(record?.participationRewardHappiness, 0))),
+            improvementRewardPoints: Math.max(0, Math.floor(toFiniteNumber(record?.improvementRewardPoints, 0))),
+            improvementRewardRankPoints: Math.max(0, Math.floor(toFiniteNumber(record?.improvementRewardRankPoints, 0))),
+            improvementRewardHappiness: Math.max(0, Math.floor(toFiniteNumber(record?.improvementRewardHappiness, 0))),
+            receivedImprovementReward:
+              Boolean(record?.receivedImprovementReward) ||
+              toFiniteNumber(record?.improvementRewardPoints, 0) > 0 ||
+              toFiniteNumber(record?.improvementRewardRankPoints, 0) > 0 ||
+              toFiniteNumber(record?.improvementRewardHappiness, 0) > 0,
+          }))
+          .sort((a: BossRewardRecord, b: BossRewardRecord) => b.createdAt - a.createdAt)
+          .slice(0, MAX_BOSS_REWARD_RECORDS)
+      : [],
     dailyProgress: {
       lastClaimDate: typeof student?.dailyProgress?.lastClaimDate === 'string' ? student.dailyProgress.lastClaimDate : undefined,
       streak: Math.max(0, Math.floor(toFiniteNumber(student?.dailyProgress?.streak, 0))),
+      reflections: Array.isArray(student?.dailyProgress?.reflections)
+        ? student.dailyProgress.reflections
+            .filter((reflection: any) => isLearningCompetency(reflection?.competency))
+            .map((reflection: any, index: number) => ({
+              id:
+                typeof reflection?.id === 'string' && reflection.id
+                  ? reflection.id
+                  : `reflection-${now}-${fallbackIndex}-${index}`,
+              date:
+                typeof reflection?.date === 'string' && reflection.date
+                  ? reflection.date
+                  : new Date(toFiniteNumber(reflection?.createdAt, now)).toISOString().slice(0, 10),
+              createdAt: toFiniteNumber(reflection?.createdAt, now),
+              competency: reflection.competency,
+              selfAssessment:
+                reflection?.selfAssessment === 'needsSupport' ||
+                reflection?.selfAssessment === 'confident'
+                  ? reflection.selfAssessment
+                  : 'progressing',
+              text:
+                typeof reflection?.text === 'string' && reflection.text.trim()
+                  ? reflection.text.trim().slice(0, 160)
+                  : undefined,
+            }))
+            .sort((left: any, right: any) => right.createdAt - left.createdAt)
+            .slice(0, MAX_DAILY_REFLECTIONS)
+        : [],
     },
     lastBossDamage:
       student?.lastBossDamage == null
@@ -270,6 +350,23 @@ export const normalizeStudent = (student: any, fallbackIndex: number, now = Date
 export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
   const initialData = createInitialData(now);
   const rawSettings = raw?.settings ?? {};
+  const requestedPauseDecayOnWeekends = rawSettings?.pauseDecayOnWeekends !== false;
+  const requestedPetCareMode = rawSettings?.petCareMode === 'death' ? 'death' : 'rest';
+  const requestedPublicNameMode = rawSettings?.publicNameMode === 'full' ? 'full' : 'masked';
+  const requestedPublicLeaderboardMode =
+    rawSettings?.publicLeaderboardMode === 'rank' ||
+    rawSettings?.publicLeaderboardMode === 'hidden'
+      ? rawSettings.publicLeaderboardMode
+      : 'growth';
+  const requestedBossAttackMode = rawSettings?.bossAttackMode === 'random' ? 'random' : 'shared';
+  const inclusiveMode =
+    typeof rawSettings?.inclusiveMode === 'boolean'
+      ? rawSettings.inclusiveMode
+      : requestedPauseDecayOnWeekends &&
+        requestedPetCareMode === 'rest' &&
+        requestedPublicNameMode === 'masked' &&
+        requestedPublicLeaderboardMode !== 'rank' &&
+        requestedBossAttackMode === 'shared';
   const rawClasses = Array.isArray(raw?.classes) && raw.classes.length > 0
     ? raw.classes
     : [
@@ -301,30 +398,34 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
       const derivedTeamId = `legacy-team-${[student.id, mate.id].sort().join('-')}`;
       return { ...student, teamId: derivedTeamId };
     });
-    const rawGoal = classItem?.classGoal;
-    const classGoal: ClassGoal | undefined =
-      rawGoal && typeof rawGoal === 'object' && isLearningCompetency(rawGoal.competency)
-        ? {
-            id:
-              typeof rawGoal.id === 'string' && rawGoal.id
-                ? rawGoal.id
-                : `goal-${now}-${index}`,
-            title:
-              typeof rawGoal.title === 'string' && rawGoal.title.trim()
-                ? rawGoal.title.trim()
-                : 'Class goal',
-            competency: rawGoal.competency,
-            targetCount: Math.max(1, Math.floor(toFiniteNumber(rawGoal.targetCount, 10))),
-            createdAt: toFiniteNumber(rawGoal.createdAt, now),
-          }
-        : undefined;
+    const rawGoals = Array.isArray(classItem?.classGoals)
+      ? classItem.classGoals
+      : classItem?.classGoal
+        ? [classItem.classGoal]
+        : [];
+    const classGoals = rawGoals
+      .filter((goal: any) => goal && typeof goal === 'object' && isLearningCompetency(goal.competency))
+      .slice(0, 3)
+      .map((goal: any, goalIndex: number): ClassGoal => ({
+        id:
+          typeof goal.id === 'string' && goal.id
+            ? goal.id
+            : `goal-${now}-${index}-${goalIndex}`,
+        title:
+          typeof goal.title === 'string' && goal.title.trim()
+            ? goal.title.trim()
+            : 'Class goal',
+        competency: goal.competency,
+        targetCount: Math.max(1, Math.floor(toFiniteNumber(goal.targetCount, 10))),
+        createdAt: toFiniteNumber(goal.createdAt, now),
+      }));
 
     return {
       id: typeof classItem?.id === 'string' && classItem.id ? classItem.id : `class-${now}-${index}`,
       name: typeof classItem?.name === 'string' && classItem.name.trim() ? classItem.name.trim() : DEFAULT_CLASS_NAME,
       students: sanitizeTeamAssignments(withLegacyTeams, clampTeamSize(rawSettings?.maxTeamSize)),
       activeBoss: normalizeWorldBoss(classItem?.activeBoss, index, now),
-      classGoal,
+      classGoals,
     };
   });
 
@@ -343,6 +444,14 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
     settings: {
       decayAmount: Math.max(0, toFiniteNumber(rawSettings?.decayAmount ?? rawSettings?.hourlyDecay, initialData.settings?.decayAmount ?? 2)),
       decayType: rawSettings?.decayType === 'daily' ? 'daily' : 'hourly',
+      inclusiveMode,
+      pauseDecayOnWeekends: inclusiveMode || requestedPauseDecayOnWeekends,
+      petCareMode: inclusiveMode ? 'rest' : requestedPetCareMode,
+      publicNameMode: inclusiveMode ? 'masked' : requestedPublicNameMode,
+      publicLeaderboardMode:
+        inclusiveMode && requestedPublicLeaderboardMode === 'rank'
+          ? 'growth'
+          : requestedPublicLeaderboardMode,
       language: rawSettings?.language === 'en' ? 'en' : 'zh',
       feedCost: Math.max(1, toFiniteNumber(rawSettings?.feedCost, initialData.settings?.feedCost ?? 10)),
       feedGain: Math.max(1, toFiniteNumber(rawSettings?.feedGain, initialData.settings?.feedGain ?? 20)),
@@ -405,11 +514,135 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
         0,
         Math.floor(toFiniteNumber(rawSettings?.bossAttackDamage, DEFAULT_BOSS_ATTACK_DAMAGE)),
       ),
-      bossAttackMode: rawSettings?.bossAttackMode === 'random' ? 'random' : 'shared',
+      bossAttackMode: inclusiveMode ? 'shared' : requestedBossAttackMode,
+      pinnedReasonIds: normalizeReasonIds(
+        rawSettings?.pinnedReasonIds,
+        initialData.settings?.pinnedReasonIds,
+      ),
+      recentReasonIds: normalizeReasonIds(rawSettings?.recentReasonIds),
       enableSeasonResetRewards: Boolean(rawSettings?.enableSeasonResetRewards),
       seasonResetRewards: rawSettings?.seasonResetRewards ?? { diamond: 500, platinum: 400, gold: 300, silver: 200, bronze: 100 },
       reviveCost: Math.max(0, toFiniteNumber(rawSettings?.reviveCost, 120)),
     },
+  };
+};
+
+const normalizeReasonIds = (value: unknown, fallback: string[] = []) => {
+  const source = Array.isArray(value) ? value : fallback;
+  return Array.from(new Set(
+    source.filter((item): item is string => typeof item === 'string' && item.trim().length > 0),
+  )).slice(0, 12);
+};
+
+export const countDecayPeriods = (
+  lastOpened: number,
+  now: number,
+  intervalMs: number,
+  pauseOnWeekends: boolean,
+) => {
+  const elapsedMs = Math.max(0, now - lastOpened);
+  const totalPeriods = Math.floor(elapsedMs / intervalMs);
+  if (!pauseOnWeekends || totalPeriods <= 0) return totalPeriods;
+
+  let eligiblePeriods = 0;
+  let index = 1;
+  while (index <= totalPeriods) {
+    const periodMidpoint = lastOpened + (index - 0.5) * intervalMs;
+    const midpointDate = new Date(periodMidpoint);
+    const day = midpointDate.getDay();
+
+    if (intervalMs <= 1000 * 60 * 60) {
+      const nextDay = new Date(
+        midpointDate.getFullYear(),
+        midpointDate.getMonth(),
+        midpointDate.getDate() + 1,
+      ).getTime();
+      const periodsInDay = Math.max(1, Math.ceil((nextDay - periodMidpoint) / intervalMs));
+      const chunkSize = Math.min(periodsInDay, totalPeriods - index + 1);
+      if (day !== 0 && day !== 6) eligiblePeriods += chunkSize;
+      index += chunkSize;
+      continue;
+    }
+
+    if (day !== 0 && day !== 6) eligiblePeriods += 1;
+    index += 1;
+  }
+  return eligiblePeriods;
+};
+
+export type SettingsImpactPreview = {
+  currentAverageFullness: number;
+  projectedAverageFullness: number;
+  sevenDayDecay: number;
+  estimatedUpgradeActions: number;
+  estimatedUpgradeDays: number;
+};
+
+export const getSettingsImpactPreview = (
+  students: Student[],
+  settings: {
+    decayAmount: number;
+    decayType: 'hourly' | 'daily';
+    pauseDecayOnWeekends: boolean;
+    feedCost: number;
+    feedGain: number;
+  },
+  weeklyPositiveFeedbackCount: number,
+  now = Date.now(),
+): SettingsImpactPreview => {
+  if (students.length === 0) {
+    return {
+      currentAverageFullness: 0,
+      projectedAverageFullness: 0,
+      sevenDayDecay: 0,
+      estimatedUpgradeActions: 0,
+      estimatedUpgradeDays: 0,
+    };
+  }
+
+  const intervalMs = settings.decayType === 'daily'
+    ? 1000 * 60 * 60 * 24
+    : 1000 * 60 * 60;
+  const previewEnd = now + 7 * 24 * 60 * 60 * 1000;
+  const decayPeriods = countDecayPeriods(
+    now,
+    previewEnd,
+    intervalMs,
+    settings.pauseDecayOnWeekends,
+  );
+  const sevenDayDecay = Math.max(0, settings.decayAmount) * decayPeriods;
+  const average = (values: number[]) =>
+    Math.round((values.reduce((sum, value) => sum + value, 0) / values.length) * 10) / 10;
+
+  const currentAverageFullness = average(students.map((student) => student.pet.fullness));
+  const projectedAverageFullness = average(
+    students.map((student) => clamp(student.pet.fullness - sevenDayDecay, 0, 100)),
+  );
+  const studentsBelowMaxLevel = students.filter((student) => student.pet.level < 10);
+  const averagePointGap = studentsBelowMaxLevel.length === 0
+    ? 0
+    : average(studentsBelowMaxLevel.map((student) => {
+        const upgradeCost = 100 + (student.pet.level - 1) * 50;
+        const feedCount = Math.ceil(
+          Math.max(0, 100 - student.pet.fullness) / Math.max(1, settings.feedGain),
+        );
+        const totalRequiredPoints = upgradeCost + feedCount * Math.max(0, settings.feedCost);
+        return Math.max(0, totalRequiredPoints - student.points);
+      }));
+  const estimatedUpgradeActions = Math.ceil(averagePointGap / 20);
+  const observedActionsPerStudentPerDay = weeklyPositiveFeedbackCount > 0
+    ? weeklyPositiveFeedbackCount / students.length / 7
+    : 1;
+  const estimatedUpgradeDays = estimatedUpgradeActions === 0
+    ? 0
+    : Math.ceil(estimatedUpgradeActions / Math.max(observedActionsPerStudentPerDay, 1 / 7));
+
+  return {
+    currentAverageFullness,
+    projectedAverageFullness,
+    sevenDayDecay,
+    estimatedUpgradeActions,
+    estimatedUpgradeDays,
   };
 };
 
@@ -418,12 +651,36 @@ export const applyDecay = (appData: AppData, now = Date.now()): AppData => {
   const elapsedMs = Math.max(0, now - lastOpened);
   const intervalMs = appData.settings?.decayType === 'daily' ? 1000 * 60 * 60 * 24 : 1000 * 60 * 60;
   const periodsPassed = Math.floor(elapsedMs / intervalMs);
+  const allowDeath = appData.settings?.petCareMode === 'death';
 
   if (periodsPassed <= 0) {
-    return appData;
+    if (allowDeath) return appData;
+
+    let changed = false;
+    const classes = appData.classes.map((classData) => ({
+      ...classData,
+      students: classData.students.map((student) => {
+        if (!student.pet.isDead) return student;
+        changed = true;
+        return {
+          ...student,
+          pet: {
+            ...student.pet,
+            isDead: false,
+          },
+        };
+      }),
+    }));
+    return changed ? { ...appData, classes } : appData;
   }
 
-  const decay = periodsPassed * (appData.settings?.decayAmount ?? 2);
+  const eligiblePeriods = countDecayPeriods(
+    lastOpened,
+    now,
+    intervalMs,
+    appData.settings?.pauseDecayOnWeekends !== false,
+  );
+  const decay = eligiblePeriods * (appData.settings?.decayAmount ?? 2);
   const nextLastOpened = now - (elapsedMs % intervalMs);
 
   return {
@@ -431,7 +688,9 @@ export const applyDecay = (appData: AppData, now = Date.now()): AppData => {
     lastOpened: nextLastOpened,
     classes: appData.classes.map((classData) => ({
       ...classData,
-      students: classData.students.map((student) => applyDecayToStudent(student, decay, now)),
+      students: classData.students.map((student) =>
+        applyDecayToStudent(student, decay, now, { allowDeath }),
+      ),
     })),
   };
 };
