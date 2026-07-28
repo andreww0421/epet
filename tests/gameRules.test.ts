@@ -16,6 +16,7 @@ import {
   resolveSharedBossAttack,
   resolveTeamBattle,
   reviveStudentPet,
+  saveMentorDailyFeedbackForStudent,
   type BossRewardRecord,
 } from '../src/gameRules.js';
 import {
@@ -288,47 +289,103 @@ test('claimDailyTaskForStudent grants reward once per day and grows streak', () 
   assert.equal(nextDay.student.dailyProgress?.streak, 2);
 });
 
-test('daily task stores a learning reflection and competency-tagged reward', () => {
+test('daily task stores a homework reward without creating a student self-assessment', () => {
   const now = Date.UTC(2026, 6, 28, 2, 0, 0);
   const result = claimDailyTaskForStudent(
     createStudent('a', 'Alpha'),
     now,
     700,
-    {
-      competency: 'growth',
-      selfAssessment: 'needsSupport',
-      text: 'I can explain the first step but need help checking my answer.',
-      reasonLabel: 'Daily Learning Reflection',
-    },
+    'Homework Completion Task',
   );
 
   assert.equal(result.claimed, true);
-  assert.deepEqual(result.student.dailyProgress?.reflections?.[0], {
-    id: result.student.dailyProgress?.reflections?.[0].id,
-    date: '2026-07-28',
-    createdAt: now,
-    competency: 'growth',
-    selfAssessment: 'needsSupport',
-    text: 'I can explain the first step but need help checking my answer.',
-  });
+  assert.deepEqual(result.student.dailyProgress?.reflections, undefined);
   assert.deepEqual(result.student.pointAdjustmentRecords?.[0], {
     id: result.student.pointAdjustmentRecords?.[0].id,
     amount: 30,
     createdAt: now,
     source: 'dailyTask',
-    reasonId: 'daily-reflection',
-    reasonLabel: 'Daily Learning Reflection',
-    competency: 'growth',
+    reasonId: 'daily-homework',
+    reasonLabel: 'Homework Completion Task',
+    competency: 'assignmentQuality',
   });
 
   const insights = getWeeklyEducationInsights([result.student], now);
+  assert.equal(insights.reflectionCount, 0);
+  assert.equal(insights.competencyCounts.assignmentQuality, 1);
+});
+
+test('mentor daily feedback creates and then updates one record for the same day', () => {
+  const now = Date.UTC(2026, 6, 28, 2, 0, 0);
+  const claimed = claimDailyTaskForStudent(
+    createStudent('a', 'Alpha'),
+    now,
+    700,
+    'Homework Completion Task',
+  );
+  assert.equal(claimed.claimed, true);
+  const first = saveMentorDailyFeedbackForStudent(
+    claimed.student,
+    {
+      competency: 'growth',
+      assessment: 'needsSupport',
+      text: 'Can explain the first step but needs help checking the answer.',
+    },
+    now,
+  );
+
+  assert.equal(first.saved, true);
+  assert.equal(first.updated, false);
+  assert.equal(first.student.points, 230);
+  assert.equal(first.student.dailyProgress?.lastClaimDate, '2026-07-28');
+  assert.equal(first.student.dailyProgress?.streak, 1);
+  assert.deepEqual(first.student.dailyProgress?.reflections?.[0], {
+    id: first.student.dailyProgress?.reflections?.[0].id,
+    date: '2026-07-28',
+    createdAt: now,
+    competency: 'growth',
+    author: 'mentor',
+    mentorAssessment: 'needsSupport',
+    text: 'Can explain the first step but needs help checking the answer.',
+  });
+
+  const updatedAt = now + 1000 * 60 * 60;
+  const second = saveMentorDailyFeedbackForStudent(
+    first.student,
+    {
+      competency: 'collaboration',
+      assessment: 'confident',
+      text: 'Completed the peer review independently.',
+    },
+    updatedAt,
+  );
+  assert.equal(second.saved, true);
+  assert.equal(second.updated, true);
+  assert.equal(second.student.points, 230);
+  assert.equal(second.student.dailyProgress?.lastClaimDate, '2026-07-28');
+  assert.equal(second.student.dailyProgress?.streak, 1);
+  assert.equal(second.student.dailyProgress?.reflections?.length, 1);
+  assert.equal(
+    second.student.dailyProgress?.reflections?.[0].id,
+    first.student.dailyProgress?.reflections?.[0].id,
+  );
+  assert.deepEqual(second.student.dailyProgress?.reflections?.[0], {
+    id: first.student.dailyProgress?.reflections?.[0].id,
+    date: '2026-07-28',
+    createdAt: updatedAt,
+    competency: 'collaboration',
+    author: 'mentor',
+    mentorAssessment: 'confident',
+    text: 'Completed the peer review independently.',
+  });
+
+  const insights = getWeeklyEducationInsights([first.student], now);
   assert.equal(insights.reflectionCount, 1);
-  assert.equal(insights.competencyCounts.growth, 1);
   assert.deepEqual(insights.needsSupportReflectionStudents, [{
     id: 'a',
     name: 'Alpha',
     competency: 'growth',
-    text: 'I can explain the first step but need help checking my answer.',
+    text: 'Can explain the first step but needs help checking the answer.',
   }]);
 });
 
@@ -917,6 +974,52 @@ test('normalizeAppData migrates one legacy goal and keeps at most three class go
   );
   assert.equal(capped.classes[0].classGoals?.length, 3);
   assert.equal(capped.classes[0].classGoals?.[2].competency, 'growth');
+});
+
+test('normalizeAppData keeps legacy self-assessments separate from mentor feedback metrics', () => {
+  const now = Date.UTC(2026, 6, 28, 4, 0, 0);
+  const normalized = normalizeAppData({
+    currentClassId: 'class-a',
+    classes: [{
+      id: 'class-a',
+      name: 'Class A',
+      students: [{
+        ...createStudent('a', 'Alpha'),
+        dailyProgress: {
+          streak: 0,
+          reflections: [
+            {
+              id: 'legacy-reflection',
+              date: '2026-07-28',
+              createdAt: now - 2000,
+              competency: 'growth',
+              selfAssessment: 'needsSupport',
+              text: 'Legacy student check-in',
+            },
+            {
+              id: 'mentor-feedback',
+              date: '2026-07-28',
+              createdAt: now - 1000,
+              competency: 'assignmentQuality',
+              author: 'mentor',
+              mentorAssessment: 'confident',
+              text: 'Homework was completed carefully.',
+            },
+          ],
+        },
+      }],
+    }],
+  }, now);
+
+  const reflections = normalized.classes[0].students[0].dailyProgress?.reflections ?? [];
+  assert.equal(reflections[0].author, 'mentor');
+  assert.equal(reflections[0].mentorAssessment, 'confident');
+  assert.equal(reflections[1].author, 'student');
+  assert.equal(reflections[1].selfAssessment, 'needsSupport');
+
+  const insights = getWeeklyEducationInsights(normalized.classes[0].students, now);
+  assert.equal(insights.reflectionCount, 1);
+  assert.deepEqual(insights.needsSupportReflectionStudents, []);
 });
 
 test('inclusive mode enforces supportive public rules and can be disabled', () => {

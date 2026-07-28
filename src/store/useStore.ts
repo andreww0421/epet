@@ -3,7 +3,7 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 import { 
   AppData, Student, ClassData, UpgradeRewardState, PetAnimationMode,
   PointAdjustmentSource, BattleMode, Language, BossRewardTier, BossVictoryResult,
-  ClassGoal, LearningCompetency, BossReward, BossAttackMode, DailyReflectionInput,
+  ClassGoal, LearningCompetency, BossReward, BossAttackMode, MentorDailyFeedbackInput,
 } from './types';
 import { 
   translations, STORAGE_KEY, DEFAULT_MAX_TEAM_SIZE,
@@ -16,6 +16,7 @@ import {
 import { getPublicStudentName } from '../studentPresentation';
 import { 
   applyFeedToStudent, applyPlayWithPet, claimDailyTaskForStudent,
+  saveMentorDailyFeedbackForStudent,
   reviveStudentPet, applyPointAdjustmentToStudent, createPointAdjustmentRecord,
   applyPenaltyToStudent, createDisciplineRecord, getNextUpgradeGachaLevel,
   getUpcomingUpgradeGachaLevel, resolveBattle, resolveTeamBattle,
@@ -112,7 +113,8 @@ type StoreState = {
   // Interactions
   feedPet: (studentId: string) => void;
   playWithPet: (studentId: string) => void;
-  claimDailyTask: (studentId: string, reflection: DailyReflectionInput) => void;
+  claimDailyTask: (studentId: string) => void;
+  saveMentorDailyFeedback: (studentId: string, feedback: MentorDailyFeedbackInput) => void;
   revivePet: (studentId: string) => void;
   upgradePet: (studentId: string) => void;
   gachaPet: (studentId: string) => void;
@@ -961,7 +963,7 @@ export const useStore = create<StoreState>()(
         return { data: { ...state.data, classes: nextClasses } };
       }),
 
-      claimDailyTask: (studentId, reflection) => set((state) => {
+      claimDailyTask: (studentId) => set((state) => {
         const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
         if (currentClassIndex === -1) return state;
         const targetStudent = state.data.classes[currentClassIndex].students.find(s => s.id === studentId);
@@ -972,10 +974,7 @@ export const useStore = create<StoreState>()(
           targetStudent,
           Date.now(),
           state.data.settings?.maxPoints ?? 700,
-          {
-            ...reflection,
-            reasonLabel: tLang.dailyReflectionRecord,
-          },
+          tLang.dailyTaskRecord,
         );
 
         if (!result.claimed) {
@@ -994,6 +993,31 @@ export const useStore = create<StoreState>()(
             .replace('{points}', String(result.rewardPoints))
             .replace('{happiness}', String(DAILY_TASK_REWARD_HAPPINESS)),
           'success'
+        );
+        return { data: { ...state.data, classes: nextClasses } };
+      }),
+
+      saveMentorDailyFeedback: (studentId, feedback) => set((state) => {
+        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+        if (currentClassIndex === -1) return state;
+        const currentClass = state.data.classes[currentClassIndex];
+        const targetStudent = currentClass.students.find((student) => student.id === studentId);
+        if (!targetStudent) return state;
+
+        const result = saveMentorDailyFeedbackForStudent(targetStudent, feedback, Date.now());
+        if (!result.saved) return state;
+
+        const nextClasses = [...state.data.classes];
+        nextClasses[currentClassIndex] = {
+          ...currentClass,
+          students: currentClass.students.map((student) =>
+            student.id === studentId ? result.student : student,
+          ),
+        };
+        const tLang = translations[state.data.settings?.language || 'zh'];
+        get().showToast(
+          result.updated ? tLang.dailyFeedbackUpdated : tLang.dailyFeedbackSaved,
+          'success',
         );
         return { data: { ...state.data, classes: nextClasses } };
       }),

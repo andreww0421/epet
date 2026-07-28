@@ -2,14 +2,14 @@ import {
   WorldBoss, PenaltyStatus, DisciplineRecord, PointAdjustmentRecord, DailyProgress,
   PointAdjustmentSource, BossRewardTier, BossContributionStanding,
   BossRewardRecord, LearningCompetency, ClassGoal, BossAttackMode, BossReward,
-  DailyReflection, DailyReflectionInput, DailySelfAssessment,
+  DailyReflection, MentorDailyFeedbackInput, DailyAssessment, DailySelfAssessment,
 } from '../gameRules';
 
 export type {
   WorldBoss, PenaltyStatus, DisciplineRecord, PointAdjustmentRecord, DailyProgress,
   PointAdjustmentSource, BossRewardTier, BossContributionStanding,
   BossRewardRecord, LearningCompetency, ClassGoal, BossAttackMode, BossReward,
-  DailyReflection, DailyReflectionInput, DailySelfAssessment,
+  DailyReflection, MentorDailyFeedbackInput, DailyAssessment, DailySelfAssessment,
 };
 
 export type Pet = {

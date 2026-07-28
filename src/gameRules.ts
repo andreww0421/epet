@@ -58,22 +58,24 @@ export type DailyProgress = {
   reflections?: DailyReflection[];
 };
 
-export type DailySelfAssessment = 'needsSupport' | 'progressing' | 'confident';
+export type DailyAssessment = 'needsSupport' | 'progressing' | 'confident';
+export type DailySelfAssessment = DailyAssessment;
 
 export type DailyReflection = {
   id: string;
   date: string;
   createdAt: number;
   competency: LearningCompetency;
-  selfAssessment: DailySelfAssessment;
+  author?: 'student' | 'mentor';
+  selfAssessment?: DailyAssessment;
+  mentorAssessment?: DailyAssessment;
   text?: string;
 };
 
-export type DailyReflectionInput = {
+export type MentorDailyFeedbackInput = {
   competency: LearningCompetency;
-  selfAssessment: DailySelfAssessment;
-  text?: string;
-  reasonLabel?: string;
+  assessment: DailyAssessment;
+  text: string;
 };
 
 export type StudentRuleState = {
@@ -817,7 +819,7 @@ export const claimDailyTaskForStudent = <T extends StudentRuleState>(
   student: T,
   now = Date.now(),
   maxPoints = 700,
-  reflection?: DailyReflectionInput,
+  reasonLabel?: string,
 ) => {
   const today = getDateKey(now);
   const yesterday = getDateKey(now - 1000 * 60 * 60 * 24);
@@ -831,29 +833,16 @@ export const claimDailyTaskForStudent = <T extends StudentRuleState>(
   const nextStreak = lastClaimDate === yesterday ? currentStreak + 1 : 1;
   const streakBonus = Math.min(20, (nextStreak - 1) * 5);
   const rewardPoints = DAILY_TASK_REWARD_POINTS + streakBonus;
-  const reflectionText = reflection?.text?.trim().slice(0, 160) || undefined;
-  const dailyReflection: DailyReflection | undefined = reflection
-    ? {
-        id: `reflection-${now}-${Math.random().toString(36).slice(2, 8)}`,
-        date: today,
-        createdAt: now,
-        competency: reflection.competency,
-        selfAssessment: reflection.selfAssessment,
-        text: reflectionText,
-      }
-    : undefined;
-  const rewardRecord = reflection
-    ? createPointAdjustmentRecord(
-        rewardPoints,
-        'dailyTask',
-        {
-          id: 'daily-reflection',
-          label: reflection.reasonLabel?.trim() || undefined,
-          competency: reflection.competency,
-        },
-        now,
-      )
-    : undefined;
+  const rewardRecord = createPointAdjustmentRecord(
+    rewardPoints,
+    'dailyTask',
+    {
+      id: 'daily-homework',
+      label: reasonLabel?.trim() || undefined,
+      competency: 'assignmentQuality',
+    },
+    now,
+  );
 
   return {
     claimed: true as const,
@@ -872,13 +861,56 @@ export const claimDailyTaskForStudent = <T extends StudentRuleState>(
       dailyProgress: {
         lastClaimDate: today,
         streak: nextStreak,
-        reflections: dailyReflection
-          ? [dailyReflection, ...(student.dailyProgress?.reflections ?? [])].slice(0, MAX_DAILY_REFLECTIONS)
-          : student.dailyProgress?.reflections,
+        reflections: student.dailyProgress?.reflections,
       },
-      pointAdjustmentRecords: rewardRecord
-        ? [rewardRecord, ...(student.pointAdjustmentRecords ?? [])].slice(0, MAX_POINT_ADJUSTMENT_RECORDS)
-        : student.pointAdjustmentRecords,
+      pointAdjustmentRecords: [
+        rewardRecord,
+        ...(student.pointAdjustmentRecords ?? []),
+      ].slice(0, MAX_POINT_ADJUSTMENT_RECORDS),
+    },
+  };
+};
+
+export const saveMentorDailyFeedbackForStudent = <T extends StudentRuleState>(
+  student: T,
+  feedback: MentorDailyFeedbackInput,
+  now = Date.now(),
+) => {
+  const text = feedback.text.trim().slice(0, 160);
+  if (!text) {
+    return { saved: false as const, updated: false as const, student };
+  }
+
+  const date = getDateKey(now);
+  const reflections = student.dailyProgress?.reflections ?? [];
+  const existing = reflections.find(
+    (reflection) => reflection.date === date && reflection.author === 'mentor',
+  );
+  const dailyFeedback: DailyReflection = {
+    id: existing?.id ?? `reflection-${now}-${Math.random().toString(36).slice(2, 8)}`,
+    date,
+    createdAt: now,
+    competency: feedback.competency,
+    author: 'mentor',
+    mentorAssessment: feedback.assessment,
+    text,
+  };
+
+  return {
+    saved: true as const,
+    updated: Boolean(existing),
+    student: {
+      ...student,
+      dailyProgress: {
+        lastClaimDate: student.dailyProgress?.lastClaimDate,
+        streak: student.dailyProgress?.streak ?? 0,
+        reflections: [
+          dailyFeedback,
+          ...reflections.filter(
+            (reflection) => !(reflection.date === date && reflection.author === 'mentor'),
+          ),
+        ].slice(0, MAX_DAILY_REFLECTIONS),
+      },
     },
   };
 };

@@ -305,29 +305,39 @@ export const normalizeStudent = (student: any, fallbackIndex: number, now = Date
       lastClaimDate: typeof student?.dailyProgress?.lastClaimDate === 'string' ? student.dailyProgress.lastClaimDate : undefined,
       streak: Math.max(0, Math.floor(toFiniteNumber(student?.dailyProgress?.streak, 0))),
       reflections: Array.isArray(student?.dailyProgress?.reflections)
-        ? student.dailyProgress.reflections
+          ? student.dailyProgress.reflections
             .filter((reflection: any) => isLearningCompetency(reflection?.competency))
-            .map((reflection: any, index: number) => ({
-              id:
-                typeof reflection?.id === 'string' && reflection.id
-                  ? reflection.id
-                  : `reflection-${now}-${fallbackIndex}-${index}`,
-              date:
-                typeof reflection?.date === 'string' && reflection.date
-                  ? reflection.date
-                  : new Date(toFiniteNumber(reflection?.createdAt, now)).toISOString().slice(0, 10),
-              createdAt: toFiniteNumber(reflection?.createdAt, now),
-              competency: reflection.competency,
-              selfAssessment:
-                reflection?.selfAssessment === 'needsSupport' ||
-                reflection?.selfAssessment === 'confident'
-                  ? reflection.selfAssessment
-                  : 'progressing',
-              text:
-                typeof reflection?.text === 'string' && reflection.text.trim()
-                  ? reflection.text.trim().slice(0, 160)
-                  : undefined,
-            }))
+            .map((reflection: any, index: number) => {
+              const author =
+                reflection?.author === 'mentor' || reflection?.mentorAssessment
+                  ? 'mentor'
+                  : 'student';
+              const rawAssessment =
+                author === 'mentor' ? reflection?.mentorAssessment : reflection?.selfAssessment;
+              const assessment =
+                rawAssessment === 'needsSupport' || rawAssessment === 'confident'
+                  ? rawAssessment
+                  : 'progressing';
+              return {
+                id:
+                  typeof reflection?.id === 'string' && reflection.id
+                    ? reflection.id
+                    : `reflection-${now}-${fallbackIndex}-${index}`,
+                date:
+                  typeof reflection?.date === 'string' && reflection.date
+                    ? reflection.date
+                    : new Date(toFiniteNumber(reflection?.createdAt, now)).toISOString().slice(0, 10),
+                createdAt: toFiniteNumber(reflection?.createdAt, now),
+                competency: reflection.competency,
+                author,
+                selfAssessment: author === 'student' ? assessment : undefined,
+                mentorAssessment: author === 'mentor' ? assessment : undefined,
+                text:
+                  typeof reflection?.text === 'string' && reflection.text.trim()
+                    ? reflection.text.trim().slice(0, 160)
+                    : undefined,
+              };
+            })
             .sort((left: any, right: any) => right.createdAt - left.createdAt)
             .slice(0, MAX_DAILY_REFLECTIONS)
         : [],

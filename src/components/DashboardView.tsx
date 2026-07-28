@@ -12,6 +12,7 @@ import { normalizeAppData, applyDecay, getSettingsImpactPreview } from '../store
 import {
   Student, Language, BattleMode, BossRewardTier, LearningCompetency, BossAttackMode,
   PublicNameMode, PublicLeaderboardMode, PetCareMode, BossRewardRecord, ClassGoal,
+  DailyAssessment, DailyReflection,
 } from '../store/types';
 import { 
   isPenaltyActive, WARNING_THRESHOLD, WARNING_AUTO_PENALTY, DIRECT_DISCIPLINE_PENALTY,
@@ -21,6 +22,7 @@ import {
   TEAM_BATTLE_DEFENDER_FULLNESS_COST, TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST,
   DEFAULT_BOSS_ATTACK_MAX_TARGETS, DEFAULT_BOSS_ATTACK_DAMAGE, DEFAULT_BOSS_REWARD_TIERS,
   DEFAULT_BOSS_PARTICIPATION_REWARD, DEFAULT_BOSS_IMPROVEMENT_REWARD,
+  getDateKey,
   type DisciplineRecordType
 } from '../gameRules';
 import {
@@ -33,6 +35,11 @@ type PointAdjustmentTarget =
   | { kind: 'class'; count: number };
 
 type BossRewardRecordWithStudent = BossRewardRecord & {
+  studentId: string;
+  studentName: string;
+};
+
+type DailyFeedbackRecordWithStudent = DailyReflection & {
   studentId: string;
   studentName: string;
 };
@@ -56,6 +63,7 @@ export const DashboardView: React.FC = () => {
       removePenalty: state.removePenalty,
       removeWarning: state.removeWarning,
       resetSeason: state.resetSeason,
+      saveMentorDailyFeedback: state.saveMentorDailyFeedback,
       setClassGoal: state.setClassGoal,
       showToast: state.showToast,
       summonBoss: state.summonBoss,
@@ -82,7 +90,8 @@ export const DashboardView: React.FC = () => {
     useState<LearningCompetency>('participation');
   const [dashboardSection, setDashboardSection] =
     useState<'students' | 'rewards' | 'activities' | 'rules' | 'records'>('students');
-  const [recordView, setRecordView] = useState<'discipline' | 'points' | 'boss'>('discipline');
+  const [recordView, setRecordView] =
+    useState<'discipline' | 'points' | 'feedback' | 'boss'>('discipline');
   const [decayAmount, setDecayAmount] = useState(data.settings?.decayAmount ?? 2);
   const [decayType, setDecayType] = useState<'hourly' | 'daily'>(data.settings?.decayType ?? 'hourly');
   const [inclusiveMode, setInclusiveMode] = useState(data.settings?.inclusiveMode !== false);
@@ -200,6 +209,12 @@ export const DashboardView: React.FC = () => {
     useState<LearningCompetency>('collaboration');
   const [classGoalTarget, setClassGoalTarget] = useState(20);
   const [editingClassGoalId, setEditingClassGoalId] = useState<string | null>(null);
+  const [mentorFeedbackStudentId, setMentorFeedbackStudentId] = useState('');
+  const [mentorFeedbackCompetency, setMentorFeedbackCompetency] =
+    useState<LearningCompetency>('assignmentQuality');
+  const [mentorFeedbackAssessment, setMentorFeedbackAssessment] =
+    useState<DailyAssessment>('progressing');
+  const [mentorFeedbackText, setMentorFeedbackText] = useState('');
 
   const currentClass = data.classes.find((c: any) => c.id === data.currentClassId);
   const currentStudents = useMemo(() => currentClass?.students || [], [currentClass]);
@@ -213,6 +228,23 @@ export const DashboardView: React.FC = () => {
   const weeklyInsights = useMemo(
     () => getWeeklyEducationInsights(currentStudents),
     [currentStudents],
+  );
+  const todayKey = getDateKey();
+  const selectedMentorFeedback = useMemo(
+    () => currentStudents
+      .find((student: Student) => student.id === mentorFeedbackStudentId)
+      ?.dailyProgress?.reflections?.find(
+        (reflection) => reflection.date === todayKey && reflection.author === 'mentor',
+      ),
+    [currentStudents, mentorFeedbackStudentId, todayKey],
+  );
+  const todayMentorFeedbackCount = useMemo(
+    () => currentStudents.filter((student: Student) =>
+      student.dailyProgress?.reflections?.some(
+        (reflection) => reflection.date === todayKey && reflection.author === 'mentor',
+      ),
+    ).length,
+    [currentStudents, todayKey],
   );
   const currentStudentIds = useMemo(
     () => new Set(currentStudents.map((student: Student) => student.id)),
@@ -276,7 +308,28 @@ export const DashboardView: React.FC = () => {
     setPointAdjustmentTarget(null);
     setPointAdjustmentAmount('');
     setPointAdjustmentReason('');
+    setMentorFeedbackStudentId('');
   }, [currentClass?.id]);
+  useEffect(() => {
+    if (!mentorFeedbackStudentId) {
+      setMentorFeedbackCompetency('assignmentQuality');
+      setMentorFeedbackAssessment('progressing');
+      setMentorFeedbackText('');
+      return;
+    }
+    setMentorFeedbackCompetency(selectedMentorFeedback?.competency ?? 'assignmentQuality');
+    setMentorFeedbackAssessment(
+      selectedMentorFeedback?.mentorAssessment ??
+        selectedMentorFeedback?.selfAssessment ??
+        'progressing',
+    );
+    setMentorFeedbackText(selectedMentorFeedback?.text ?? '');
+  }, [mentorFeedbackStudentId, selectedMentorFeedback]);
+  useEffect(() => {
+    if (mentorFeedbackStudentId && !currentStudentIds.has(mentorFeedbackStudentId)) {
+      setMentorFeedbackStudentId('');
+    }
+  }, [currentStudentIds, mentorFeedbackStudentId]);
   useEffect(() => {
     if (selectAllCheckboxRef.current) {
       selectAllCheckboxRef.current.indeterminate = someStudentsSelected;
@@ -304,6 +357,21 @@ export const DashboardView: React.FC = () => {
       )
       .sort((a: any, b: any) => b.createdAt - a.createdAt)
       .slice(0, 12),
+    [currentStudents],
+  );
+  const dailyFeedbackRecords = useMemo(
+    () => currentStudents
+      .flatMap((student: Student) =>
+        (student.dailyProgress?.reflections ?? []).map(
+          (record): DailyFeedbackRecordWithStudent => ({
+            ...record,
+            studentId: student.id,
+            studentName: student.name,
+          }),
+        ),
+      )
+      .sort((left, right) => right.createdAt - left.createdAt)
+      .slice(0, 30),
     [currentStudents],
   );
   const bossRewardRecords = useMemo(
@@ -629,6 +697,15 @@ export const DashboardView: React.FC = () => {
     setClassGoalTitle('');
     setClassGoalCompetency('collaboration');
     setClassGoalTarget(20);
+  };
+
+  const handleSaveMentorDailyFeedback = () => {
+    if (!mentorFeedbackStudentId || !mentorFeedbackText.trim()) return;
+    store.saveMentorDailyFeedback(mentorFeedbackStudentId, {
+      competency: mentorFeedbackCompetency,
+      assessment: mentorFeedbackAssessment,
+      text: mentorFeedbackText.trim(),
+    });
   };
 
   const handleInclusiveModeToggle = () => {
@@ -1135,6 +1212,117 @@ export const DashboardView: React.FC = () => {
       </div>
 
       <section className={`${dashboardSection === 'records' ? '' : 'hidden'} border border-slate-200 bg-white p-5 shadow-sm`}>
+        <div className="-mx-5 -mt-5 mb-5 border-b border-emerald-200 bg-emerald-50 px-5 py-5">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h3 className="flex items-center text-lg font-semibold text-emerald-950">
+                <BookOpen className="mr-2 h-5 w-5 text-emerald-700" />
+                {tLang.dailyReflectionTitle}
+              </h3>
+              <p className="mt-1 text-sm text-emerald-800">{tLang.dailyReflectionHint}</p>
+            </div>
+            <span className="text-sm font-bold text-emerald-800">
+              {tLang.dailyFeedbackCoverage
+                .replace('{current}', todayMentorFeedbackCount.toString())
+                .replace('{total}', currentStudents.length.toString())}
+            </span>
+          </div>
+
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <label className="block text-sm font-bold text-slate-800">
+              {tLang.dailyFeedbackStudent}
+              <select
+                value={mentorFeedbackStudentId}
+                onChange={(event) => setMentorFeedbackStudentId(event.target.value)}
+                className="mt-1 w-full rounded-md border border-emerald-200 bg-white p-2 text-sm shadow-sm focus:border-emerald-500 focus:ring-emerald-500"
+              >
+                <option value="">{tLang.dailyFeedbackSelectStudent}</option>
+                {currentStudents.map((student: Student) => (
+                  <option key={student.id} value={student.id}>{student.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="block text-sm font-bold text-slate-800">
+              {tLang.dailyReflectionCompetency}
+              <select
+                value={mentorFeedbackCompetency}
+                onChange={(event) =>
+                  setMentorFeedbackCompetency(event.target.value as LearningCompetency)
+                }
+                disabled={!mentorFeedbackStudentId}
+                className="mt-1 w-full rounded-md border border-emerald-200 bg-white p-2 text-sm shadow-sm focus:border-emerald-500 focus:ring-emerald-500 disabled:bg-slate-100"
+              >
+                {(Object.keys(competencyLabels) as LearningCompetency[]).map((competency) => (
+                  <option key={competency} value={competency}>
+                    {competencyLabels[competency]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="mt-4">
+            <p className="text-sm font-bold text-slate-800">{tLang.dailyFeedbackAssessment}</p>
+            <div
+              className="mt-1 grid max-w-xl grid-cols-3 gap-1"
+              role="group"
+              aria-label={tLang.dailyFeedbackAssessment}
+            >
+              {([
+                ['needsSupport', tLang.dailyReflectionNeedsSupport],
+                ['progressing', tLang.dailyReflectionProgressing],
+                ['confident', tLang.dailyReflectionConfident],
+              ] as Array<[DailyAssessment, string]>).map(([assessment, label]) => (
+                <button
+                  key={assessment}
+                  type="button"
+                  aria-pressed={mentorFeedbackAssessment === assessment}
+                  disabled={!mentorFeedbackStudentId}
+                  onClick={() => setMentorFeedbackAssessment(assessment)}
+                  className={`min-h-10 rounded-md px-2 py-2 text-xs font-bold transition-colors ${
+                    mentorFeedbackAssessment === assessment
+                      ? 'bg-emerald-700 text-white'
+                      : 'border border-emerald-200 bg-white text-slate-700 hover:bg-emerald-100'
+                  } disabled:cursor-not-allowed disabled:opacity-50`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <label className="mt-4 block text-sm font-bold text-slate-800">
+            {tLang.dailyReflectionPrompt}
+            <textarea
+              value={mentorFeedbackText}
+              onChange={(event) => setMentorFeedbackText(event.target.value.slice(0, 160))}
+              disabled={!mentorFeedbackStudentId}
+              maxLength={160}
+              rows={3}
+              placeholder={tLang.dailyReflectionPlaceholder}
+              className="mt-1 w-full resize-none rounded-md border border-emerald-200 bg-white p-2 text-sm shadow-sm focus:border-emerald-500 focus:ring-emerald-500 disabled:bg-slate-100"
+            />
+          </label>
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-xs text-emerald-800">
+              {selectedMentorFeedback
+                ? tLang.dailyFeedbackAlreadyRecorded
+                : tLang.dailyFeedbackSaveHint}
+            </p>
+            <button
+              type="button"
+              onClick={handleSaveMentorDailyFeedback}
+              disabled={!mentorFeedbackStudentId || !mentorFeedbackText.trim()}
+              className="inline-flex min-h-10 items-center justify-center rounded-md bg-emerald-700 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              <Save className="mr-2 h-4 w-4" />
+              {selectedMentorFeedback
+                ? tLang.dailyFeedbackUpdate
+                : tLang.dailyReflectionSubmit}
+            </button>
+          </div>
+        </div>
+
         <div className="flex flex-col gap-2 border-b border-slate-200 pb-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <h3 className="flex items-center text-lg font-semibold text-slate-900">
@@ -1311,14 +1499,18 @@ export const DashboardView: React.FC = () => {
           <h3 className="text-lg font-medium text-slate-900 flex items-center">
             {recordView === 'boss'
               ? <Swords className="h-5 w-5 mr-2 text-amber-600" />
-              : <Shield className="h-5 w-5 mr-2 text-rose-500" />}
+              : recordView === 'feedback'
+                ? <BookOpen className="h-5 w-5 mr-2 text-emerald-600" />
+                : <Shield className="h-5 w-5 mr-2 text-rose-500" />}
             {recordView === 'discipline'
               ? tLang.disciplineRecords
               : recordView === 'points'
                 ? tLang.pointAdjustmentRecords
-                : tLang.bossRewardRecords}
+                : recordView === 'feedback'
+                  ? tLang.dailyFeedbackRecords
+                  : tLang.bossRewardRecords}
           </h3>
-          <div className="inline-flex rounded-full bg-white p-1 border border-slate-200">
+          <div className="flex flex-wrap rounded-full bg-white p-1 border border-slate-200">
             <button
               onClick={() => setRecordView('discipline')}
               className={`rounded-full px-3 py-1 text-xs font-bold transition-colors ${
@@ -1334,6 +1526,14 @@ export const DashboardView: React.FC = () => {
               }`}
             >
               {tLang.recordMenuPoints}
+            </button>
+            <button
+              onClick={() => setRecordView('feedback')}
+              className={`rounded-full px-3 py-1 text-xs font-bold transition-colors ${
+                recordView === 'feedback' ? 'bg-emerald-100 text-emerald-800' : 'text-slate-500 hover:bg-slate-100'
+              }`}
+            >
+              {tLang.recordMenuDailyFeedback}
             </button>
             <button
               onClick={() => setRecordView('boss')}
@@ -1392,7 +1592,7 @@ export const DashboardView: React.FC = () => {
                         {record.source === 'airdrop'
                           ? tLang.recordAirdrop
                           : record.source === 'dailyTask'
-                            ? tLang.dailyReflectionRecord
+                            ? tLang.dailyTaskRecord
                           : record.source === 'manual'
                             ? tLang.recordManualAdjust
                             : tLang.recordQuickAdjust}
@@ -1415,6 +1615,57 @@ export const DashboardView: React.FC = () => {
                   <div className="text-xs font-medium text-slate-400">{formatRecordTime(record.createdAt)}</div>
                 </div>
               ))}
+            </div>
+          )
+        ) : recordView === 'feedback' ? (
+          dailyFeedbackRecords.length === 0 ? (
+            <div className="px-5 py-8 text-sm text-slate-500 text-center">
+              {tLang.noDailyFeedbackRecords}
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-200">
+              {dailyFeedbackRecords.map((record) => {
+                const assessment = record.mentorAssessment ?? record.selfAssessment ?? 'progressing';
+                const assessmentLabel =
+                  assessment === 'needsSupport'
+                    ? tLang.dailyReflectionNeedsSupport
+                    : assessment === 'confident'
+                      ? tLang.dailyReflectionConfident
+                      : tLang.dailyReflectionProgressing;
+                return (
+                  <div
+                    key={`${record.studentId}-${record.id}`}
+                    className="px-5 py-4 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-bold ${
+                          record.author === 'mentor'
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : 'bg-violet-100 text-violet-800'
+                        }`}>
+                          {record.author === 'mentor'
+                            ? tLang.mentorFeedbackSource
+                            : tLang.studentReflectionSource}
+                        </span>
+                        <span className="font-medium text-slate-900">{record.studentName}</span>
+                        <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-700">
+                          {competencyLabels[record.competency]}
+                        </span>
+                        <span className="rounded-md bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-800">
+                          {assessmentLabel}
+                        </span>
+                      </div>
+                      <p className="mt-2 text-sm leading-6 text-slate-700">
+                        {record.text || tLang.noDailyFeedbackText}
+                      </p>
+                    </div>
+                    <div className="shrink-0 text-xs font-medium text-slate-400">
+                      {formatRecordTime(record.createdAt)}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )
         ) : (

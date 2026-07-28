@@ -231,8 +231,10 @@ export const getWeeklyEducationInsights = (
     (student.dailyProgress?.reflections ?? [])
       .filter((reflection) => reflection.createdAt >= since)
       .forEach((reflection) => {
+        if (reflection.author !== 'mentor') return;
         reflectionCount += 1;
-        if (reflection.selfAssessment === 'needsSupport') {
+        const assessment = reflection.mentorAssessment ?? reflection.selfAssessment;
+        if (assessment === 'needsSupport') {
           const current = needsSupportReflections.get(student.id);
           if (!current || reflection.createdAt > current.createdAt) {
             needsSupportReflections.set(student.id, reflection);

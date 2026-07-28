@@ -2,15 +2,13 @@ import React from 'react';
 import { 
   Smile, Frown, Meh, Star, AlertCircle, Zap, Users, Crown, Heart, Trophy,
   Swords, Gift, RefreshCw, Utensils, Dices, Medal, Ghost, Dumbbell, Sparkles,
-  Target, Moon, BookOpen, X,
+  Target, Moon,
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { useShallow } from 'zustand/react/shallow';
 import { translations } from '../i18n/translations';
 import { PET_TYPES, DEFAULT_BATTLE_MODE } from '../store/constants';
-import {
-  Student, PetAnimationMode, PublicNameMode, DailySelfAssessment, LearningCompetency,
-} from '../store/types';
+import { Student, PetAnimationMode, PublicNameMode, LearningCompetency } from '../store/types';
 import {
   isPenaltyActive, isPetDead, clamp, getDateKey, isBattleReady,
   SOLO_BATTLE_MIN_FULLNESS, TEAM_BATTLE_MIN_FULLNESS, TEAM_BATTLE_MIN_FULLNESS_ENABLED,
@@ -103,12 +101,6 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
   const animationMode = useStore(selectAnimation(studentId));
   const teammateName = useStore(selectTeammateNames(studentId));
   const actions = useStore(useShallow(selectActions));
-  const [reflectionOpen, setReflectionOpen] = React.useState(false);
-  const [reflectionCompetency, setReflectionCompetency] =
-    React.useState<LearningCompetency>('growth');
-  const [reflectionAssessment, setReflectionAssessment] =
-    React.useState<DailySelfAssessment | null>(null);
-  const [reflectionText, setReflectionText] = React.useState('');
 
   if (!student) return null;
 
@@ -204,18 +196,6 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
                   : `個人賽需 ${SOLO_BATTLE_MIN_FULLNESS} 飽食度；隊伍賽不受最低飽食度限制。`)
           )
         : (tLang.battleNeedFullness ?? '').replace('{value}', SOLO_BATTLE_MIN_FULLNESS.toString());
-
-  const submitDailyReflection = () => {
-    if (!reflectionAssessment) return;
-    actions.claimDailyTask(studentId, {
-      competency: reflectionCompetency,
-      selfAssessment: reflectionAssessment,
-      text: reflectionText,
-    });
-    setReflectionOpen(false);
-    setReflectionAssessment(null);
-    setReflectionText('');
-  };
 
   let StatusIcon = Smile;
   let statusText = tLang.statusHappy;
@@ -534,7 +514,7 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
             )}
 
             <button
-              onClick={() => setReflectionOpen((open) => !open)}
+              onClick={() => actions.claimDailyTask(studentId)}
               disabled={dailyClaimedToday}
               className={`w-full flex items-center justify-center py-2 px-4 rounded-xl font-bold text-sm transition-all duration-200 ${
                 dailyClaimedToday
@@ -547,90 +527,6 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
                 ? tLang.dailyTaskDone
                 : `${tLang.dailyTask} (+${DAILY_TASK_REWARD_POINTS})`}
             </button>
-
-            {reflectionOpen && !dailyClaimedToday && (
-              <div className="border border-emerald-200 bg-white p-3 shadow-sm">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="flex items-center text-sm font-bold text-emerald-950">
-                      <BookOpen className="mr-2 h-4 w-4 text-emerald-600" />
-                      {tLang.dailyReflectionTitle}
-                    </p>
-                    <p className="mt-1 text-xs leading-5 text-slate-500">
-                      {tLang.dailyReflectionHint}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setReflectionOpen(false)}
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-                    title={tLang.cancel}
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
-
-                <label className="mt-3 block text-xs font-bold text-slate-700">
-                  {tLang.dailyReflectionCompetency}
-                  <select
-                    value={reflectionCompetency}
-                    onChange={(event) =>
-                      setReflectionCompetency(event.target.value as LearningCompetency)
-                    }
-                    className="mt-1 w-full rounded-md border border-slate-300 bg-white p-2 text-sm font-medium text-slate-800 focus:border-emerald-500 focus:ring-emerald-500"
-                  >
-                    {(Object.keys(competencyLabels) as LearningCompetency[]).map((competency) => (
-                      <option key={competency} value={competency}>
-                        {competencyLabels[competency]}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <div className="mt-3 grid grid-cols-3 gap-1" role="group" aria-label={tLang.dailyReflectionTitle}>
-                  {([
-                    ['needsSupport', tLang.dailyReflectionNeedsSupport],
-                    ['progressing', tLang.dailyReflectionProgressing],
-                    ['confident', tLang.dailyReflectionConfident],
-                  ] as Array<[DailySelfAssessment, string]>).map(([assessment, label]) => (
-                    <button
-                      key={assessment}
-                      type="button"
-                      aria-pressed={reflectionAssessment === assessment}
-                      onClick={() => setReflectionAssessment(assessment)}
-                      className={`min-h-10 rounded-md px-1.5 py-2 text-[11px] font-bold transition-colors ${
-                        reflectionAssessment === assessment
-                          ? 'bg-emerald-600 text-white'
-                          : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-
-                <label className="mt-3 block text-xs font-bold text-slate-700">
-                  {tLang.dailyReflectionPrompt}
-                  <textarea
-                    value={reflectionText}
-                    onChange={(event) => setReflectionText(event.target.value.slice(0, 160))}
-                    maxLength={160}
-                    rows={2}
-                    placeholder={tLang.dailyReflectionPlaceholder}
-                    className="mt-1 w-full resize-none rounded-md border border-slate-300 p-2 text-sm text-slate-800 focus:border-emerald-500 focus:ring-emerald-500"
-                  />
-                </label>
-
-                <button
-                  type="button"
-                  onClick={submitDailyReflection}
-                  disabled={!reflectionAssessment}
-                  className="mt-3 inline-flex min-h-10 w-full items-center justify-center rounded-md bg-emerald-600 px-3 py-2 text-sm font-bold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-                >
-                  {tLang.dailyReflectionSubmit}
-                </button>
-              </div>
-            )}
 
             {battleEnabled && (
               <button
