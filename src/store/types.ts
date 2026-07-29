@@ -4,12 +4,19 @@ import {
   BossRewardRecord, LearningCompetency, ClassGoal, BossAttackMode, BossReward,
   DailyReflection, MentorDailyFeedbackInput, DailyAssessment, DailySelfAssessment,
 } from '../gameRules';
+import type {
+  LearningEvidenceInput,
+  LearningEvidenceLevel,
+  LearningEvidenceRecord,
+  LearningEvidenceType,
+} from '../../shared/education';
 
 export type {
   WorldBoss, PenaltyStatus, DisciplineRecord, PointAdjustmentRecord, DailyProgress,
   PointAdjustmentSource, BossRewardTier, BossContributionStanding,
   BossRewardRecord, LearningCompetency, ClassGoal, BossAttackMode, BossReward,
   DailyReflection, MentorDailyFeedbackInput, DailyAssessment, DailySelfAssessment,
+  LearningEvidenceInput, LearningEvidenceLevel, LearningEvidenceRecord, LearningEvidenceType,
 };
 
 export type Pet = {
@@ -42,6 +49,7 @@ export type Student = {
   bossRewardRecords?: BossRewardRecord[];
   dailyProgress?: DailyProgress;
   lastBossDamage?: number;
+  lastBossFairScore?: number;
   teamId?: string;
   teammateId?: string;
   badges?: string[];
@@ -67,6 +75,7 @@ export type ClassData = {
   students: Student[];
   activeBoss?: WorldBoss;
   classGoals?: ClassGoal[];
+  learningEvidenceRecords?: LearningEvidenceRecord[];
 };
 
 export type AppData = {
@@ -107,8 +116,10 @@ export type AppData = {
     bossAttackMaxTargets?: number;
     bossAttackDamage?: number;
     bossAttackMode?: BossAttackMode;
+    pointReasonOptions?: PointReasonOption[];
     pinnedReasonIds?: string[];
     recentReasonIds?: string[];
+    feedbackReasonHistory?: string[];
     enableSeasonResetRewards?: boolean;
     seasonResetRewards?: { diamond: number, platinum: number, gold: number, silver: number, bronze: number };
     reviveCost?: number;

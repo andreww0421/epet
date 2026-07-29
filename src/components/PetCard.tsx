@@ -15,10 +15,9 @@ import {
 } from '../gameRules';
 import { computeBadges, getTeamMembers } from '../store/utils';
 import {
-  getLatestPositiveFeedback,
   getNextStudentGoal,
-  getRecordCompetency,
 } from '../educationInsights';
+import { getActiveLearningEvidence } from '../../shared/education';
 import { getPublicStudentName } from '../studentPresentation';
 
 const WARNING_THRESHOLD = 3;
@@ -57,6 +56,10 @@ const selectActiveBoss = (state: any) =>
 
 const selectClassGoals = (state: any) =>
   state.data.classes.find((c: any) => c.id === state.data.currentClassId)?.classGoals ?? [];
+
+const selectLearningEvidence = (state: any) =>
+  state.data.classes.find((c: any) => c.id === state.data.currentClassId)
+    ?.learningEvidenceRecords ?? [];
 
 const selectAnimation = (studentId: string) => (state: any): PetAnimationMode | undefined =>
   state.animatingPets[studentId];
@@ -98,6 +101,7 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
   const settings = useStore(useShallow(selectSettings));
   const activeBoss = useStore(selectActiveBoss);
   const classGoals = useStore(selectClassGoals);
+  const learningEvidence = useStore(selectLearningEvidence);
   const animationMode = useStore(selectAnimation(studentId));
   const teammateName = useStore(selectTeammateNames(studentId));
   const actions = useStore(useShallow(selectActions));
@@ -165,14 +169,13 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
   const todayKey = getDateKey();
   const dailyClaimedToday = dailyProgress?.lastClaimDate === todayKey;
   const streak = dailyProgress?.streak ?? 0;
-  const nextGoal = getNextStudentGoal(student, classGoals);
-  const latestPositiveFeedback = getLatestPositiveFeedback(student);
-  const latestPositiveCompetency = latestPositiveFeedback
-    ? getRecordCompetency(latestPositiveFeedback)
-    : undefined;
+  const nextGoal = getNextStudentGoal(student, classGoals, learningEvidence);
+  const latestPositiveEvidence = getActiveLearningEvidence(learningEvidence)
+    .find((record) => record.studentId === student.id && record.level !== 'needsSupport');
+  const latestPositiveCompetency = latestPositiveEvidence?.competency;
   const latestPositiveReason =
-    !inclusiveMode && latestPositiveFeedback?.reasonLabel
-      ? latestPositiveFeedback.reasonLabel
+    !inclusiveMode && latestPositiveEvidence?.title
+      ? latestPositiveEvidence.title
       : latestPositiveCompetency
         ? competencyLabels[latestPositiveCompetency]
         : undefined;

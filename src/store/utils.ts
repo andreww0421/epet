@@ -9,8 +9,18 @@ import {
   MAX_ACTIVITY_RECORDS, MAX_POINT_ADJUSTMENT_RECORDS, MAX_BOSS_REWARD_RECORDS,
   MAX_DAILY_REFLECTIONS, type BossRewardTier, type BossReward, type BossRewardRecord,
 } from '../gameRules';
-import { AppData, Student, DisciplineRecord, PointAdjustmentRecord, WorldBoss, ClassGoal } from './types';
-import { PET_TYPES, DEFAULT_CLASS_NAME, DEFAULT_MAX_TEAM_SIZE, DEFAULT_BATTLE_MODE } from './constants';
+import {
+  AppData, Student, DisciplineRecord, PointAdjustmentRecord, WorldBoss, ClassGoal,
+  PointReasonOption, LearningEvidenceRecord,
+} from './types';
+import {
+  createLearningEvidenceRecord,
+  normalizeLearningEvidenceRecords,
+} from '../../shared/education';
+import {
+  PET_TYPES, DEFAULT_CLASS_NAME, DEFAULT_MAX_TEAM_SIZE, DEFAULT_BATTLE_MODE,
+  POINT_REASON_OPTIONS,
+} from './constants';
 
 export const getRandomPetType = (useRarity = false) => {
   if (!useRarity) {
@@ -91,6 +101,13 @@ export const normalizeWorldBoss = (boss: unknown, fallbackIndex: number, now = D
       if (safeDamage > 0) contributions[studentId] = safeDamage;
     });
   }
+  const attackCounts: Record<string, number> = {};
+  if (rawBoss.attackCounts && typeof rawBoss.attackCounts === 'object') {
+    Object.entries(rawBoss.attackCounts).forEach(([studentId, count]) => {
+      const safeCount = Math.max(0, Math.floor(toFiniteNumber(count, 0)));
+      if (safeCount > 0) attackCounts[studentId] = safeCount;
+    });
+  }
 
   return {
     id: typeof rawBoss.id === 'string' && rawBoss.id ? rawBoss.id : `boss-${now}-${fallbackIndex}`,
@@ -101,6 +118,7 @@ export const normalizeWorldBoss = (boss: unknown, fallbackIndex: number, now = D
     participationReward: normalizeBossReward(rawBoss.participationReward, DEFAULT_BOSS_PARTICIPATION_REWARD),
     improvementReward: normalizeBossReward(rawBoss.improvementReward, DEFAULT_BOSS_IMPROVEMENT_REWARD),
     contributions,
+    attackCounts,
     isActive: true,
   };
 };
@@ -143,6 +161,76 @@ export const getTeamMembers = (students: Student[], student: Student | undefined
   return teamMembers.slice(0, maxTeamSize);
 };
 
+const cloneDefaultPointReasons = () =>
+  POINT_REASON_OPTIONS.map((option) => ({
+    ...option,
+    labels: { ...option.labels },
+  }));
+
+const stripLegacyPointAmount = (label: string, amount: number) => {
+  const match = label.match(/\s([+-]\d+)\s*$/);
+  if (!match || Number(match[1]) !== amount) return label;
+  return label.slice(0, match.index).trim() || label;
+};
+
+export const normalizePointReasonOptions = (value: unknown): PointReasonOption[] => {
+  if (!Array.isArray(value)) return cloneDefaultPointReasons();
+
+  const seenIds = new Set<string>();
+  const normalized = value
+    .map((item, index): PointReasonOption | null => {
+      if (!item || typeof item !== 'object') return null;
+      const raw = item as Partial<PointReasonOption>;
+      const id =
+        typeof raw.id === 'string' && raw.id.trim()
+          ? raw.id.trim().slice(0, 80)
+          : `custom-${index + 1}`;
+      if (seenIds.has(id) || !isLearningCompetency(raw.competency)) return null;
+      const amount = Math.trunc(toFiniteNumber(raw.amount, 0));
+      if (amount === 0) return null;
+      const rawLabels = (
+        raw.labels && typeof raw.labels === 'object' ? raw.labels : {}
+      ) as { zh?: unknown; en?: unknown };
+      const zh = typeof rawLabels.zh === 'string'
+        ? stripLegacyPointAmount(rawLabels.zh.trim().slice(0, 60), amount)
+        : '';
+      const en = typeof rawLabels.en === 'string'
+        ? stripLegacyPointAmount(rawLabels.en.trim().slice(0, 60), amount)
+        : '';
+      const fallbackLabel = zh || en;
+      if (!fallbackLabel) return null;
+      seenIds.add(id);
+      return {
+        id,
+        amount,
+        competency: raw.competency,
+        labels: {
+          zh: zh || fallbackLabel,
+          en: en || fallbackLabel,
+        },
+      };
+    })
+    .filter((item): item is PointReasonOption => Boolean(item))
+    .slice(0, 30);
+
+  return normalized.length > 0 ? normalized : cloneDefaultPointReasons();
+};
+
+export const normalizeFeedbackReasonHistory = (value: unknown) => {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  return value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim().slice(0, 120))
+    .filter((item) => {
+      const key = item.toLocaleLowerCase();
+      if (!item || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 20);
+};
+
 export const createInitialData = (now = Date.now()): AppData => ({
   lastOpened: now,
   classes: [
@@ -150,6 +238,7 @@ export const createInitialData = (now = Date.now()): AppData => ({
       id: 'default',
       name: DEFAULT_CLASS_NAME,
       students: [],
+      learningEvidenceRecords: [],
     },
   ],
   currentClassId: 'default',
@@ -184,8 +273,10 @@ export const createInitialData = (now = Date.now()): AppData => ({
     bossAttackMaxTargets: DEFAULT_BOSS_ATTACK_MAX_TARGETS,
     bossAttackDamage: DEFAULT_BOSS_ATTACK_DAMAGE,
     bossAttackMode: 'shared',
+    pointReasonOptions: cloneDefaultPointReasons(),
     pinnedReasonIds: ['homework', 'participation', 'helpful'],
     recentReasonIds: [],
+    feedbackReasonHistory: [],
   },
 });
 
@@ -278,8 +369,23 @@ export const normalizeStudent = (student: any, fallbackIndex: number, now = Date
             createdAt: toFiniteNumber(record?.createdAt, now),
             rank: Math.max(1, Math.floor(toFiniteNumber(record?.rank, 1))),
             damage: Math.max(0, Math.floor(toFiniteNumber(record?.damage, 0))),
+            attackCount: Math.max(1, Math.floor(toFiniteNumber(record?.attackCount, 1))),
+            fairScore: Math.max(
+              0,
+              Math.floor(toFiniteNumber(record?.fairScore, record?.damage ?? 0)),
+            ),
             previousDamage: Math.max(0, Math.floor(toFiniteNumber(record?.previousDamage, 0))),
+            previousFairScore: Math.max(
+              0,
+              Math.floor(toFiniteNumber(record?.previousFairScore, record?.previousDamage ?? 0)),
+            ),
             improvementAmount: Math.max(0, Math.floor(toFiniteNumber(record?.improvementAmount, 0))),
+            fairImprovementAmount: Math.max(
+              0,
+              Math.floor(
+                toFiniteNumber(record?.fairImprovementAmount, record?.improvementAmount ?? 0),
+              ),
+            ),
             rewardPoints: Math.max(0, Math.floor(toFiniteNumber(record?.rewardPoints, 0))),
             rewardRankPoints: Math.max(0, Math.floor(toFiniteNumber(record?.rewardRankPoints, 0))),
             rewardHappiness: Math.max(0, Math.floor(toFiniteNumber(record?.rewardHappiness, 0))),
@@ -346,6 +452,10 @@ export const normalizeStudent = (student: any, fallbackIndex: number, now = Date
       student?.lastBossDamage == null
         ? undefined
         : Math.max(0, Math.floor(toFiniteNumber(student.lastBossDamage, 0))),
+    lastBossFairScore:
+      student?.lastBossFairScore == null
+        ? undefined
+        : Math.max(0, Math.floor(toFiniteNumber(student.lastBossFairScore, 0))),
     teamId: typeof student?.teamId === 'string' && student.teamId ? student.teamId : undefined,
     badges: [],
   };
@@ -388,6 +498,10 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
       ];
 
   const classes = rawClasses.map((classItem: any, index: number) => {
+    const classId =
+      typeof classItem?.id === 'string' && classItem.id
+        ? classItem.id
+        : `class-${now}-${index}`;
     const rawStudents = Array.isArray(classItem?.students) ? classItem.students : [];
     const students = rawStudents.map((student: any, studentIndex: number) => normalizeStudent(student, studentIndex, now));
     const studentById = new Map<string, Student>(students.map((student) => [student.id, student] as const));
@@ -429,13 +543,68 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
         targetCount: Math.max(1, Math.floor(toFiniteNumber(goal.targetCount, 10))),
         createdAt: toFiniteNumber(goal.createdAt, now),
       }));
+    const sanitizedStudents = sanitizeTeamAssignments(
+      withLegacyTeams,
+      clampTeamSize(rawSettings?.maxTeamSize),
+    );
+    const validStudentIds = new Set(sanitizedStudents.map((student) => student.id));
+    const explicitEvidence = normalizeLearningEvidenceRecords(
+      classItem?.learningEvidenceRecords,
+      classId,
+      validStudentIds,
+      now,
+    );
+    const existingSourceIds = new Set(
+      explicitEvidence
+        .filter((record) => record.sourceId)
+        .map((record) => `${record.source}:${record.sourceId}`),
+    );
+    const migratedEvidence = sanitizedStudents.flatMap((student) =>
+      (student.dailyProgress?.reflections ?? [])
+        .filter(
+          (reflection) =>
+            reflection.author === 'mentor' &&
+            !existingSourceIds.has(`mentorDailyFeedback:${reflection.id}`),
+        )
+        .map((reflection): LearningEvidenceRecord =>
+          createLearningEvidenceRecord(
+            classId,
+            student.id,
+            {
+              competency: reflection.competency,
+              level:
+                reflection.mentorAssessment === 'needsSupport'
+                  ? 'needsSupport'
+                  : reflection.mentorAssessment === 'confident'
+                    ? 'mastered'
+                    : 'progressing',
+              evidenceType: 'observation',
+              title: reflection.text || 'Mentor daily feedback',
+              note: reflection.text,
+              actor: 'mentor',
+              source: 'mentorDailyFeedback',
+              sourceId: reflection.id,
+              rubricVersion: 'legacy-1.0',
+            },
+            reflection.createdAt,
+            `evidence-${reflection.id}`,
+          ),
+        ),
+    );
+    const learningEvidenceRecords = normalizeLearningEvidenceRecords(
+      [...explicitEvidence, ...migratedEvidence],
+      classId,
+      validStudentIds,
+      now,
+    );
 
     return {
-      id: typeof classItem?.id === 'string' && classItem.id ? classItem.id : `class-${now}-${index}`,
+      id: classId,
       name: typeof classItem?.name === 'string' && classItem.name.trim() ? classItem.name.trim() : DEFAULT_CLASS_NAME,
-      students: sanitizeTeamAssignments(withLegacyTeams, clampTeamSize(rawSettings?.maxTeamSize)),
+      students: sanitizedStudents,
       activeBoss: normalizeWorldBoss(classItem?.activeBoss, index, now),
       classGoals,
+      learningEvidenceRecords,
     };
   });
 
@@ -446,6 +615,14 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
     0,
     toFiniteNumber(rawSettings?.soloBattleFullnessCost, initialData.settings?.soloBattleFullnessCost ?? SOLO_BATTLE_FULLNESS_COST),
   );
+  const pointReasonOptions = normalizePointReasonOptions(rawSettings?.pointReasonOptions);
+  const pointReasonIds = new Set(pointReasonOptions.map((option) => option.id));
+  const pinnedReasonIds = normalizeReasonIds(
+    rawSettings?.pinnedReasonIds,
+    initialData.settings?.pinnedReasonIds,
+  ).filter((id) => pointReasonIds.has(id));
+  const recentReasonIds = normalizeReasonIds(rawSettings?.recentReasonIds)
+    .filter((id) => pointReasonIds.has(id));
 
   return {
     lastOpened: toFiniteNumber(raw?.lastOpened, now),
@@ -525,11 +702,10 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
         Math.floor(toFiniteNumber(rawSettings?.bossAttackDamage, DEFAULT_BOSS_ATTACK_DAMAGE)),
       ),
       bossAttackMode: inclusiveMode ? 'shared' : requestedBossAttackMode,
-      pinnedReasonIds: normalizeReasonIds(
-        rawSettings?.pinnedReasonIds,
-        initialData.settings?.pinnedReasonIds,
-      ),
-      recentReasonIds: normalizeReasonIds(rawSettings?.recentReasonIds),
+      pointReasonOptions,
+      pinnedReasonIds,
+      recentReasonIds,
+      feedbackReasonHistory: normalizeFeedbackReasonHistory(rawSettings?.feedbackReasonHistory),
       enableSeasonResetRewards: Boolean(rawSettings?.enableSeasonResetRewards),
       seasonResetRewards: rawSettings?.seasonResetRewards ?? { diamond: 500, platinum: 400, gold: 300, silver: 200, bronze: 100 },
       reviveCost: Math.max(0, toFiniteNumber(rawSettings?.reviveCost, 120)),

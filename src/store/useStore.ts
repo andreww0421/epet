@@ -4,16 +4,20 @@ import {
   AppData, Student, ClassData, UpgradeRewardState, PetAnimationMode,
   PointAdjustmentSource, BattleMode, Language, BossRewardTier, BossVictoryResult,
   ClassGoal, LearningCompetency, BossReward, BossAttackMode, MentorDailyFeedbackInput,
+  PointReasonOption, LearningEvidenceInput,
 } from './types';
+import { createLearningEvidenceRecord } from '../../shared/education';
 import { 
   translations, STORAGE_KEY, DEFAULT_MAX_TEAM_SIZE,
   DEFAULT_BATTLE_MODE, petNames
 } from './constants';
 import {
   normalizeAppData, applyDecay, getRandomPetType, 
-  sanitizeTeamAssignments, getTeamMembers, createTeamId, normalizeWorldBoss
+  sanitizeTeamAssignments, getTeamMembers, createTeamId, normalizeWorldBoss,
+  normalizePointReasonOptions,
 } from './utils';
 import { getPublicStudentName } from '../studentPresentation';
+import { resolveBossRewardsOnBackend } from '../services/backendApi';
 import { 
   applyFeedToStudent, applyPlayWithPet, claimDailyTaskForStudent,
   saveMentorDailyFeedbackForStudent,
@@ -31,6 +35,7 @@ import {
   TEAM_BATTLE_DEFENDER_FULLNESS_COST, TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST,
   DEFAULT_BOSS_ATTACK_MAX_TARGETS, DEFAULT_BOSS_ATTACK_DAMAGE,
   DEFAULT_BOSS_PARTICIPATION_REWARD, DEFAULT_BOSS_IMPROVEMENT_REWARD,
+  getDateKey,
 } from '../gameRules';
 
 type PointAdjustmentReason = {
@@ -101,6 +106,7 @@ type StoreState = {
     reason?: PointAdjustmentReason,
   ) => void;
   airdropPoints: (pointsToAdd: number, reasonLabel?: string, competency?: LearningCompetency) => void;
+  replacePointReasons: (reasons: PointReasonOption[]) => void;
   togglePinnedReason: (reasonId: string) => void;
   undoLastPointAdjustment: () => void;
   decreaseLevel: (studentId: string) => void;
@@ -115,6 +121,7 @@ type StoreState = {
   playWithPet: (studentId: string) => void;
   claimDailyTask: (studentId: string) => void;
   saveMentorDailyFeedback: (studentId: string, feedback: MentorDailyFeedbackInput) => void;
+  addLearningEvidence: (studentId: string, evidence: LearningEvidenceInput) => void;
   revivePet: (studentId: string) => void;
   upgradePet: (studentId: string) => void;
   gachaPet: (studentId: string) => void;
@@ -134,7 +141,7 @@ type StoreState = {
     improvementReward?: BossReward,
   ) => void;
   removeBoss: () => void;
-  executeAttackBoss: (studentId: string) => void;
+  executeAttackBoss: (studentId: string) => Promise<void>;
   executeBossAttack: () => void;
   dismissBossVictory: () => void;
 
@@ -184,6 +191,16 @@ const schedulePointUndoExpiry = (
     clearIfActive(undoId);
     pointUndoTimer = undefined;
   }, POINT_UNDO_WINDOW_MS);
+};
+
+const prependFeedbackReason = (history: string[] | undefined, label: string | undefined) => {
+  const normalizedLabel = label?.trim().slice(0, 120);
+  if (!normalizedLabel) return history ?? [];
+  const normalizedKey = normalizedLabel.toLocaleLowerCase();
+  return [
+    normalizedLabel,
+    ...(history ?? []).filter((item) => item.toLocaleLowerCase() !== normalizedKey),
+  ].slice(0, 20);
 };
 
 export const useStore = create<StoreState>()(
@@ -528,6 +545,11 @@ export const useStore = create<StoreState>()(
                 ...(state.data.settings?.recentReasonIds ?? []).filter((id) => id !== reason.id),
               ].slice(0, 3)
             : state.data.settings?.recentReasonIds;
+          const feedbackReasonHistory = prependFeedbackReason(
+            state.data.settings?.feedbackReasonHistory,
+            reason?.label,
+          );
+          const shouldUpdateReasonSettings = Boolean(reason?.id || reason?.label?.trim());
 
           return {
             undoAction: {
@@ -540,8 +562,8 @@ export const useStore = create<StoreState>()(
             data: {
               ...state.data,
               classes: nextClasses,
-              settings: reason?.id
-                ? { ...state.data.settings!, recentReasonIds }
+              settings: shouldUpdateReasonSettings
+                ? { ...state.data.settings!, recentReasonIds, feedbackReasonHistory }
                 : state.data.settings,
             },
           };
@@ -588,6 +610,10 @@ export const useStore = create<StoreState>()(
               .replace('{amount}', signedAmount),
             amount > 0 ? 'success' : 'error',
           );
+          const feedbackReasonHistory = prependFeedbackReason(
+            state.data.settings?.feedbackReasonHistory,
+            reason?.label,
+          );
 
           return {
             undoAction: {
@@ -600,7 +626,13 @@ export const useStore = create<StoreState>()(
               expiresAt: now + POINT_UNDO_WINDOW_MS,
               entries: result.entries,
             },
-            data: { ...state.data, classes: nextClasses },
+            data: {
+              ...state.data,
+              classes: nextClasses,
+              settings: reason?.label?.trim()
+                ? { ...state.data.settings!, feedbackReasonHistory }
+                : state.data.settings,
+            },
           };
         });
         if (createdUndoId) {
@@ -646,6 +678,10 @@ export const useStore = create<StoreState>()(
               : `已向 ${currentClass.students.length} 位學生空投 ${signedAmount} 積分。`,
             amount > 0 ? 'success' : 'error',
           );
+          const feedbackReasonHistory = prependFeedbackReason(
+            state.data.settings?.feedbackReasonHistory,
+            reasonLabel,
+          );
 
           return {
             undoAction: {
@@ -655,7 +691,13 @@ export const useStore = create<StoreState>()(
               expiresAt: now + POINT_UNDO_WINDOW_MS,
               entries: result.entries,
             },
-            data: { ...state.data, classes: nextClasses },
+            data: {
+              ...state.data,
+              classes: nextClasses,
+              settings: reasonLabel?.trim()
+                ? { ...state.data.settings!, feedbackReasonHistory }
+                : state.data.settings,
+            },
           };
         });
         if (createdUndoId) {
@@ -665,9 +707,37 @@ export const useStore = create<StoreState>()(
         }
       },
 
+      replacePointReasons: (reasons) => {
+        const lang = get().data.settings?.language || 'zh';
+        set((state) => {
+          if (!state.data.settings) return state;
+          const pointReasonOptions = normalizePointReasonOptions(reasons);
+          const validIds = new Set(pointReasonOptions.map((reason) => reason.id));
+          const pinnedReasonIds = (state.data.settings.pinnedReasonIds ?? [])
+            .filter((id) => validIds.has(id));
+          const recentReasonIds = (state.data.settings.recentReasonIds ?? [])
+            .filter((id) => validIds.has(id));
+          return {
+            data: {
+              ...state.data,
+              settings: {
+                ...state.data.settings,
+                pointReasonOptions,
+                pinnedReasonIds,
+                recentReasonIds,
+              },
+            },
+          };
+        });
+        get().showToast(translations[lang].reasonSettingsSaved, 'success');
+      },
+
       togglePinnedReason: (reasonId) => set((state) => {
         const normalizedReasonId = reasonId.trim();
         if (!normalizedReasonId || !state.data.settings) return state;
+        if (!(state.data.settings.pointReasonOptions ?? []).some(
+          (reason) => reason.id === normalizedReasonId,
+        )) return state;
         const currentIds = state.data.settings.pinnedReasonIds ?? [];
         const pinnedReasonIds = currentIds.includes(normalizedReasonId)
           ? currentIds.filter((id) => id !== normalizedReasonId)
@@ -1004,8 +1074,52 @@ export const useStore = create<StoreState>()(
         const targetStudent = currentClass.students.find((student) => student.id === studentId);
         if (!targetStudent) return state;
 
-        const result = saveMentorDailyFeedbackForStudent(targetStudent, feedback, Date.now());
+        const now = Date.now();
+        const result = saveMentorDailyFeedbackForStudent(targetStudent, feedback, now);
         if (!result.saved) return state;
+        const savedReflection = result.student.dailyProgress?.reflections?.find(
+          (reflection) =>
+            reflection.author === 'mentor' &&
+            reflection.date === getDateKey(now),
+        );
+        const currentEvidence = currentClass.learningEvidenceRecords ?? [];
+        const previousRevision = savedReflection
+          ? Math.max(
+              0,
+              ...currentEvidence
+                .filter(
+                  (record) =>
+                    record.source === 'mentorDailyFeedback' &&
+                    record.sourceId === savedReflection.id,
+                )
+                .map((record) => record.revision),
+            )
+          : 0;
+        const nextEvidence = savedReflection
+          ? createLearningEvidenceRecord(
+              currentClass.id,
+              studentId,
+              {
+                competency: feedback.competency,
+                level:
+                  feedback.assessment === 'needsSupport'
+                    ? 'needsSupport'
+                    : feedback.assessment === 'confident'
+                      ? 'mastered'
+                      : 'progressing',
+                evidenceType: 'observation',
+                title: feedback.text,
+                note: feedback.text,
+                actor: 'mentor',
+                source: 'mentorDailyFeedback',
+                sourceId: savedReflection.id,
+                rubricVersion: '1.0',
+              },
+              now,
+              `evidence-${savedReflection.id}-${previousRevision + 1}`,
+              previousRevision + 1,
+            )
+          : null;
 
         const nextClasses = [...state.data.classes];
         nextClasses[currentClassIndex] = {
@@ -1013,12 +1127,49 @@ export const useStore = create<StoreState>()(
           students: currentClass.students.map((student) =>
             student.id === studentId ? result.student : student,
           ),
+          learningEvidenceRecords: nextEvidence
+            ? [nextEvidence, ...currentEvidence].slice(0, 2000)
+            : currentEvidence,
         };
         const tLang = translations[state.data.settings?.language || 'zh'];
         get().showToast(
           result.updated ? tLang.dailyFeedbackUpdated : tLang.dailyFeedbackSaved,
           'success',
         );
+        return { data: { ...state.data, classes: nextClasses } };
+      }),
+
+      addLearningEvidence: (studentId, evidence) => set((state) => {
+        const currentClassIndex = state.data.classes.findIndex(
+          (classData) => classData.id === state.data.currentClassId,
+        );
+        if (currentClassIndex === -1 || !evidence.title.trim()) return state;
+        const currentClass = state.data.classes[currentClassIndex];
+        const targetStudent = currentClass.students.find((student) => student.id === studentId);
+        if (!targetStudent) return state;
+
+        const now = Date.now();
+        const record = createLearningEvidenceRecord(
+          currentClass.id,
+          studentId,
+          {
+            ...evidence,
+            actor: 'mentor',
+            source: 'manual',
+            rubricVersion: evidence.rubricVersion ?? '1.0',
+          },
+          now,
+        );
+        const nextClasses = [...state.data.classes];
+        nextClasses[currentClassIndex] = {
+          ...currentClass,
+          learningEvidenceRecords: [
+            record,
+            ...(currentClass.learningEvidenceRecords ?? []),
+          ].slice(0, 2000),
+        };
+        const lang = state.data.settings?.language || 'zh';
+        get().showToast(translations[lang].learningEvidenceSaved, 'success');
         return { data: { ...state.data, classes: nextClasses } };
       }),
 
@@ -1371,6 +1522,7 @@ export const useStore = create<StoreState>()(
             participationReward,
             improvementReward,
             contributions: {},
+            attackCounts: {},
             isActive: true,
           },
           currentClassIndex,
@@ -1461,65 +1613,133 @@ export const useStore = create<StoreState>()(
         };
       }),
 
-      executeAttackBoss: (studentId) => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
-        if (currentClassIndex === -1) return state;
-        
+      executeAttackBoss: async (studentId) => {
+        const state = get();
+        const currentClassIndex = state.data.classes.findIndex(
+          (classData) => classData.id === state.data.currentClassId,
+        );
+        if (currentClassIndex === -1) return;
+
         const currentClass = state.data.classes[currentClassIndex];
-        if (!currentClass.activeBoss || !currentClass.activeBoss.isActive) return state;
+        if (!currentClass.activeBoss?.isActive) return;
+        const targetStudent = currentClass.students.find(
+          (student) => student.id === studentId,
+        );
+        if (!targetStudent) return;
 
-        const targetStudent = currentClass.students.find(s => s.id === studentId);
-        if (!targetStudent) return state;
-
-        const result = attackWorldBoss(targetStudent, currentClass.activeBoss, Date.now());
+        const now = Date.now();
+        const result = attackWorldBoss(targetStudent, currentClass.activeBoss, now);
         const tLang = translations[state.data.settings?.language || 'zh'];
-
-        if (result.blocked === 'penalty') { get().showToast(tLang.battleBlockedByPenalty, 'error'); return state; }
-        if (result.blocked === 'dead') { get().showToast(tLang.battleBlockedByDeath ?? '寵物已死亡，無法討伐', 'error'); return state; }
-        if (result.blocked === 'fullness') { get().showToast((tLang.battleNeedFullness ?? '').replace('{value}', BOSS_ATTACK_FULLNESS_COST.toString()), 'error'); return state; }
-        
-        if (result.updatedStudent && result.updatedBoss) {
-          get().triggerPetAnimation(studentId, 'attack', 500);
-          get().showToast((tLang.bossDamage ?? 'Dealt {damage} damage!').replace('{damage}', (result.damageDealt || 0).toString()), 'success');
-          
-          set({ bossHitFeedback: { damage: result.damageDealt || 0, id: Date.now() } });
-          if (bossHitFeedbackTimer) clearTimeout(bossHitFeedbackTimer);
-          bossHitFeedbackTimer = setTimeout(() => {
-            set({ bossHitFeedback: null });
-            bossHitFeedbackTimer = undefined;
-          }, 800);
-
-          const nextClasses = [...state.data.classes];
-          const newBoss = result.updatedBoss;
-
-          if (result.isDefeated) {
-            const studentsAfterAttack = currentClass.students.map((student) =>
-              student.id === studentId ? result.updatedStudent! : student,
-            );
-            const rewardResult = applyBossContributionRewards(
-              studentsAfterAttack,
-              newBoss,
-              Date.now(),
-              state.data.settings?.maxPoints ?? 700,
-            );
-            nextClasses[currentClassIndex] = {
-              ...currentClass,
-              students: rewardResult.students,
-              activeBoss: undefined,
-            };
-            get().showToast((tLang.bossDefeated ?? '').replace('{name}', newBoss.name), 'success');
-            return {
-              showBossVictory: true,
-              bossVictoryResult: { bossName: newBoss.name, standings: rewardResult.standings },
-              data: { ...state.data, classes: nextClasses },
-            };
-          } else {
-            nextClasses[currentClassIndex] = { ...currentClass, students: currentClass.students.map(s => s.id === studentId ? result.updatedStudent! : s), activeBoss: newBoss.isActive ? newBoss : undefined };
-            return { data: { ...state.data, classes: nextClasses } };
-          }
+        if (result.blocked === 'penalty') {
+          get().showToast(tLang.battleBlockedByPenalty, 'error');
+          return;
         }
-        return state;
-      }),
+        if (result.blocked === 'dead') {
+          get().showToast(tLang.battleBlockedByDeath ?? '寵物已死亡，無法討伐', 'error');
+          return;
+        }
+        if (result.blocked === 'fullness') {
+          get().showToast(
+            (tLang.battleNeedFullness ?? '').replace(
+              '{value}',
+              BOSS_ATTACK_FULLNESS_COST.toString(),
+            ),
+            'error',
+          );
+          return;
+        }
+        if (!result.updatedStudent || !result.updatedBoss) return;
+
+        get().triggerPetAnimation(studentId, 'attack', 500);
+        get().showToast(
+          (tLang.bossDamage ?? 'Dealt {damage} damage!').replace(
+            '{damage}',
+            (result.damageDealt || 0).toString(),
+          ),
+          'success',
+        );
+        set({ bossHitFeedback: { damage: result.damageDealt || 0, id: now } });
+        if (bossHitFeedbackTimer) clearTimeout(bossHitFeedbackTimer);
+        bossHitFeedbackTimer = setTimeout(() => {
+          set({ bossHitFeedback: null });
+          bossHitFeedbackTimer = undefined;
+        }, 800);
+
+        const studentsAfterAttack = currentClass.students.map((student) =>
+          student.id === studentId ? result.updatedStudent! : student,
+        );
+        if (!result.isDefeated) {
+          set((latestState) => {
+            const classIndex = latestState.data.classes.findIndex(
+              (classData) => classData.id === currentClass.id,
+            );
+            if (classIndex === -1) return latestState;
+            const nextClasses = [...latestState.data.classes];
+            nextClasses[classIndex] = {
+              ...nextClasses[classIndex],
+              students: studentsAfterAttack,
+              activeBoss: result.updatedBoss,
+            };
+            return { data: { ...latestState.data, classes: nextClasses } };
+          });
+          return;
+        }
+
+        set((latestState) => {
+          const classIndex = latestState.data.classes.findIndex(
+            (classData) => classData.id === currentClass.id,
+          );
+          if (classIndex === -1) return latestState;
+          const nextClasses = [...latestState.data.classes];
+          nextClasses[classIndex] = {
+            ...nextClasses[classIndex],
+            students: studentsAfterAttack,
+            activeBoss: result.updatedBoss,
+          };
+          return { data: { ...latestState.data, classes: nextClasses } };
+        });
+
+        const maxPoints = state.data.settings?.maxPoints ?? 700;
+        const backendRewardResult = await resolveBossRewardsOnBackend(
+          studentsAfterAttack,
+          result.updatedBoss,
+          now,
+          maxPoints,
+        );
+        const rewardResult = backendRewardResult ?? applyBossContributionRewards(
+          studentsAfterAttack,
+          result.updatedBoss,
+          now,
+          maxPoints,
+        );
+
+        set((latestState) => {
+          const classIndex = latestState.data.classes.findIndex(
+            (classData) => classData.id === currentClass.id,
+          );
+          if (classIndex === -1) return latestState;
+          const latestClass = latestState.data.classes[classIndex];
+          if (latestClass.activeBoss?.id !== result.updatedBoss!.id) return latestState;
+          const nextClasses = [...latestState.data.classes];
+          nextClasses[classIndex] = {
+            ...latestClass,
+            students: rewardResult.students,
+            activeBoss: undefined,
+          };
+          return {
+            showBossVictory: true,
+            bossVictoryResult: {
+              bossName: result.updatedBoss!.name,
+              standings: rewardResult.standings,
+            },
+            data: { ...latestState.data, classes: nextClasses },
+          };
+        });
+        get().showToast(
+          (tLang.bossDefeated ?? '').replace('{name}', result.updatedBoss.name),
+          'success',
+        );
+      },
 
       triggerDecay: () => set((state) => {
         const nextData = applyDecay(state.data, Date.now());

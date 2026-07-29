@@ -63,14 +63,27 @@ export const ClassroomView: React.FC = () => {
   const classGoalMetrics = useMemo(
     () => (currentClass?.classGoals ?? []).map((goal) => ({
       goal,
-      progress: getClassGoalProgress(students, goal),
-      coverage: getClassGoalCoverage(students, goal),
+      progress: getClassGoalProgress(
+        students,
+        goal,
+        currentClass?.learningEvidenceRecords ?? [],
+      ),
+      coverage: getClassGoalCoverage(
+        students,
+        goal,
+        currentClass?.learningEvidenceRecords ?? [],
+      ),
     })),
-    [currentClass?.classGoals, students],
+    [currentClass?.classGoals, currentClass?.learningEvidenceRecords, students],
   );
   const weeklyStudentGrowth = useMemo(
-    () => getWeeklyStudentGrowth(students),
-    [students],
+    () => getWeeklyStudentGrowth(
+      students,
+      Date.now(),
+      7,
+      currentClass?.learningEvidenceRecords ?? [],
+    ),
+    [currentClass?.learningEvidenceRecords, students],
   );
   const competencyLabels = useMemo(() => ({
     participation: tLang.competencyParticipation,
@@ -88,7 +101,7 @@ export const ClassroomView: React.FC = () => {
   const topBossImprovement = useMemo(
     () => Math.max(
       0,
-      ...(bossVictoryResult?.standings.map((standing) => standing.improvementAmount) ?? []),
+      ...(bossVictoryResult?.standings.map((standing) => standing.fairImprovementAmount) ?? []),
     ),
     [bossVictoryResult],
   );
@@ -343,7 +356,7 @@ export const ClassroomView: React.FC = () => {
                   <div className="grid min-w-[620px] grid-cols-[52px_minmax(0,1fr)_90px_minmax(220px,auto)] gap-2 bg-slate-800 px-3 py-2 text-xs font-bold text-slate-400">
                     <span>#</span>
                     <span>{tLang.studentName}</span>
-                    <span className="text-right">{tLang.damageContribution.replace('{damage}', '')}</span>
+                    <span className="text-right">{tLang.bossFairScore}</span>
                     <span className="text-right">{tLang.rewardPoints} / {tLang.rewardRankPoints} / {tLang.rewardHappiness}</span>
                   </div>
                   {bossVictoryResult.standings.map((standing) => (
@@ -352,7 +365,12 @@ export const ClassroomView: React.FC = () => {
                       <span className="truncate font-medium text-white">
                         {displayStudentName(standing.studentName)}
                       </span>
-                      <span className="text-right font-mono text-rose-300">{standing.damage}</span>
+                      <span className="text-right font-mono text-rose-300">
+                        {standing.fairScore}
+                        <span className="block text-[10px] text-slate-500">
+                          {tLang.bossAttackCount.replace('{count}', standing.attackCount.toString())}
+                        </span>
+                      </span>
                       <div className="text-right text-slate-200">
                         <div>+{standing.rewardPoints} / +{standing.rewardRankPoints} RP / +{standing.rewardHappiness}</div>
                         <div className="mt-1 flex flex-wrap justify-end gap-1 text-[10px]">
@@ -369,18 +387,18 @@ export const ClassroomView: React.FC = () => {
                               {tLang.bossImprovementBonus}
                             </span>
                           )}
-                          {standing.improvementAmount > 0 &&
-                            standing.improvementAmount === topBossImprovement && (
+                          {standing.fairImprovementAmount > 0 &&
+                            standing.fairImprovementAmount === topBossImprovement && (
                                 <span className="rounded bg-violet-400/15 px-1.5 py-0.5 text-violet-300">
                                   {tLang.bossMostImproved}
                                 </span>
                               )}
                         </div>
-                        {standing.improvementAmount > 0 && (
+                        {standing.fairImprovementAmount > 0 && (
                           <div className="mt-1 text-[10px] text-sky-300">
-                            {tLang.bossImprovementAmount.replace(
+                            {tLang.bossFairImprovementAmount.replace(
                               '{amount}',
-                              standing.improvementAmount.toString(),
+                              standing.fairImprovementAmount.toString(),
                             )}
                           </div>
                         )}
@@ -498,6 +516,9 @@ export const ClassroomView: React.FC = () => {
                   <BarChart3 className="mr-2 h-4 w-4 text-amber-300" />
                   {tLang.contributionLeaderboard}
                 </h3>
+                <p className="mb-2 text-[11px] leading-4 text-slate-400">
+                  {tLang.bossFairRankingHint}
+                </p>
                 {bossContributionStandings.length === 0 ? (
                   <p className="py-3 text-center text-xs text-slate-500">{tLang.noContribution}</p>
                 ) : (
@@ -508,7 +529,15 @@ export const ClassroomView: React.FC = () => {
                         <span className="truncate font-medium text-slate-100">
                           {displayStudentName(standing.studentName)}
                         </span>
-                        <span className="font-mono text-rose-300">{standing.damage}</span>
+                        <span
+                          className="font-mono text-rose-300"
+                          title={tLang.damageContribution.replace(
+                            '{damage}',
+                            standing.damage.toString(),
+                          )}
+                        >
+                          {standing.fairScore}
+                        </span>
                       </div>
                     ))}
                   </div>

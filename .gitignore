@@ -8,3 +8,6 @@ coverage/
 *.log
 .env*
 !.env.example
+server/data/*.json
+server/data/*.tmp
+.wrangler/

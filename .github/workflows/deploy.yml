@@ -39,10 +39,12 @@ jobs:
         run: npm run lint
 
       - name: Rule tests
-        run: npm run test:rules
+        run: npm test
 
       - name: Build
         run: npm run build
+        env:
+          VITE_API_BASE_URL: https://epet-api.jtwen12345us.workers.dev
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

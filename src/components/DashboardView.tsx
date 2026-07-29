@@ -1,8 +1,8 @@
-import React, { useState, useRef, useMemo, useEffect } from 'react';
+import React, { lazy, Suspense, useState, useRef, useMemo, useEffect } from 'react';
 import { 
   Users, Settings, AlertCircle, Trash2, Star, Shield, Zap, X, Plus, Minus,
   Download, Upload, ChevronsDown, Edit2, Save, BookOpen, RefreshCw, Skull, Swords,
-  Gift, Crosshair, Target, BarChart3, Pin, Undo2,
+  Gift, Crosshair, Target, BarChart3, Undo2,
 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store/useStore';
@@ -28,6 +28,14 @@ import {
 import {
   getClassGoalCoverage, getClassGoalProgress, getRecordCompetency, getWeeklyEducationInsights,
 } from '../educationInsights';
+import { BossRewardSettings } from './dashboard/BossRewardSettings';
+import { PointReasonSettings } from './dashboard/PointReasonSettings';
+
+const StudentAnalyticsPanel = lazy(() =>
+  import('./dashboard/StudentAnalyticsPanel').then((module) => ({
+    default: module.StudentAnalyticsPanel,
+  })),
+);
 
 type PointAdjustmentTarget =
   | { kind: 'student'; id: string; name: string }
@@ -62,6 +70,7 @@ export const DashboardView: React.FC = () => {
       removeBoss: state.removeBoss,
       removePenalty: state.removePenalty,
       removeWarning: state.removeWarning,
+      replacePointReasons: state.replacePointReasons,
       resetSeason: state.resetSeason,
       saveMentorDailyFeedback: state.saveMentorDailyFeedback,
       setClassGoal: state.setClassGoal,
@@ -89,7 +98,7 @@ export const DashboardView: React.FC = () => {
   const [pointAdjustmentCompetency, setPointAdjustmentCompetency] =
     useState<LearningCompetency>('participation');
   const [dashboardSection, setDashboardSection] =
-    useState<'students' | 'rewards' | 'activities' | 'rules' | 'records'>('students');
+    useState<'students' | 'rewards' | 'activities' | 'analytics' | 'rules' | 'records'>('students');
   const [recordView, setRecordView] =
     useState<'discipline' | 'points' | 'feedback' | 'boss'>('discipline');
   const [decayAmount, setDecayAmount] = useState(data.settings?.decayAmount ?? 2);
@@ -176,6 +185,7 @@ export const DashboardView: React.FC = () => {
 
   const [selectedReasons, setSelectedReasons] = useState<Record<string, string>>({});
   const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
+  const [reasonSuggestionsOpen, setReasonSuggestionsOpen] = useState(false);
   
   const [newClassName, setNewClassName] = useState('');
   const [showAddClass, setShowAddClass] = useState(false);
@@ -226,8 +236,13 @@ export const DashboardView: React.FC = () => {
     growth: tLang.competencyGrowth,
   }), [tLang]);
   const weeklyInsights = useMemo(
-    () => getWeeklyEducationInsights(currentStudents),
-    [currentStudents],
+    () => getWeeklyEducationInsights(
+      currentStudents,
+      Date.now(),
+      7,
+      currentClass?.learningEvidenceRecords ?? [],
+    ),
+    [currentClass?.learningEvidenceRecords, currentStudents],
   );
   const todayKey = getDateKey();
   const selectedMentorFeedback = useMemo(
@@ -265,10 +280,18 @@ export const DashboardView: React.FC = () => {
   const classGoalMetrics = useMemo(
     () => (currentClass?.classGoals ?? []).map((goal: ClassGoal) => ({
       goal,
-      progress: getClassGoalProgress(currentStudents, goal),
-      coverage: getClassGoalCoverage(currentStudents, goal),
+      progress: getClassGoalProgress(
+        currentStudents,
+        goal,
+        currentClass?.learningEvidenceRecords ?? [],
+      ),
+      coverage: getClassGoalCoverage(
+        currentStudents,
+        goal,
+        currentClass?.learningEvidenceRecords ?? [],
+      ),
     })),
-    [currentClass?.classGoals, currentStudents],
+    [currentClass?.classGoals, currentClass?.learningEvidenceRecords, currentStudents],
   );
   const settingsPreviewNow = useMemo(() => Date.now(), [currentClass?.id]);
   const settingsImpactPreview = useMemo(
@@ -424,11 +447,17 @@ export const DashboardView: React.FC = () => {
 
   const pinnedReasonIds = data.settings?.pinnedReasonIds ?? [];
   const recentReasonIds = data.settings?.recentReasonIds ?? [];
+  const configuredPointReasons =
+    data.settings?.pointReasonOptions?.length
+      ? data.settings.pointReasonOptions
+      : POINT_REASON_OPTIONS;
+  const feedbackReasonHistory = data.settings?.feedbackReasonHistory ?? [];
   const pointReasonOptions = useMemo(
-    () => POINT_REASON_OPTIONS
+    () => configuredPointReasons
       .map((option, originalIndex) => ({
         ...option,
         label: option.labels[currentLang] ?? option.labels.zh,
+        displayLabel: `${option.labels[currentLang] ?? option.labels.zh} ${option.amount > 0 ? '+' : ''}${option.amount}`,
         isPinned: pinnedReasonIds.includes(option.id),
         isRecent: recentReasonIds.includes(option.id),
         originalIndex,
@@ -445,9 +474,32 @@ export const DashboardView: React.FC = () => {
         }
         return left.originalIndex - right.originalIndex;
       }),
-    [currentLang, pinnedReasonIds, recentReasonIds],
+    [configuredPointReasons, currentLang, pinnedReasonIds, recentReasonIds],
   );
-  const defaultPointReasonId = pointReasonOptions[0]?.id ?? POINT_REASON_OPTIONS[0].id;
+  const defaultPointReasonId =
+    pointReasonOptions[0]?.id ?? configuredPointReasons[0]?.id ?? POINT_REASON_OPTIONS[0].id;
+  const pointAdjustmentReasonSuggestions = useMemo(() => {
+    const suggestions = new Map<string, { label: string; competency?: LearningCompetency }>();
+    feedbackReasonHistory.forEach((label) => {
+      suggestions.set(label.toLocaleLowerCase(), { label });
+    });
+    pointReasonOptions.forEach((option) => {
+      const key = option.label.toLocaleLowerCase();
+      if (!suggestions.has(key)) {
+        suggestions.set(key, { label: option.label, competency: option.competency });
+      }
+    });
+    const query = pointAdjustmentReason.trim().toLocaleLowerCase();
+    return [...suggestions.values()]
+      .filter((suggestion) => !query || suggestion.label.toLocaleLowerCase().includes(query))
+      .sort((left, right) => {
+        if (!query) return 0;
+        const leftStarts = left.label.toLocaleLowerCase().startsWith(query);
+        const rightStarts = right.label.toLocaleLowerCase().startsWith(query);
+        return Number(rightStarts) - Number(leftStarts);
+      })
+      .slice(0, 10);
+  }, [feedbackReasonHistory, pointAdjustmentReason, pointReasonOptions]);
   const guideStudentItems =
     lang === 'en'
       ? [
@@ -763,6 +815,7 @@ export const DashboardView: React.FC = () => {
           ['students', tLang.dashboardTabStudents, Users],
           ['rewards', tLang.dashboardTabRewards, Gift],
           ['activities', tLang.dashboardTabActivities, Crosshair],
+          ['analytics', tLang.dashboardTabAnalytics, BarChart3],
           ['rules', tLang.dashboardTabRules, Settings],
           ['records', tLang.dashboardTabRecords, BookOpen],
         ] as const).map(([section, label, Icon]) => (
@@ -802,6 +855,19 @@ export const DashboardView: React.FC = () => {
             {tLang.undo}
           </button>
         </div>
+      )}
+
+      {dashboardSection === 'analytics' && (
+        <Suspense
+          fallback={(
+            <div className="flex min-h-64 items-center justify-center text-sm font-medium text-slate-500">
+              <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+              {tLang.loading}
+            </div>
+          )}
+        >
+          <StudentAnalyticsPanel />
+        </Suspense>
       )}
 
       {/* Class Management */}
@@ -897,42 +963,14 @@ export const DashboardView: React.FC = () => {
             {tLang.airdropAll}
           </button>
         </div>
-        <div className="border-b border-slate-200 px-5 py-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="mr-1 inline-flex items-center text-xs font-bold text-slate-700">
-              <Pin className="mr-1.5 h-3.5 w-3.5" />
-              {tLang.reasonShortcuts}
-            </span>
-            {pointReasonOptions.map((option) => (
-              <button
-                key={option.id}
-                type="button"
-                aria-pressed={option.isPinned}
-                onClick={() => store.togglePinnedReason(option.id)}
-                title={option.isPinned ? tLang.unpinReason : tLang.pinReason}
-                className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium transition-colors ${
-                  option.isPinned
-                    ? 'border-indigo-300 bg-indigo-50 text-indigo-800'
-                    : option.isRecent
-                      ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
-                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-                }`}
-              >
-                <Pin
-                  className="h-3 w-3"
-                  fill={option.isPinned ? 'currentColor' : 'none'}
-                />
-                {option.label}
-                {(option.isPinned || option.isRecent) && (
-                  <span className="text-[10px] opacity-70">
-                    {option.isPinned ? tLang.pinnedReason : tLang.recentReason}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
-          <p className="mt-2 text-xs text-slate-500">{tLang.reasonShortcutsHint}</p>
-        </div>
+        <PointReasonSettings
+          options={pointReasonOptions}
+          configuredReasons={configuredPointReasons}
+          competencyLabels={competencyLabels}
+          labels={tLang}
+          onTogglePinned={store.togglePinnedReason}
+          onSave={store.replacePointReasons}
+        />
         {selectedStudentIdsInClass.length > 0 && (
           <div className="flex flex-col gap-3 border-b border-indigo-200 bg-indigo-50 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm font-bold text-indigo-950">
@@ -1127,10 +1165,10 @@ export const DashboardView: React.FC = () => {
                               {pointReasonOptions.map((option) => (
                                 <option key={option.id} value={option.id}>
                                   {option.isPinned
-                                    ? `${tLang.pinnedReason} · ${option.label}`
+                                    ? `${tLang.pinnedReason} · ${option.displayLabel}`
                                     : option.isRecent
-                                      ? `${tLang.recentReason} · ${option.label}`
-                                      : option.label}
+                                      ? `${tLang.recentReason} · ${option.displayLabel}`
+                                      : option.displayLabel}
                                 </option>
                               ))}
                             </select>
@@ -2055,98 +2093,12 @@ export const DashboardView: React.FC = () => {
               </div>
             </div>
 
-            <div className="border-t border-slate-200 pt-4">
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <div>
-                  <h4 className="text-sm font-bold text-slate-800">{tLang.bossRankRewards}</h4>
-                  <p className="mt-1 text-xs text-slate-500">{tLang.bossRankRewardsHint}</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const usedRanks = new Set(bossRewardTiers.map((tier) => tier.rank));
-                    const nextRank = Array.from({ length: Math.max(10, currentStudents.length) }, (_, index) => index + 1)
-                      .find((rank) => !usedRanks.has(rank));
-                    if (nextRank) {
-                      setBossRewardTiers((tiers) => [...tiers, {
-                        rank: nextRank,
-                        points: 0,
-                        happiness: 0,
-                        rankPoints: 0,
-                      }]);
-                    }
-                  }}
-                  className="inline-flex shrink-0 items-center rounded-md border border-rose-200 bg-white px-3 py-2 text-xs font-medium text-rose-700 hover:bg-rose-50"
-                >
-                  <Plus className="mr-1 h-3.5 w-3.5" />
-                  {tLang.addRewardTier}
-                </button>
-              </div>
-              <div className="space-y-2">
-                {bossRewardTiers
-                  .slice()
-                  .sort((left, right) => left.rank - right.rank)
-                  .map((tier) => (
-                    <div key={tier.rank} className="grid grid-cols-2 items-end gap-2 rounded-md border border-slate-200 bg-slate-50 p-3 md:grid-cols-[minmax(88px,0.8fr)_repeat(3,minmax(0,1fr))_36px]">
-                      <label className="text-xs font-medium text-slate-600">
-                        {tLang.rewardRank}
-                        <select
-                          value={tier.rank}
-                          onChange={(e) => {
-                            const rank = Number(e.target.value);
-                            setBossRewardTiers((tiers) => tiers.map((item) => item.rank === tier.rank ? { ...item, rank } : item));
-                          }}
-                          className="mt-1 w-full rounded-md border border-slate-300 bg-white p-2 text-sm"
-                        >
-                          {Array.from({ length: Math.max(10, currentStudents.length) }, (_, index) => index + 1).map((rank) => (
-                            <option key={rank} value={rank} disabled={rank !== tier.rank && bossRewardTiers.some((item) => item.rank === rank)}>
-                              {tLang.rewardRankOption.replace('{rank}', rank.toString())}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="text-xs font-medium text-slate-600">
-                        {tLang.rewardPoints}
-                        <input
-                          type="number"
-                          min="0"
-                          value={tier.points}
-                          onChange={(e) => setBossRewardTiers((tiers) => tiers.map((item) => item.rank === tier.rank ? { ...item, points: Number(e.target.value) } : item))}
-                          className="mt-1 w-full min-w-0 rounded-md border border-slate-300 bg-white p-2 text-sm"
-                        />
-                      </label>
-                      <label className="text-xs font-medium text-slate-600">
-                        {tLang.rewardRankPoints}
-                        <input
-                          type="number"
-                          min="0"
-                          value={tier.rankPoints}
-                          onChange={(e) => setBossRewardTiers((tiers) => tiers.map((item) => item.rank === tier.rank ? { ...item, rankPoints: Number(e.target.value) } : item))}
-                          className="mt-1 w-full min-w-0 rounded-md border border-slate-300 bg-white p-2 text-sm"
-                        />
-                      </label>
-                      <label className="text-xs font-medium text-slate-600">
-                        {tLang.rewardHappiness}
-                        <input
-                          type="number"
-                          min="0"
-                          value={tier.happiness}
-                          onChange={(e) => setBossRewardTiers((tiers) => tiers.map((item) => item.rank === tier.rank ? { ...item, happiness: Number(e.target.value) } : item))}
-                          className="mt-1 w-full min-w-0 rounded-md border border-slate-300 bg-white p-2 text-sm"
-                        />
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() => setBossRewardTiers((tiers) => tiers.filter((item) => item.rank !== tier.rank))}
-                        className="col-span-2 flex h-9 w-9 items-center justify-center justify-self-end rounded-md text-slate-400 hover:bg-rose-100 hover:text-rose-600 md:col-span-1 md:justify-self-auto"
-                        title={tLang.removeRewardTier}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
-                  ))}
-              </div>
-            </div>
+            <BossRewardSettings
+              tiers={bossRewardTiers}
+              onChange={setBossRewardTiers}
+              studentCount={currentStudents.length}
+              labels={tLang}
+            />
 
             <button
               onClick={() => {
@@ -2900,19 +2852,73 @@ export const DashboardView: React.FC = () => {
                   autoFocus
                 />
               </label>
-              <label className="mt-4 block text-sm font-medium text-slate-700">
-                {tLang.airdropReason}
-                <input
-                  type="text"
-                  value={pointAdjustmentReason}
-                  onChange={(e) => setPointAdjustmentReason(e.target.value)}
-                  className="mt-1 w-full rounded-md border border-slate-300 p-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
-                  placeholder={tLang.airdropReasonPlaceholder}
-                />
+              <div className="mt-4 text-sm font-medium text-slate-700">
+                <label htmlFor="point-adjustment-reason">{tLang.airdropReason}</label>
+                <div
+                  className="relative"
+                  onBlur={(event) => {
+                    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                      setReasonSuggestionsOpen(false);
+                    }
+                  }}
+                >
+                  <input
+                    id="point-adjustment-reason"
+                    type="text"
+                    role="combobox"
+                    aria-autocomplete="list"
+                    aria-expanded={reasonSuggestionsOpen}
+                    aria-controls="point-adjustment-reason-options"
+                    value={pointAdjustmentReason}
+                    onFocus={() => setReasonSuggestionsOpen(true)}
+                    onChange={(event) => {
+                      setPointAdjustmentReason(event.target.value);
+                      setReasonSuggestionsOpen(true);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape') setReasonSuggestionsOpen(false);
+                    }}
+                    className="mt-1 w-full rounded-md border border-slate-300 p-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
+                    placeholder={tLang.airdropReasonPlaceholder}
+                    autoComplete="off"
+                  />
+                  {reasonSuggestionsOpen && pointAdjustmentReasonSuggestions.length > 0 && (
+                    <div
+                      id="point-adjustment-reason-options"
+                      role="listbox"
+                      className="absolute z-20 mt-1 max-h-52 w-full overflow-y-auto rounded-md border border-slate-200 bg-white p-1 shadow-lg"
+                    >
+                      {pointAdjustmentReasonSuggestions.map((suggestion) => (
+                        <button
+                          key={`${suggestion.label}-${suggestion.competency ?? 'history'}`}
+                          type="button"
+                          role="option"
+                          aria-selected={pointAdjustmentReason === suggestion.label}
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => {
+                            setPointAdjustmentReason(suggestion.label);
+                            if (suggestion.competency) {
+                              setPointAdjustmentCompetency(suggestion.competency);
+                            }
+                            setReasonSuggestionsOpen(false);
+                          }}
+                          className="flex w-full items-center justify-between gap-3 rounded px-3 py-2 text-left text-sm text-slate-700 hover:bg-indigo-50 hover:text-indigo-900"
+                        >
+                          <span>{suggestion.label}</span>
+                          {suggestion.competency && (
+                            <span className="shrink-0 text-xs text-slate-400">
+                              {competencyLabels[suggestion.competency]}
+                            </span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 <span className="mt-1 block text-xs font-normal text-slate-500">
-                  {tLang.feedbackReasonRequired}
+                  {tLang.feedbackReasonHistoryHint}
                 </span>
-              </label>
+              </div>
               <label className="mt-4 block text-sm font-medium text-slate-700">
                 {tLang.feedbackCompetency}
                 <select
@@ -2933,6 +2939,7 @@ export const DashboardView: React.FC = () => {
                   setPointAdjustmentAmount('');
                   setPointAdjustmentReason('');
                   setPointAdjustmentCompetency('participation');
+                  setReasonSuggestionsOpen(false);
                 }}
                 className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
               >
@@ -2969,6 +2976,7 @@ export const DashboardView: React.FC = () => {
                   setPointAdjustmentAmount('');
                   setPointAdjustmentReason('');
                   setPointAdjustmentCompetency('participation');
+                  setReasonSuggestionsOpen(false);
                 }}
                 disabled={
                   !Number.isFinite(Number(pointAdjustmentAmount)) ||

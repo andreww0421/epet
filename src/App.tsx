@@ -1,12 +1,25 @@
-import React, { useEffect } from 'react';
-import { Dog, Users, Settings, Smile, AlertCircle, Dices } from 'lucide-react';
+import React, { lazy, Suspense, useEffect } from 'react';
+import {
+  AlertCircle, CloudOff, Database, Dices, Dog, RefreshCw, Settings, Smile, Users,
+} from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from './store/useStore';
 import { translations } from './i18n/translations';
-import { ClassroomView } from './components/ClassroomView';
-import { DashboardView } from './components/DashboardView';
+import { useBackendSync } from './hooks/useBackendSync';
+
+const ClassroomView = lazy(() =>
+  import('./components/ClassroomView').then((module) => ({
+    default: module.ClassroomView,
+  })),
+);
+const DashboardView = lazy(() =>
+  import('./components/DashboardView').then((module) => ({
+    default: module.DashboardView,
+  })),
+);
 
 export default function App() {
+  const backendStatus = useBackendSync();
   const {
     view,
     toast,
@@ -41,31 +54,63 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16">
             <div className="flex items-center">
-              <Dog className="h-8 w-8 text-indigo-600 mr-3" />
-              <span className="font-bold text-xl text-gray-900">{tLang.appTitle}</span>
+              <Dog className="mr-2 h-8 w-8 shrink-0 text-indigo-600 sm:mr-3" />
+              <span className="whitespace-nowrap text-base font-bold text-gray-900 sm:text-xl">
+                {tLang.appTitle}
+              </span>
             </div>
-            <div className="flex items-center space-x-4">
+            <div className="flex items-center gap-1.5 sm:gap-4">
+              <span
+                className={`hidden h-8 w-8 items-center justify-center rounded-md sm:inline-flex ${
+                  backendStatus === 'connected'
+                    ? 'bg-emerald-50 text-emerald-700'
+                    : backendStatus === 'conflict'
+                      ? 'bg-amber-50 text-amber-700'
+                      : 'bg-slate-100 text-slate-500'
+                }`}
+                title={
+                  backendStatus === 'connected'
+                    ? (lang === 'en' ? 'Backend synchronized' : '後端已同步')
+                    : backendStatus === 'saving'
+                      ? (lang === 'en' ? 'Saving to backend' : '正在同步後端')
+                      : backendStatus === 'conflict'
+                        ? (lang === 'en' ? 'Backend revision conflict' : '後端版本衝突')
+                        : (lang === 'en' ? 'Offline local cache' : '離線本機快取')
+                }
+              >
+                {backendStatus === 'connected' ? (
+                  <Database className="h-4 w-4" />
+                ) : backendStatus === 'saving' || backendStatus === 'checking' ? (
+                  <RefreshCw className="h-4 w-4 animate-spin" />
+                ) : (
+                  <CloudOff className="h-4 w-4" />
+                )}
+              </span>
               <button
                 onClick={() => setView('classroom')}
-                className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                aria-label={tLang.classroom}
+                title={tLang.classroom}
+                className={`flex h-10 w-10 items-center justify-center rounded-md text-sm font-medium transition-colors sm:h-auto sm:w-auto sm:px-4 sm:py-2 ${
                   view === 'classroom' 
                     ? 'bg-amber-100 text-amber-800' 
                     : 'text-gray-600 hover:bg-gray-100'
                 }`}
               >
-                <Users className="h-4 w-4 mr-2" />
-                {tLang.classroom}
+                <Users className="h-4 w-4 sm:mr-2" />
+                <span className="hidden sm:inline">{tLang.classroom}</span>
               </button>
               <button
                 onClick={() => setView('dashboard')}
-                className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                aria-label={tLang.dashboard}
+                title={tLang.dashboard}
+                className={`flex h-10 w-10 items-center justify-center rounded-md text-sm font-medium transition-colors sm:h-auto sm:w-auto sm:px-4 sm:py-2 ${
                   view === 'dashboard' 
                     ? 'bg-indigo-100 text-indigo-800' 
                     : 'text-gray-600 hover:bg-gray-100'
                 }`}
               >
-                <Settings className="h-4 w-4 mr-2" />
-                {tLang.dashboard}
+                <Settings className="h-4 w-4 sm:mr-2" />
+                <span className="hidden sm:inline">{tLang.dashboard}</span>
               </button>
             </div>
           </div>
@@ -74,7 +119,16 @@ export default function App() {
 
       {/* Main Content */}
       <main className="flex-1 overflow-auto">
-        {view === 'dashboard' ? <DashboardView /> : <ClassroomView />}
+        <Suspense
+          fallback={(
+            <div className="flex min-h-64 items-center justify-center text-sm font-medium text-slate-500">
+              <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+              {tLang.loading}
+            </div>
+          )}
+        >
+          {view === 'dashboard' ? <DashboardView /> : <ClassroomView />}
+        </Suspense>
       </main>
 
       {/* Upgrade Gacha Reward Modal */}

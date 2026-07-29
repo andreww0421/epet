@@ -1,0 +1,24 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "epet-api",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-07-29",
+  "workers_dev": true,
+  "placement": {
+    "mode": "smart"
+  },
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "ALLOWED_ORIGINS": "https://andreww0421.github.io,http://localhost:3000,http://127.0.0.1:3000"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "epet-production",
+      "database_id": "bd5c5ef9-7910-4733-85ab-b17cd72d2689",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

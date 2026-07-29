@@ -1,0 +1,23 @@
+import { spawn } from 'node:child_process';
+
+const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const children = [
+  spawn(npmCommand, ['run', 'dev:api'], { stdio: 'inherit' }),
+  spawn(npmCommand, ['run', 'dev'], { stdio: 'inherit' }),
+];
+
+const stop = () => {
+  children.forEach((child) => child.kill());
+};
+
+process.on('SIGINT', stop);
+process.on('SIGTERM', stop);
+
+const exitCodes = await Promise.all(
+  children.map(
+    (child) =>
+      new Promise((resolve) => child.on('exit', (code) => resolve(code ?? 0))),
+  ),
+);
+
+process.exit(exitCodes.find((code) => code !== 0) ?? 0);

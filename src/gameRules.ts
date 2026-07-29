@@ -1,3 +1,15 @@
+import {
+  LEARNING_COMPETENCIES,
+  isLearningCompetency,
+  type LearningCompetency,
+} from '../shared/education';
+
+export {
+  LEARNING_COMPETENCIES,
+  isLearningCompetency,
+  type LearningCompetency,
+} from '../shared/education';
+
 export type PenaltyStatusSource = 'autoPenalty' | 'discipline';
 
 export type DisciplineRecordType = 'warning' | 'autoPenalty' | 'discipline';
@@ -10,24 +22,6 @@ export type DisciplineRecord = {
 };
 
 export type PointAdjustmentSource = 'quick' | 'manual' | 'airdrop' | 'dailyTask';
-
-export type LearningCompetency =
-  | 'participation'
-  | 'collaboration'
-  | 'selfManagement'
-  | 'assignmentQuality'
-  | 'growth';
-
-export const LEARNING_COMPETENCIES: LearningCompetency[] = [
-  'participation',
-  'collaboration',
-  'selfManagement',
-  'assignmentQuality',
-  'growth',
-];
-
-export const isLearningCompetency = (value: unknown): value is LearningCompetency =>
-  LEARNING_COMPETENCIES.includes(value as LearningCompetency);
 
 export type ClassGoal = {
   id: string;
@@ -101,6 +95,7 @@ export type StudentRuleState = {
   bossRewardRecords?: BossRewardRecord[];
   dailyProgress?: DailyProgress;
   lastBossDamage?: number;
+  lastBossFairScore?: number;
 };
 
 export type PenaltyAmounts = {
@@ -119,6 +114,7 @@ export type WorldBoss = {
   participationReward?: BossReward;
   improvementReward?: BossReward;
   contributions: Record<string, number>;
+  attackCounts?: Record<string, number>;
   isActive: boolean;
 };
 
@@ -129,6 +125,8 @@ export type BossReward = {
   happiness: number;
   rankPoints: number;
 };
+
+export type BossRewardStep = BossReward;
 
 export type BossRewardTier = {
   rank: number;
@@ -142,8 +140,12 @@ export type BossContributionStanding = {
   studentId: string;
   studentName: string;
   damage: number;
+  attackCount: number;
+  fairScore: number;
   previousDamage: number;
+  previousFairScore: number;
   improvementAmount: number;
+  fairImprovementAmount: number;
   rewardPoints: number;
   rewardRankPoints: number;
   rewardHappiness: number;
@@ -239,6 +241,7 @@ export const TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST = 20;
 export const TEAM_BATTLE_TEAM_BONUS_POINTS = 10;
 export const TEAM_BATTLE_TEAM_BONUS_HAPPINESS = 6;
 export const BOSS_ATTACK_FULLNESS_COST = 20;
+export const FAIR_BOSS_RANKING_ATTACK_CAP = 3;
 export const DEFAULT_BOSS_ATTACK_MAX_TARGETS = 4;
 export const DEFAULT_BOSS_ATTACK_DAMAGE = 20;
 export const DEFAULT_BOSS_PARTICIPATION_REWARD: BossReward = { points: 10, happiness: 5, rankPoints: 5 };
@@ -254,6 +257,63 @@ export const clamp = (value: number, min: number, max: number) => Math.min(max, 
 export const toFiniteNumber = (value: unknown, fallback: number) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const normalizeBossRewardStep = (step: BossRewardStep): BossRewardStep => ({
+  points: Math.max(0, Math.floor(toFiniteNumber(step.points, 0))),
+  happiness: Math.max(0, Math.floor(toFiniteNumber(step.happiness, 0))),
+  rankPoints: Math.max(0, Math.floor(toFiniteNumber(step.rankPoints, 0))),
+});
+
+export const createAutomatedBossRewardTier = (
+  tiers: BossRewardTier[],
+  rank: number,
+  step: BossRewardStep,
+): BossRewardTier => {
+  const safeRank = Math.max(1, Math.floor(toFiniteNumber(rank, 1)));
+  const safeStep = normalizeBossRewardStep(step);
+  const sorted = tiers
+    .slice()
+    .sort((left, right) => left.rank - right.rank);
+  const existing = sorted.find((tier) => tier.rank === safeRank);
+  if (existing) return { ...existing };
+  const lowerTiers = sorted.filter((tier) => tier.rank < safeRank);
+  const lower = lowerTiers[lowerTiers.length - 1];
+  const higher = sorted.find((tier) => tier.rank > safeRank);
+  const anchor = lower ?? higher;
+  if (!anchor) {
+    return { rank: safeRank, points: 0, happiness: 0, rankPoints: 0 };
+  }
+
+  const distance = Math.abs(safeRank - anchor.rank);
+  const direction = lower ? -1 : 1;
+  return {
+    rank: safeRank,
+    points: Math.max(0, anchor.points + direction * safeStep.points * distance),
+    happiness: Math.max(0, anchor.happiness + direction * safeStep.happiness * distance),
+    rankPoints: Math.max(0, anchor.rankPoints + direction * safeStep.rankPoints * distance),
+  };
+};
+
+export const recalculateBossRewardTiers = (
+  tiers: BossRewardTier[],
+  step: BossRewardStep,
+) => {
+  const sorted = tiers
+    .slice()
+    .sort((left, right) => left.rank - right.rank);
+  if (sorted.length === 0) return [];
+  const safeStep = normalizeBossRewardStep(step);
+  const base = sorted[0];
+  return sorted.map((tier) => {
+    const distance = Math.max(0, tier.rank - base.rank);
+    return {
+      rank: tier.rank,
+      points: Math.max(0, base.points - safeStep.points * distance),
+      happiness: Math.max(0, base.happiness - safeStep.happiness * distance),
+      rankPoints: Math.max(0, base.rankPoints - safeStep.rankPoints * distance),
+    };
+  });
 };
 
 export const getUpcomingUpgradeGachaLevel = (currentLevel: number) =>
@@ -952,6 +1012,10 @@ export const attackWorldBoss = <T extends StudentRuleState & { id: string }>(
       ...boss.contributions,
       [student.id]: (boss.contributions[student.id] ?? 0) + damageDealt,
     },
+    attackCounts: {
+      ...(boss.attackCounts ?? {}),
+      [student.id]: (boss.attackCounts?.[student.id] ?? 0) + 1,
+    },
     isActive: newHp > 0,
   };
 
@@ -1036,26 +1100,65 @@ export const resolveSharedBossAttack = <T extends StudentRuleState>(
 };
 
 export const getBossContributionStandings = <
-  T extends Pick<StudentRuleState, 'points' | 'pet' | 'lastBossDamage'> & { id: string; name: string },
+  T extends Pick<
+    StudentRuleState,
+    'points' | 'pet' | 'lastBossDamage' | 'lastBossFairScore'
+  > & { id: string; name: string },
 >(students: T[], boss: WorldBoss): BossContributionStanding[] => {
   const rewardsByRank = new Map(boss.rewardTiers.map((tier) => [tier.rank, tier]));
   const participationReward = boss.participationReward ?? DEFAULT_BOSS_PARTICIPATION_REWARD;
   const improvementReward = boss.improvementReward ?? DEFAULT_BOSS_IMPROVEMENT_REWARD;
 
   return students
-    .map((student) => ({
-      student,
-      damage: Math.max(0, Math.floor(toFiniteNumber(boss.contributions[student.id], 0))),
-    }))
+    .map((student) => {
+      const damage = Math.max(0, Math.floor(toFiniteNumber(boss.contributions[student.id], 0)));
+      const expectedDamagePerAttack = Math.max(1, student.pet.level * 10 + 5.5);
+      const recordedAttackCount = Math.max(
+        0,
+        Math.floor(toFiniteNumber(boss.attackCounts?.[student.id], 0)),
+      );
+      const attackCount =
+        recordedAttackCount > 0
+          ? recordedAttackCount
+          : damage > 0
+            ? Math.max(1, Math.round(damage / expectedDamagePerAttack))
+            : 0;
+      const normalizedPerformance =
+        attackCount > 0
+          ? clamp(damage / (attackCount * expectedDamagePerAttack), 0.75, 1.25)
+          : 0;
+      const cappedAttackCount = Math.min(attackCount, FAIR_BOSS_RANKING_ATTACK_CAP);
+      const confidence = cappedAttackCount / FAIR_BOSS_RANKING_ATTACK_CAP;
+      const confidenceAdjustedPerformance =
+        1 + ((normalizedPerformance - 1) * confidence);
+      const fairScore = Math.round(
+        (confidenceAdjustedPerformance * 100) + (confidence * 15),
+      );
+      return { student, damage, attackCount, fairScore };
+    })
     .filter(({ damage }) => damage > 0)
-    .sort((left, right) => right.damage - left.damage || left.student.name.localeCompare(right.student.name))
-    .map(({ student, damage }, index) => {
+    .sort(
+      (left, right) =>
+        right.fairScore - left.fairScore ||
+        left.student.name.localeCompare(right.student.name),
+    )
+    .map(({ student, damage, attackCount, fairScore }, index) => {
       const rank = index + 1;
       const reward = rewardsByRank.get(rank);
       const previousDamage = Math.max(0, Math.floor(toFiniteNumber(student.lastBossDamage, 0)));
       const improvementAmount = previousDamage > 0 ? Math.max(0, damage - previousDamage) : 0;
+      const previousFairScore = Math.max(
+        0,
+        Math.floor(toFiniteNumber(student.lastBossFairScore, 0)),
+      );
+      const hasFairScoreBaseline = previousFairScore > 0;
+      const fairImprovementAmount = hasFairScoreBaseline
+        ? Math.max(0, fairScore - previousFairScore)
+        : improvementAmount;
       const receivedImprovementReward =
-        previousDamage > 0 && improvementAmount > 0;
+        hasFairScoreBaseline
+          ? fairImprovementAmount > 0
+          : previousDamage > 0 && improvementAmount > 0;
       const rankRewardPoints = reward?.points ?? 0;
       const rankRewardRankPoints = reward?.rankPoints ?? 0;
       const rankRewardHappiness = reward?.happiness ?? 0;
@@ -1069,8 +1172,12 @@ export const getBossContributionStandings = <
         studentId: student.id,
         studentName: student.name,
         damage,
+        attackCount,
+        fairScore,
         previousDamage,
+        previousFairScore,
         improvementAmount,
+        fairImprovementAmount,
         rewardPoints: rankRewardPoints + participationReward.points + improvementRewardPoints,
         rewardRankPoints:
           rankRewardRankPoints + participationRewardRankPoints + improvementRewardRankPoints,
@@ -1111,6 +1218,7 @@ export const applyBossContributionRewards = <
         points: clamp(student.points + standing.rewardPoints, 0, maxPoints),
         rankPoints: Math.max(0, (student.rankPoints ?? 0) + standing.rewardRankPoints),
         lastBossDamage: standing.damage,
+        lastBossFairScore: standing.fairScore,
         bossRewardRecords: appendRecord(
           student.bossRewardRecords,
           {
@@ -1120,8 +1228,12 @@ export const applyBossContributionRewards = <
             createdAt: now,
             rank: standing.rank,
             damage: standing.damage,
+            attackCount: standing.attackCount,
+            fairScore: standing.fairScore,
             previousDamage: standing.previousDamage,
+            previousFairScore: standing.previousFairScore,
             improvementAmount: standing.improvementAmount,
+            fairImprovementAmount: standing.fairImprovementAmount,
             rewardPoints: standing.rewardPoints,
             rewardRankPoints: standing.rewardRankPoints,
             rewardHappiness: standing.rewardHappiness,

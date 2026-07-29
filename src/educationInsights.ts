@@ -5,6 +5,10 @@ import {
   type PointAdjustmentRecord,
   LEARNING_COMPETENCIES,
 } from './gameRules';
+import {
+  getActiveLearningEvidence,
+  type LearningEvidenceRecord,
+} from '../shared/education';
 
 export type StudentFeedbackSource = {
   id: string;
@@ -70,10 +74,20 @@ export const getRecordCompetency = (
   record.competency ?? (record.reasonId ? LEGACY_REASON_COMPETENCIES[record.reasonId] : undefined);
 
 export const getStudentGoalProgress = (
-  student: Pick<StudentFeedbackSource, 'pointAdjustmentRecords'>,
+  student: Pick<StudentFeedbackSource, 'id' | 'pointAdjustmentRecords'>,
   goal: ClassGoal | undefined,
+  evidence?: LearningEvidenceRecord[],
 ) => {
   if (!goal) return 0;
+  if (evidence) {
+    return getActiveLearningEvidence(evidence).filter(
+      (record) =>
+        record.studentId === student.id &&
+        record.createdAt >= goal.createdAt &&
+        record.level !== 'needsSupport' &&
+        record.competency === goal.competency,
+    ).length;
+  }
 
   return (student.pointAdjustmentRecords ?? []).filter(
     (record) =>
@@ -84,16 +98,21 @@ export const getStudentGoalProgress = (
 };
 
 export const getClassGoalProgress = (
-  students: Array<Pick<StudentFeedbackSource, 'pointAdjustmentRecords'>>,
+  students: Array<Pick<StudentFeedbackSource, 'id' | 'pointAdjustmentRecords'>>,
   goal: ClassGoal | undefined,
-) => students.reduce((total, student) => total + getStudentGoalProgress(student, goal), 0);
+  evidence?: LearningEvidenceRecord[],
+) => students.reduce(
+  (total, student) => total + getStudentGoalProgress(student, goal, evidence),
+  0,
+);
 
 export const getClassGoalCoverage = (
-  students: Array<Pick<StudentFeedbackSource, 'pointAdjustmentRecords'>>,
+  students: Array<Pick<StudentFeedbackSource, 'id' | 'pointAdjustmentRecords'>>,
   goal: ClassGoal | undefined,
+  evidence?: LearningEvidenceRecord[],
 ) => {
   const studentsReached = goal
-    ? students.filter((student) => getStudentGoalProgress(student, goal) > 0).length
+    ? students.filter((student) => getStudentGoalProgress(student, goal, evidence) > 0).length
     : 0;
 
   return {
@@ -104,12 +123,13 @@ export const getClassGoalCoverage = (
 };
 
 export const getNextStudentGoal = (
-  student: Pick<StudentFeedbackSource, 'pointAdjustmentRecords'>,
+  student: Pick<StudentFeedbackSource, 'id' | 'pointAdjustmentRecords'>,
   goals: ClassGoal[],
+  evidence?: LearningEvidenceRecord[],
 ) => {
   const goalsWithProgress = goals.map((goal) => ({
     goal,
-    progress: getStudentGoalProgress(student, goal),
+    progress: getStudentGoalProgress(student, goal, evidence),
   }));
 
   return (
@@ -133,8 +153,10 @@ export const getWeeklyStudentGrowth = (
   students: StudentFeedbackSource[],
   now = Date.now(),
   days = 7,
+  evidence?: LearningEvidenceRecord[],
 ): WeeklyStudentGrowth[] => {
   const since = now - Math.max(1, days) * 24 * 60 * 60 * 1000;
+  const activeEvidence = evidence ? getActiveLearningEvidence(evidence) : null;
 
   return students
     .map((student) => {
@@ -146,10 +168,21 @@ export const getWeeklyStudentGrowth = (
         .filter((record) => record.createdAt >= since)
         .forEach((record) => {
           netPoints += record.amount;
-          if (record.amount <= 0) return;
+          if (activeEvidence || record.amount <= 0) return;
           positiveFeedbackCount += 1;
           const competency = getRecordCompetency(record);
           if (competency) competencies.add(competency);
+        });
+      activeEvidence
+        ?.filter(
+          (record) =>
+            record.studentId === student.id &&
+            record.createdAt >= since &&
+            record.level !== 'needsSupport',
+        )
+        .forEach((record) => {
+          positiveFeedbackCount += 1;
+          competencies.add(record.competency);
         });
 
       return {
@@ -164,7 +197,7 @@ export const getWeeklyStudentGrowth = (
       (left, right) =>
         right.positiveFeedbackCount - left.positiveFeedbackCount ||
         right.competencyCount - left.competencyCount ||
-        right.netPoints - left.netPoints ||
+        (!activeEvidence ? right.netPoints - left.netPoints : 0) ||
         left.studentName.localeCompare(right.studentName),
     );
 };
@@ -173,6 +206,7 @@ export const getWeeklyEducationInsights = (
   students: StudentFeedbackSource[],
   now = Date.now(),
   days = 7,
+  evidence?: LearningEvidenceRecord[],
 ): WeeklyEducationInsights => {
   const since = now - Math.max(1, days) * 24 * 60 * 60 * 1000;
   const previousSince = since - Math.max(1, days) * 24 * 60 * 60 * 1000;
@@ -183,7 +217,10 @@ export const getWeeklyEducationInsights = (
   const studentsWithFeedback = new Set<string>();
   const previousStudentsWithFeedback = new Set<string>();
   const collaborationStudentIds = new Set<string>();
-  const needsSupportReflections = new Map<string, DailyReflection>();
+  const needsSupportReflections = new Map<
+    string,
+    Pick<DailyReflection, 'createdAt' | 'competency' | 'text'>
+  >();
   const studentFeedbackBalance = new Map<string, { positive: number; negative: number }>(
     students.map((student) => [student.id, { positive: 0, negative: 0 }]),
   );
@@ -192,56 +229,107 @@ export const getWeeklyEducationInsights = (
   let previousPositiveCount = 0;
   let reflectionCount = 0;
 
-  students.forEach((student) => {
-    (student.pointAdjustmentRecords ?? []).forEach((record) => {
-      if (record.createdAt >= previousSince && record.createdAt < since) {
-        previousStudentsWithFeedback.add(student.id);
-        if (record.amount > 0) previousPositiveCount += 1;
-      }
-      if (record.createdAt < since) return;
-
-      studentsWithFeedback.add(student.id);
-      const balance = studentFeedbackBalance.get(student.id);
-      if (record.amount > 0) {
-        positiveCount += 1;
-        if (balance) balance.positive += 1;
-      }
-      if (record.amount < 0) {
-        negativeCount += 1;
-        if (balance) balance.negative += 1;
-      }
-
-      const competency = getRecordCompetency(record);
-      if (competency) {
-        competencyCounts[competency] += 1;
-        if (competency === 'collaboration' && record.amount > 0) {
-          collaborationStudentIds.add(student.id);
+  if (evidence) {
+    const studentIds = new Set(students.map((student) => student.id));
+    getActiveLearningEvidence(evidence)
+      .filter((record) => studentIds.has(record.studentId))
+      .forEach((record) => {
+        if (record.createdAt >= previousSince && record.createdAt < since) {
+          previousStudentsWithFeedback.add(record.studentId);
+          if (record.level !== 'needsSupport') previousPositiveCount += 1;
         }
-      }
+        if (record.createdAt < since) return;
 
-      const reasonId = record.reasonId ?? record.reasonLabel ?? 'manual';
-      const current = reasonCounts.get(reasonId);
-      reasonCounts.set(reasonId, {
-        id: reasonId,
-        label: record.reasonLabel ?? reasonId,
-        count: (current?.count ?? 0) + 1,
-      });
-    });
+        studentsWithFeedback.add(record.studentId);
+        const balance = studentFeedbackBalance.get(record.studentId);
+        if (record.level === 'needsSupport') {
+          negativeCount += 1;
+          if (balance) balance.negative += 1;
+        } else {
+          positiveCount += 1;
+          if (balance) balance.positive += 1;
+        }
 
-    (student.dailyProgress?.reflections ?? [])
-      .filter((reflection) => reflection.createdAt >= since)
-      .forEach((reflection) => {
-        if (reflection.author !== 'mentor') return;
-        reflectionCount += 1;
-        const assessment = reflection.mentorAssessment ?? reflection.selfAssessment;
-        if (assessment === 'needsSupport') {
-          const current = needsSupportReflections.get(student.id);
-          if (!current || reflection.createdAt > current.createdAt) {
-            needsSupportReflections.set(student.id, reflection);
+        competencyCounts[record.competency] += 1;
+        if (
+          record.competency === 'collaboration' &&
+          record.level !== 'needsSupport'
+        ) {
+          collaborationStudentIds.add(record.studentId);
+        }
+
+        const reasonId = record.title;
+        const current = reasonCounts.get(reasonId);
+        reasonCounts.set(reasonId, {
+          id: reasonId,
+          label: record.title,
+          count: (current?.count ?? 0) + 1,
+        });
+
+        if (record.source === 'mentorDailyFeedback') reflectionCount += 1;
+        if (record.level === 'needsSupport') {
+          const currentSupport = needsSupportReflections.get(record.studentId);
+          if (!currentSupport || record.createdAt > currentSupport.createdAt) {
+            needsSupportReflections.set(record.studentId, {
+              createdAt: record.createdAt,
+              competency: record.competency,
+              text: record.note || record.title,
+            });
           }
         }
       });
-  });
+  } else {
+    students.forEach((student) => {
+      (student.pointAdjustmentRecords ?? []).forEach((record) => {
+        if (record.createdAt >= previousSince && record.createdAt < since) {
+          previousStudentsWithFeedback.add(student.id);
+          if (record.amount > 0) previousPositiveCount += 1;
+        }
+        if (record.createdAt < since) return;
+
+        studentsWithFeedback.add(student.id);
+        const balance = studentFeedbackBalance.get(student.id);
+        if (record.amount > 0) {
+          positiveCount += 1;
+          if (balance) balance.positive += 1;
+        }
+        if (record.amount < 0) {
+          negativeCount += 1;
+          if (balance) balance.negative += 1;
+        }
+
+        const competency = getRecordCompetency(record);
+        if (competency) {
+          competencyCounts[competency] += 1;
+          if (competency === 'collaboration' && record.amount > 0) {
+            collaborationStudentIds.add(student.id);
+          }
+        }
+
+        const reasonId = record.reasonId ?? record.reasonLabel ?? 'manual';
+        const current = reasonCounts.get(reasonId);
+        reasonCounts.set(reasonId, {
+          id: reasonId,
+          label: record.reasonLabel ?? reasonId,
+          count: (current?.count ?? 0) + 1,
+        });
+      });
+
+      (student.dailyProgress?.reflections ?? [])
+        .filter((reflection) => reflection.createdAt >= since)
+        .forEach((reflection) => {
+          if (reflection.author !== 'mentor') return;
+          reflectionCount += 1;
+          const assessment = reflection.mentorAssessment ?? reflection.selfAssessment;
+          if (assessment === 'needsSupport') {
+            const current = needsSupportReflections.get(student.id);
+            if (!current || reflection.createdAt > current.createdAt) {
+              needsSupportReflections.set(student.id, reflection);
+            }
+          }
+        });
+    });
+  }
 
   const ratedCount = positiveCount + negativeCount;
 
