@@ -4,7 +4,7 @@ import {
   AppData, Student, ClassData, UpgradeRewardState, PetAnimationMode,
   PointAdjustmentSource, BattleMode, Language, BossRewardTier, BossVictoryResult,
   ClassGoal, LearningCompetency, BossReward, BossAttackMode, MentorDailyFeedbackInput,
-  PointReasonOption, LearningEvidenceInput,
+  PointReasonOption, LearningEvidenceInput, ExamRecord,
 } from './types';
 import { createLearningEvidenceRecord } from '../../shared/education';
 import { 
@@ -16,6 +16,7 @@ import {
   sanitizeTeamAssignments, getTeamMembers, createTeamId, normalizeWorldBoss,
   normalizePointReasonOptions,
 } from './utils';
+import { normalizeExamRecords } from '../examAnalytics';
 import { getPublicStudentName } from '../studentPresentation';
 import { resolveBossRewardsOnBackend } from '../services/backendApi';
 import { 
@@ -86,6 +87,8 @@ type StoreState = {
     goal: Pick<ClassGoal, 'title' | 'competency' | 'targetCount'> | null,
     goalId?: string,
   ) => void;
+  saveExamRecord: (exam: ExamRecord) => void;
+  deleteExamRecord: (examId: string) => void;
 
   // Student CRUD
   addStudent: (student: Student) => void;
@@ -252,7 +255,13 @@ export const useStore = create<StoreState>()(
       })),
 
       addClass: (name) => set((state) => {
-        const newClass = { id: Date.now().toString(), name, students: [] };
+        const newClass = {
+          id: Date.now().toString(),
+          name,
+          students: [],
+          learningEvidenceRecords: [],
+          examRecords: [],
+        };
         get().showToast(`${translations[state.data.settings?.language || 'zh'].classAdded}${name}`);
         return { data: { ...state.data, classes: [...state.data.classes, newClass], currentClassId: newClass.id } };
       }),
@@ -448,6 +457,66 @@ export const useStore = create<StoreState>()(
         return { data: { ...state.data, classes: nextClasses } };
       }),
 
+      saveExamRecord: (exam) => set((state) => {
+        const currentClassIndex = state.data.classes.findIndex(
+          (classData) => classData.id === state.data.currentClassId,
+        );
+        if (currentClassIndex === -1) return state;
+        const currentClass = state.data.classes[currentClassIndex];
+        const now = Date.now();
+        const normalizedExam = normalizeExamRecords(
+          [{ ...exam, updatedAt: now }],
+          new Set(currentClass.students.map((student) => student.id)),
+          now,
+        )[0];
+        if (!normalizedExam || normalizedExam.items.length === 0) return state;
+
+        const nextClasses = [...state.data.classes];
+        nextClasses[currentClassIndex] = {
+          ...currentClass,
+          examRecords: [
+            normalizedExam,
+            ...(currentClass.examRecords ?? []).filter(
+              (candidate) => candidate.id !== normalizedExam.id,
+            ),
+          ].sort(
+            (left, right) =>
+              right.examDate.localeCompare(left.examDate) ||
+              right.createdAt - left.createdAt,
+          ),
+        };
+        const lang = state.data.settings?.language || 'zh';
+        get().showToast(
+          lang === 'en' ? 'Assessment saved.' : '考試成績已保存。',
+          'success',
+        );
+        return { data: { ...state.data, classes: nextClasses } };
+      }),
+
+      deleteExamRecord: (examId) => set((state) => {
+        const currentClassIndex = state.data.classes.findIndex(
+          (classData) => classData.id === state.data.currentClassId,
+        );
+        if (currentClassIndex === -1) return state;
+        const currentClass = state.data.classes[currentClassIndex];
+        if (!(currentClass.examRecords ?? []).some((exam) => exam.id === examId)) {
+          return state;
+        }
+        const nextClasses = [...state.data.classes];
+        nextClasses[currentClassIndex] = {
+          ...currentClass,
+          examRecords: (currentClass.examRecords ?? []).filter(
+            (exam) => exam.id !== examId,
+          ),
+        };
+        const lang = state.data.settings?.language || 'zh';
+        get().showToast(
+          lang === 'en' ? 'Assessment deleted.' : '考試紀錄已刪除。',
+          'success',
+        );
+        return { data: { ...state.data, classes: nextClasses } };
+      }),
+
       addStudent: (student) => set((state) => {
         const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
         if (currentClassIndex === -1) return state;
@@ -491,7 +560,16 @@ export const useStore = create<StoreState>()(
         get().showToast(`${translations[state.data.settings?.language || 'zh'].deletedStudent}${className}`);
 
         const nextClasses = [...state.data.classes];
-        nextClasses[currentClassIndex] = { ...nextClasses[currentClassIndex], students: nextStudents };
+        nextClasses[currentClassIndex] = {
+          ...nextClasses[currentClassIndex],
+          students: nextStudents,
+          examRecords: (nextClasses[currentClassIndex].examRecords ?? []).map(
+            (exam) => ({
+              ...exam,
+              results: exam.results.filter((result) => result.studentId !== studentId),
+            }),
+          ),
+        };
         
         return { data: { ...state.data, classes: nextClasses } };
       }),

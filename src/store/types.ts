@@ -69,6 +69,29 @@ export type PublicNameMode = 'full' | 'masked';
 export type PublicLeaderboardMode = 'growth' | 'rank' | 'hidden';
 export type PetCareMode = 'rest' | 'death';
 
+export type ExamItem = {
+  id: string;
+  name: string;
+  maxScore: number;
+};
+
+export type ExamStudentResult = {
+  studentId: string;
+  scores: Record<string, number>;
+  mentorComment?: string;
+  updatedAt: number;
+};
+
+export type ExamRecord = {
+  id: string;
+  title: string;
+  examDate: string;
+  items: ExamItem[];
+  results: ExamStudentResult[];
+  createdAt: number;
+  updatedAt: number;
+};
+
 export type ClassData = {
   id: string;
   name: string;
@@ -76,6 +99,7 @@ export type ClassData = {
   activeBoss?: WorldBoss;
   classGoals?: ClassGoal[];
   learningEvidenceRecords?: LearningEvidenceRecord[];
+  examRecords?: ExamRecord[];
 };
 
 export type AppData = {

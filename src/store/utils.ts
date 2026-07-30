@@ -13,6 +13,7 @@ import {
   AppData, Student, DisciplineRecord, PointAdjustmentRecord, WorldBoss, ClassGoal,
   PointReasonOption, LearningEvidenceRecord,
 } from './types';
+import { normalizeExamRecords } from '../examAnalytics';
 import {
   createLearningEvidenceRecord,
   normalizeLearningEvidenceRecords,
@@ -239,6 +240,7 @@ export const createInitialData = (now = Date.now()): AppData => ({
       name: DEFAULT_CLASS_NAME,
       students: [],
       learningEvidenceRecords: [],
+      examRecords: [],
     },
   ],
   currentClassId: 'default',
@@ -605,6 +607,7 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
       activeBoss: normalizeWorldBoss(classItem?.activeBoss, index, now),
       classGoals,
       learningEvidenceRecords,
+      examRecords: normalizeExamRecords(classItem?.examRecords, validStudentIds, now),
     };
   });
 

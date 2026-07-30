@@ -42,6 +42,11 @@ import {
   computeStudentLearningAnalytics,
   createLearningEvidenceRecord,
 } from '../shared/education.js';
+import {
+  computeExamStudentAnalysis,
+  normalizeExamRecords,
+} from '../src/examAnalytics.js';
+import { createExamReportHtml } from '../src/examReport.js';
 
 const memoryStorage = new Map<string, string>();
 Object.defineProperty(globalThis, 'localStorage', {
@@ -1562,6 +1567,173 @@ test('weekly education insights ignore game points when learning evidence is ava
   assert.equal(insights.negativeCount, 1);
   assert.equal(insights.competencyCounts.participation, 0);
   assert.equal(insights.competencyCounts.collaboration, 1);
+});
+
+test('exam analytics calculates normalized trends, class comparison, strengths, and weaknesses', () => {
+  const exams = normalizeExamRecords(
+    [
+      {
+        id: 'exam-current',
+        title: 'Second Assessment',
+        examDate: '2026-07-01',
+        createdAt: 2000,
+        updatedAt: 2000,
+        items: [
+          { id: 'math-current', name: 'Math', maxScore: 100 },
+          { id: 'reading-current', name: 'Reading', maxScore: 100 },
+        ],
+        results: [
+          {
+            studentId: 'a',
+            scores: { 'math-current': 90, 'reading-current': 50 },
+            mentorComment: 'Use evidence from the text.',
+            updatedAt: 2000,
+          },
+          {
+            studentId: 'b',
+            scores: { 'math-current': 50, 'reading-current': 70 },
+            updatedAt: 2000,
+          },
+        ],
+      },
+      {
+        id: 'exam-previous',
+        title: 'First Assessment',
+        examDate: '2026-06-01',
+        createdAt: 1000,
+        updatedAt: 1000,
+        items: [
+          { id: 'math-previous', name: 'Math', maxScore: 100 },
+          { id: 'reading-previous', name: 'Reading', maxScore: 50 },
+        ],
+        results: [
+          {
+            studentId: 'a',
+            scores: { 'math-previous': 60, 'reading-previous': 40 },
+            updatedAt: 1000,
+          },
+        ],
+      },
+    ],
+    new Set(['a', 'b']),
+    3000,
+  );
+  const analysis = computeExamStudentAnalysis(exams, 'exam-current', 'a');
+
+  assert.ok(analysis);
+  assert.equal(Math.round(analysis.overallPercent ?? 0), 70);
+  assert.equal(Math.round(analysis.previousOverallPercent ?? 0), 67);
+  assert.equal(analysis.trend, 'improving');
+  assert.equal(Math.round(analysis.classAveragePercent ?? 0), 65);
+  assert.deepEqual(
+    analysis.strengthItems.map((item) => item.name),
+    ['Math'],
+  );
+  assert.deepEqual(
+    analysis.weaknessItems.map((item) => item.name),
+    ['Reading'],
+  );
+  assert.equal(
+    Math.round(
+      analysis.itemAnalyses.find((item) => item.name === 'Reading')?.trendDelta ?? 0,
+    ),
+    -30,
+  );
+  assert.equal(analysis.mentorComment, 'Use evidence from the text.');
+});
+
+test('normalizeAppData keeps legacy saves compatible and sanitizes exam records', () => {
+  const normalized = normalizeAppData(
+    {
+      currentClassId: 'class-a',
+      classes: [
+        {
+          id: 'class-a',
+          name: 'Class A',
+          students: [
+            { id: 'legacy', name: 'Legacy' },
+            { id: 'saved', name: 'Saved' },
+          ],
+          examRecords: [{
+            id: 'exam-1',
+            title: '  Midterm  ',
+            examDate: '2026-07-01',
+            createdAt: 1000,
+            items: [
+              { id: 'item-a', name: ' Math ', maxScore: '50' },
+              { id: 'item-b', name: 'math', maxScore: 100 },
+            ],
+            results: [
+              {
+                studentId: 'saved',
+                scores: { 'item-a': '70', 'item-b': 80, unknown: 10 },
+                mentorComment: '  Keep showing your work.  ',
+              },
+              {
+                studentId: 'missing',
+                scores: { 'item-a': 20 },
+              },
+            ],
+          }],
+        },
+      ],
+    },
+    2000,
+  );
+
+  assert.equal(normalized.classes[0].examRecords?.length, 1);
+  assert.equal(normalized.classes[0].examRecords?.[0].title, 'Midterm');
+  assert.deepEqual(normalized.classes[0].examRecords?.[0].items, [
+    { id: 'item-a', name: 'Math', maxScore: 50 },
+  ]);
+  assert.deepEqual(normalized.classes[0].examRecords?.[0].results, [
+    {
+      studentId: 'saved',
+      scores: { 'item-a': 50 },
+      mentorComment: 'Keep showing your work.',
+      updatedAt: 1000,
+    },
+  ]);
+
+  const legacy = normalizeAppData({
+    currentClassId: 'legacy-class',
+    classes: [{ id: 'legacy-class', name: 'Legacy', students: [] }],
+  }, 2000);
+  assert.deepEqual(legacy.classes[0].examRecords, []);
+});
+
+test('individual exam report uses A4 print CSS and escapes teacher-provided content', () => {
+  const exam = normalizeExamRecords(
+    [{
+      id: 'exam-report',
+      title: 'Progress <Review>',
+      examDate: '2026-07-01',
+      items: [{ id: 'item-1', name: 'Reading', maxScore: 100 }],
+      results: [{
+        studentId: 'a',
+        scores: { 'item-1': 72 },
+        mentorComment: 'Practice <strong>daily</strong>.',
+      }],
+      createdAt: 1000,
+    }],
+    new Set(['a']),
+    1000,
+  )[0];
+  const analysis = computeExamStudentAnalysis([exam], exam.id, 'a');
+  assert.ok(analysis);
+
+  const html = createExamReportHtml({
+    className: 'Class <A>',
+    studentName: '<script>alert(1)</script>',
+    exam,
+    analysis,
+    lang: 'zh',
+  });
+
+  assert.match(html, /@page \{ size: A4 portrait;/);
+  assert.match(html, /Progress &lt;Review&gt;/);
+  assert.match(html, /Practice &lt;strong&gt;daily&lt;\/strong&gt;\./);
+  assert.doesNotMatch(html, /<script>alert\(1\)<\/script>/);
 });
 
 let failures = 0;
