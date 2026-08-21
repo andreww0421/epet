@@ -27,11 +27,19 @@ const levelTone: Record<LearningEvidenceLevel, string> = {
   mastered: 'bg-emerald-500',
 };
 
-export const StudentAnalyticsPanel: React.FC = () => {
+type StudentAnalyticsPanelProps = {
+  classId?: string;
+  readOnly?: boolean;
+};
+
+export const StudentAnalyticsPanel: React.FC<StudentAnalyticsPanelProps> = ({
+  classId,
+  readOnly = false,
+}) => {
   const { currentClass, lang, addLearningEvidence } = useStore(
     useShallow((state) => ({
       currentClass: state.data.classes.find(
-        (classData) => classData.id === state.data.currentClassId,
+        (classData) => classData.id === (classId ?? state.data.currentClassId),
       ),
       lang: state.data.settings?.language || 'zh',
       addLearningEvidence: state.addLearningEvidence,
@@ -176,8 +184,8 @@ export const StudentAnalyticsPanel: React.FC = () => {
       {students.length === 0 ? (
         <p className="px-5 py-12 text-center text-sm text-slate-500">{tLang.addStudentFirst}</p>
       ) : (
-        <div className="grid lg:grid-cols-[minmax(0,1.5fr)_minmax(320px,0.8fr)]">
-          <div className="border-b border-slate-200 p-5 lg:border-b-0 lg:border-r">
+        <div className={readOnly ? '' : 'grid lg:grid-cols-[minmax(0,1.5fr)_minmax(320px,0.8fr)]'}>
+          <div className={`border-b border-slate-200 p-5 lg:border-b-0 ${readOnly ? '' : 'lg:border-r'}`}>
             <label className="block max-w-sm text-sm font-bold text-slate-700">
               {tLang.studentAnalyticsSelect}
               <select
@@ -297,6 +305,7 @@ export const StudentAnalyticsPanel: React.FC = () => {
             )}
           </div>
 
+          {!readOnly && (
           <form
             className="p-5"
             onSubmit={(event) => {
@@ -391,10 +400,11 @@ export const StudentAnalyticsPanel: React.FC = () => {
               {tLang.saveLearningEvidence}
             </button>
           </form>
+          )}
         </div>
       )}
     </section>
-    <ExamAssessmentPanel />
+    <ExamAssessmentPanel readOnly={readOnly} classId={classId} />
     </>
   );
 };

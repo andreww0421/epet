@@ -17,36 +17,56 @@ const runtimeEnv = (
 const API_BASE = (runtimeEnv.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
 const CONFIGURED_WORKSPACE_ID = runtimeEnv.VITE_EPET_WORKSPACE?.trim();
 const WORKSPACE_STORAGE_KEY = 'epet-cloud-workspace-v1';
+const AUTH_TOKEN_STORAGE_KEY = 'epet-auth-session-v1';
 const CLOUD_WORKSPACE_PATTERN = /^ws_[a-zA-Z0-9_-]{24,61}$/;
 const REQUEST_TIMEOUT_MS = 6000;
 
-const createCloudWorkspaceId = () => {
-  if (typeof crypto === 'undefined' || typeof crypto.getRandomValues !== 'function') {
-    throw new Error('Secure random generation is unavailable');
-  }
-  if (typeof crypto.randomUUID === 'function') {
-    return `ws_${crypto.randomUUID().replaceAll('-', '')}`;
-  }
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  return `ws_${Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
-};
-
-const getWorkspaceId = () => {
+const getLegacyWorkspaceId = () => {
   if (CONFIGURED_WORKSPACE_ID) return CONFIGURED_WORKSPACE_ID;
-  if (!API_BASE) return 'local-demo';
+  if (!API_BASE) return null;
   try {
     const saved = globalThis.localStorage?.getItem(WORKSPACE_STORAGE_KEY);
     if (saved && CLOUD_WORKSPACE_PATTERN.test(saved)) return saved;
-    const created = createCloudWorkspaceId();
-    globalThis.localStorage?.setItem(WORKSPACE_STORAGE_KEY, created);
-    return created;
   } catch {
-    return createCloudWorkspaceId();
+    // Legacy capability-key storage is optional.
   }
+  return null;
 };
 
-const WORKSPACE_ID = getWorkspaceId();
+const LEGACY_WORKSPACE_ID = getLegacyWorkspaceId();
+export const hasClaimableLegacyWorkspace =
+  Boolean(LEGACY_WORKSPACE_ID && CLOUD_WORKSPACE_PATTERN.test(LEGACY_WORKSPACE_ID));
+
+export type WorkspaceRole = 'owner' | 'admin' | 'teacher' | 'viewer';
+
+export type AuthSession = {
+  user: {
+    id: string;
+    email: string;
+    displayName: string;
+    role: WorkspaceRole;
+  };
+  workspaces: Array<{
+    id: string;
+    name: string;
+    role: WorkspaceRole;
+  }>;
+  activeWorkspaceId: string | null;
+};
+
+type AuthResponse = {
+  sessionToken: string;
+  session: AuthSession;
+};
+
+let authToken = (() => {
+  try {
+    return globalThis.sessionStorage?.getItem(AUTH_TOKEN_STORAGE_KEY) ?? null;
+  } catch {
+    return null;
+  }
+})();
+let activeWorkspaceId: string | null = null;
 
 let backendAvailable = false;
 
@@ -56,30 +76,112 @@ export type BackendStateSnapshot = {
   data: AppData | null;
 };
 
+export type BackendPublicConfig = {
+  registrationEnabled: boolean;
+};
+
+export type WorkspacePrivacyExport = {
+  user: AuthSession['user'];
+  activeWorkspace: {
+    id: string;
+    role: WorkspaceRole;
+    state: AppData | null;
+  };
+  revision: {
+    current: number;
+    updatedAt: number;
+    history: Array<{
+      workspaceId: string;
+      revision: number;
+      updatedAt: number;
+      actorUserId?: string;
+      dataSizeBytes: number;
+    }>;
+  };
+  exportedAt: string;
+};
+
 export class BackendRevisionConflict extends Error {
   constructor(readonly current: BackendStateSnapshot) {
     super('Backend revision conflict');
   }
 }
 
-const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
+export class BackendAuthRequired extends Error {
+  constructor() {
+    super('Authentication is required');
+  }
+}
+
+export class BackendForbidden extends Error {
+  constructor() {
+    super('The active account cannot access this workspace');
+  }
+}
+
+export class BackendApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+  ) {
+    super(code);
+  }
+}
+
+type RequestOptions = {
+  auth?: boolean;
+  workspace?: boolean;
+};
+
+const rememberAuthToken = (token: string | null) => {
+  authToken = token;
+  try {
+    if (token) globalThis.sessionStorage?.setItem(AUTH_TOKEN_STORAGE_KEY, token);
+    else globalThis.sessionStorage?.removeItem(AUTH_TOKEN_STORAGE_KEY);
+  } catch {
+    // The in-memory session still works when storage is unavailable.
+  }
+};
+
+const request = async <T>(
+  path: string,
+  init: RequestInit = {},
+  options: RequestOptions = {},
+): Promise<T> => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
+    const headers = new Headers(init.headers);
+    if (init.body != null && !headers.has('content-type')) {
+      headers.set('content-type', 'application/json');
+    }
+    if (options.auth !== false && authToken) {
+      headers.set('authorization', `Bearer ${authToken}`);
+    }
+    if (options.workspace !== false) {
+      if (!activeWorkspaceId) throw new BackendAuthRequired();
+      headers.set('x-epet-workspace', activeWorkspaceId);
+    }
     const response = await fetch(`${API_BASE}${path}`, {
       ...init,
-      headers: {
-        'content-type': 'application/json',
-        'x-epet-workspace': WORKSPACE_ID,
-        ...init?.headers,
-      },
+      headers,
       signal: controller.signal,
     });
     const body = await response.json().catch(() => ({}));
     if (response.status === 409 && body?.current) {
       throw new BackendRevisionConflict(body.current as BackendStateSnapshot);
     }
-    if (!response.ok) throw new Error(body?.error || `HTTP_${response.status}`);
+    if (response.status === 401) {
+      if (options.auth !== false) rememberAuthToken(null);
+      throw new BackendAuthRequired();
+    }
+    if (response.status === 403) throw new BackendForbidden();
+    if (!response.ok) {
+      throw new BackendApiError(
+        response.status,
+        typeof body?.error === 'string' ? body.error : `HTTP_${response.status}`,
+      );
+    }
     backendAvailable = true;
     return body as T;
   } finally {
@@ -89,9 +191,16 @@ const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
 
 export const isBackendAvailable = () => backendAvailable;
 
+export const loadBackendPublicConfig = () =>
+  request<BackendPublicConfig>(
+    '/api/v1/health',
+    {},
+    { auth: false, workspace: false },
+  );
+
 export const probeBackend = async () => {
   try {
-    await request<{ ok: boolean }>('/api/v1/health');
+    await loadBackendPublicConfig();
     backendAvailable = true;
     return true;
   } catch {
@@ -100,8 +209,143 @@ export const probeBackend = async () => {
   }
 };
 
+const applyAuthResponse = (response: AuthResponse) => {
+  rememberAuthToken(response.sessionToken);
+  activeWorkspaceId = response.session.activeWorkspaceId
+    ?? response.session.workspaces[0]?.id
+    ?? null;
+  return {
+    ...response.session,
+    activeWorkspaceId,
+  };
+};
+
+export const loadAuthSession = async (): Promise<AuthSession | null> => {
+  if (!authToken) return null;
+  try {
+    const response = await request<{ session: AuthSession }>(
+      '/api/v1/auth/session',
+      {},
+      { workspace: false },
+    );
+    const availableIds = new Set(response.session.workspaces.map((workspace) => workspace.id));
+    activeWorkspaceId = activeWorkspaceId && availableIds.has(activeWorkspaceId)
+      ? activeWorkspaceId
+      : response.session.activeWorkspaceId ?? response.session.workspaces[0]?.id ?? null;
+    return { ...response.session, activeWorkspaceId };
+  } catch (error) {
+    if (error instanceof BackendAuthRequired) return null;
+    throw error;
+  }
+};
+
+export const loginAccount = async (input: {
+  email: string;
+  password: string;
+}) => {
+  const response = await request<AuthResponse>(
+    '/api/v1/auth/login',
+    {
+      method: 'POST',
+      body: JSON.stringify(input),
+    },
+    { auth: false, workspace: false },
+  );
+  return applyAuthResponse(response);
+};
+
+export const registerAccount = async (input: {
+  displayName: string;
+  email: string;
+  password: string;
+  claimLegacyWorkspace?: boolean;
+}) => {
+  const response = await request<AuthResponse>(
+    '/api/v1/auth/register',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        displayName: input.displayName,
+        email: input.email,
+        password: input.password,
+        legacyWorkspaceId: input.claimLegacyWorkspace && LEGACY_WORKSPACE_ID
+          ? LEGACY_WORKSPACE_ID
+          : undefined,
+      }),
+    },
+    { auth: false, workspace: false },
+  );
+  return applyAuthResponse(response);
+};
+
+export const logoutAccount = async () => {
+  const sessionTokenToRevoke = authToken;
+  // Clear local authority first. This prevents a slow logout response from
+  // erasing a newer login token or letting account-scoped autosave resume.
+  rememberAuthToken(null);
+  activeWorkspaceId = null;
+  backendAvailable = false;
+  try {
+    if (sessionTokenToRevoke) {
+      await request(
+        '/api/v1/auth/logout',
+        {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${sessionTokenToRevoke}`,
+          },
+        },
+        { auth: false, workspace: false },
+      );
+    }
+  } catch {
+    // The local session is already gone. Expiry and server-side cleanup are
+    // the fallback if revocation cannot be delivered while offline.
+  }
+};
+
+export const requestPasswordReset = async (input: { email: string }) => {
+  await request(
+    '/api/v1/auth/password/forgot',
+    {
+      method: 'POST',
+      body: JSON.stringify(input),
+    },
+    { auth: false, workspace: false },
+  );
+};
+
+export const resetPassword = async (input: {
+  token: string;
+  password: string;
+}) => {
+  await request(
+    '/api/v1/auth/password/reset',
+    {
+      method: 'POST',
+      body: JSON.stringify(input),
+    },
+    { auth: false, workspace: false },
+  );
+  rememberAuthToken(null);
+  activeWorkspaceId = null;
+};
+
+export const setActiveWorkspaceId = (workspaceId: string) => {
+  activeWorkspaceId = workspaceId;
+};
+
+export const clearAuthentication = () => {
+  rememberAuthToken(null);
+  activeWorkspaceId = null;
+  backendAvailable = false;
+};
+
 export const loadBackendState = () =>
   request<BackendStateSnapshot>('/api/v1/state');
+
+export const exportWorkspacePrivacyData = () =>
+  request<WorkspacePrivacyExport>('/api/v1/privacy/export');
 
 export const saveBackendState = (
   data: AppData,

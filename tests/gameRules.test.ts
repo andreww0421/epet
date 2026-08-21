@@ -62,7 +62,7 @@ Object.defineProperty(globalThis, 'localStorage', {
     setItem: (key: string, value: string) => memoryStorage.set(key, value),
   },
 });
-const { useStore } = await import('../src/store/useStore.js');
+const { resetStoreForSession, useStore } = await import('../src/store/useStore.js');
 
 const tests: Array<{ name: string; run: () => void }> = [];
 
@@ -263,6 +263,107 @@ test('weekend pause excludes Saturday and Sunday from hourly decay', () => {
 
   assert.equal(decayed.classes[0].students[0].pet.fullness, 52);
   assert.equal(decayed.classes[0].students[0].pet.isDead, false);
+});
+
+test('workspace export and import preserves complete pet state without replaying stale decay', () => {
+  const exportedAt = new Date(2026, 0, 1, 8).getTime();
+  const importedAt = new Date(2026, 1, 1, 8).getTime();
+  const exportedData = normalizeAppData(
+    {
+      lastOpened: exportedAt,
+      currentClassId: 'class-a',
+      classes: [{
+        id: 'class-a',
+        name: 'Class A',
+        students: [{
+          ...createStudent('healthy', 'Healthy Pet'),
+          pet: {
+            type: 'dog',
+            fullness: 73,
+            happiness: 61,
+            level: 4,
+            isDead: false,
+          },
+        }, {
+          ...createStudent('dead', 'Dead Pet'),
+          pet: {
+            type: 'cat',
+            fullness: 0,
+            happiness: 25,
+            level: 6,
+            isDead: true,
+            zeroFullnessSince: exportedAt - PET_DEATH_DELAY_MS,
+          },
+        }],
+      }],
+      settings: {
+        decayAmount: 2,
+        decayType: 'hourly',
+        inclusiveMode: false,
+        pauseDecayOnWeekends: false,
+        petCareMode: 'death',
+      },
+    },
+    exportedAt,
+  );
+
+  useStore.getState().importData(
+    JSON.parse(JSON.stringify(exportedData)),
+    importedAt,
+  );
+
+  const imported = useStore.getState().data;
+  const healthyPet = imported.classes[0].students[0].pet;
+  const deadPet = imported.classes[0].students[1].pet;
+  assert.deepEqual(healthyPet, {
+    type: 'dog',
+    fullness: 73,
+    happiness: 61,
+    level: 4,
+    isDead: false,
+    zeroFullnessSince: undefined,
+  });
+  assert.deepEqual(deadPet, {
+    type: 'cat',
+    fullness: 0,
+    happiness: 25,
+    level: 6,
+    isDead: true,
+    zeroFullnessSince: exportedAt - PET_DEATH_DELAY_MS,
+  });
+  assert.equal(imported.lastOpened, importedAt);
+
+  const immediatelyHydrated = applyDecay(imported, importedAt);
+  const oneHourLater = applyDecay(imported, importedAt + 60 * 60 * 1000);
+  assert.equal(
+    immediatelyHydrated.classes[0].students[0].pet.fullness,
+    73,
+  );
+  assert.equal(oneHourLater.classes[0].students[0].pet.fullness, 71);
+
+  useStore.getState().importData({
+    students: [{
+      ...createStudent('legacy-resting', 'Legacy Resting Pet'),
+      pet: {
+        type: 'rabbit',
+        fullness: 0,
+        happiness: 30,
+        level: 2,
+        isDead: true,
+        zeroFullnessSince: exportedAt - PET_DEATH_DELAY_MS,
+      },
+    }],
+    settings: {
+      inclusiveMode: true,
+      petCareMode: 'rest',
+    },
+  }, importedAt);
+  const legacyRestingPet =
+    useStore.getState().data.classes[0].students[0].pet;
+  assert.equal(legacyRestingPet.fullness, 0);
+  assert.equal(legacyRestingPet.happiness, 30);
+  assert.equal(legacyRestingPet.isDead, false);
+  resetStoreForSession(importedAt);
 });
 
 test('reviveStudentPet costs points and clears dead state', () => {
@@ -796,6 +897,18 @@ test('boss fair ranking caps repeated attacks and normalizes pet level advantage
       { studentId: 'spam', damage: 300, attackCount: 6, fairScore: 105 },
     ],
   );
+  assert.deepEqual(
+    standings.map(({ studentId, rank, rankRewardPoints }) => ({
+      studentId,
+      rank,
+      rankRewardPoints,
+    })),
+    [
+      { studentId: 'low', rank: 1, rankRewardPoints: 50 },
+      { studentId: 'high', rank: 2, rankRewardPoints: 30 },
+      { studentId: 'spam', rank: 2, rankRewardPoints: 30 },
+    ],
+  );
 });
 
 test('applyBossContributionRewards keeps prior boss reward history newest first', () => {
@@ -822,6 +935,39 @@ test('applyBossContributionRewards keeps prior boss reward history newest first'
       { bossId: 'boss-2', bossName: 'Second Boss', createdAt: 3000 },
       { bossId: 'boss-1', bossName: 'Training Boss', createdAt: 2000 },
     ],
+  );
+});
+
+test('boss victory commits rewards before asynchronous backend verification can be interrupted', () => {
+  useStore.getState().importData(
+    {
+      lastOpened: 2000,
+      currentClassId: 'class-a',
+      classes: [{
+        id: 'class-a',
+        name: 'Class A',
+        students: [createStudent('a', 'Alpha')],
+        activeBoss: {
+          ...createBoss(),
+          id: 'boss-atomic',
+          currentHp: 1,
+        },
+      }],
+    },
+    2000,
+  );
+
+  void useStore.getState().executeAttackBoss('a');
+
+  const currentClass = useStore.getState().data.classes[0];
+  const rewardRecord = currentClass.students[0].bossRewardRecords?.[0];
+  assert.equal(currentClass.activeBoss, undefined);
+  assert.equal(rewardRecord?.bossId, 'boss-atomic');
+  assert.equal(
+    rewardRecord?.rewardPoints,
+    (rewardRecord?.rankRewardPoints ?? 0) +
+      (rewardRecord?.participationRewardPoints ?? 0) +
+      (rewardRecord?.improvementRewardPoints ?? 0),
   );
 });
 
@@ -1243,6 +1389,63 @@ test('normalizeAppData defaults legacy boss reward history and sanitizes persist
   });
 });
 
+test('normalizeAppData maps totals-only legacy boss rewards to an explicit rank breakdown', () => {
+  const normalized = normalizeAppData(
+    {
+      currentClassId: 'class-a',
+      classes: [{
+        id: 'class-a',
+        name: 'Class A',
+        students: [{
+          id: 'legacy',
+          name: 'Legacy Student',
+          bossRewardRecords: [{
+            id: 'reward-total-only',
+            bossId: 'boss-old',
+            bossName: 'Old Boss',
+            createdAt: 1500,
+            rank: 1,
+            damage: 25,
+            rewardPoints: '30.9',
+            rewardRankPoints: '11.2',
+            rewardHappiness: '8.7',
+          }],
+        }],
+      }],
+    },
+    2000,
+  );
+
+  const record = normalized.classes[0].students[0].bossRewardRecords?.[0];
+  assert.equal(record?.rewardPoints, 30);
+  assert.equal(record?.rewardRankPoints, 11);
+  assert.equal(record?.rewardHappiness, 8);
+  assert.deepEqual(
+    {
+      rank: [
+        record?.rankRewardPoints,
+        record?.rankRewardRankPoints,
+        record?.rankRewardHappiness,
+      ],
+      participation: [
+        record?.participationRewardPoints,
+        record?.participationRewardRankPoints,
+        record?.participationRewardHappiness,
+      ],
+      improvement: [
+        record?.improvementRewardPoints,
+        record?.improvementRewardRankPoints,
+        record?.improvementRewardHappiness,
+      ],
+    },
+    {
+      rank: [30, 11, 8],
+      participation: [0, 0, 0],
+      improvement: [0, 0, 0],
+    },
+  );
+});
+
 test('computeBadges derives badges from the current student state', () => {
   const badges = computeBadges({
     ...createStudent(),
@@ -1364,6 +1567,417 @@ test('normalizeAppData sanitizes custom point reasons and remembered feedback hi
   assert.deepEqual(normalized.settings?.pinnedReasonIds, ['participation', 'custom-help']);
   assert.deepEqual(normalized.settings?.recentReasonIds, ['custom-help']);
   assert.deepEqual(normalized.settings?.feedbackReasonHistory, ['主動協助', 'Task complete']);
+});
+
+test('deleteStudent immediately removes every class-level record keyed to that student', () => {
+  const evidence = (studentId: string, createdAt: number) => ({
+    id: `evidence-${studentId}`,
+    classId: 'class-a',
+    studentId,
+    competency: 'participation',
+    level: 'progressing',
+    evidenceType: 'observation',
+    title: `Evidence for ${studentId}`,
+    actor: 'mentor',
+    source: 'manual',
+    rubricVersion: '1.0',
+    revision: 1,
+    createdAt,
+  });
+  useStore.getState().importData(
+    {
+      lastOpened: 2000,
+      currentClassId: 'class-a',
+      classes: [{
+        id: 'class-a',
+        name: 'Class A',
+        students: [
+          createStudent('deleted', 'Deleted Student'),
+          createStudent('kept', 'Kept Student'),
+        ],
+        learningEvidenceRecords: [
+          evidence('deleted', 1900),
+          evidence('kept', 1800),
+        ],
+        examRecords: [{
+          id: 'exam-a',
+          title: 'Assessment',
+          examDate: '2026-07-01',
+          items: [{ id: 'item-a', name: 'Math', maxScore: 100 }],
+          results: [
+            { studentId: 'deleted', scores: { 'item-a': 70 }, updatedAt: 1900 },
+            { studentId: 'kept', scores: { 'item-a': 80 }, updatedAt: 1900 },
+          ],
+          createdAt: 1800,
+          updatedAt: 1900,
+        }],
+        activeBoss: {
+          ...createBoss(),
+          contributions: { deleted: 30, kept: 20 },
+          attackCounts: { deleted: 2, kept: 1 },
+        },
+      }],
+    },
+    2000,
+  );
+
+  useStore.getState().deleteStudent('deleted');
+
+  const currentClass = useStore.getState().data.classes[0];
+  assert.deepEqual(currentClass.students.map((student) => student.id), ['kept']);
+  assert.deepEqual(
+    currentClass.learningEvidenceRecords?.map((record) => record.studentId),
+    ['kept'],
+  );
+  assert.deepEqual(
+    currentClass.examRecords?.[0].results.map((result) => result.studentId),
+    ['kept'],
+  );
+  assert.deepEqual(currentClass.activeBoss?.contributions, { kept: 20 });
+  assert.deepEqual(currentClass.activeBoss?.attackCounts, { kept: 1 });
+});
+
+test('PII cache is opt-in and resetStoreForSession clears account-scoped state without deleting legacy data', () => {
+  memoryStorage.clear();
+  memoryStorage.set('tamagotchi_classroom_data', 'legacy-cache-awaiting-migration');
+  useStore.getState().importData(
+    {
+      currentClassId: 'class-a',
+      classes: [{
+        id: 'class-a',
+        name: 'Class A',
+        students: [createStudent('a', 'Alpha')],
+      }],
+    },
+    2000,
+  );
+  useStore.setState({
+    view: 'dashboard',
+    animatingPets: { a: 'attack' },
+    toast: { message: 'private toast', type: 'success' },
+    upgradeReward: { studentId: 'a', studentName: 'Alpha', reachedLevel: 2 },
+    bossHitFeedback: { damage: 10, id: 1 },
+    bossAttackFeedback: { targetNames: ['Alpha'], damage: 5, id: 2 },
+    showBossVictory: true,
+    bossVictoryResult: { bossName: 'Boss', standings: [] },
+    undoAction: {
+      id: 'undo-a',
+      classId: 'class-a',
+      label: 'Undo',
+      expiresAt: 9999,
+      entries: [],
+    },
+    safetyUndoAction: {
+      id: 'undo-safety-a',
+      classId: 'class-a',
+      studentId: 'a',
+      originalRecordId: 'record-a',
+      actionKind: 'discipline',
+      label: 'Undo formal action',
+      expiresAt: 9999,
+    },
+  });
+
+  assert.equal(
+    memoryStorage.get('tamagotchi_classroom_data'),
+    'legacy-cache-awaiting-migration',
+  );
+  assert.equal(memoryStorage.has('epet-session-memory-only'), false);
+
+  resetStoreForSession(3000);
+
+  const state = useStore.getState();
+  assert.equal(state.data.classes.length, 1);
+  assert.deepEqual(state.data.classes[0].students, []);
+  assert.equal(state.view, 'classroom');
+  assert.deepEqual(state.animatingPets, {});
+  assert.equal(state.toast, null);
+  assert.equal(state.upgradeReward, null);
+  assert.equal(state.bossHitFeedback, null);
+  assert.equal(state.bossAttackFeedback, null);
+  assert.equal(state.showBossVictory, false);
+  assert.equal(state.bossVictoryResult, null);
+  assert.equal(state.undoAction, null);
+  assert.equal(state.safetyUndoAction, null);
+  assert.equal(
+    memoryStorage.get('tamagotchi_classroom_data'),
+    'legacy-cache-awaiting-migration',
+  );
+});
+
+test('formal discipline and level decrease require reasons and cannot be repeatedly clicked', () => {
+  const data = normalizeAppData({
+    currentClassId: 'class-a',
+    classes: [{
+      id: 'class-a',
+      name: 'Class A',
+      students: [{
+        ...createStudent('a', 'Alpha'),
+        activeWarningTimestamps: [1000, 1100],
+        warningPoints: 2,
+        pet: { ...createStudent().pet, type: 'dog' },
+      }],
+    }],
+  }, 2000);
+  useStore.setState({
+    data,
+    toast: null,
+    undoAction: null,
+    safetyUndoAction: null,
+    showToast: () => undefined,
+  });
+
+  useStore.getState().disciplineStudent('a', '   ');
+  useStore.getState().decreaseLevel('a', '\n');
+  let student = useStore.getState().data.classes[0].students[0];
+  assert.equal(student.points, 200);
+  assert.equal(student.pet.level, 3);
+  assert.deepEqual(student.disciplineRecords, []);
+
+  useStore.getState().decreaseLevel('a', 'Repeatedly ignored the agreed classroom routine');
+  useStore.getState().decreaseLevel('a', 'Second click must be blocked');
+  student = useStore.getState().data.classes[0].students[0];
+  assert.equal(student.pet.level, 2);
+  assert.equal(student.disciplineRecords?.length, 1);
+  assert.equal(student.disciplineRecords?.[0].type, 'levelDecrease');
+  assert.equal(student.disciplineRecords?.[0].reason, 'Repeatedly ignored the agreed classroom routine');
+  const pendingLevelUndo = useStore.getState().safetyUndoAction;
+  assert.ok(pendingLevelUndo);
+  useStore.setState({
+    safetyUndoAction: { ...pendingLevelUndo, expiresAt: Date.now() - 1 },
+  });
+  useStore.getState().decreaseLevel('a', 'Expired undo must not bypass the cooldown');
+  useStore.setState({ safetyUndoAction: null });
+  useStore.getState().decreaseLevel('a', 'Cleared undo must not bypass the cooldown');
+  student = useStore.getState().data.classes[0].students[0];
+  assert.equal(student.pet.level, 2);
+  assert.equal(student.disciplineRecords?.length, 1);
+
+  resetStoreForSession(2100);
+  useStore.setState({
+    data,
+    toast: null,
+    undoAction: null,
+    safetyUndoAction: null,
+    showToast: () => undefined,
+  });
+  useStore.getState().disciplineStudent('a', 'Unsafe repeated conduct after prior reminders');
+  const once = useStore.getState().data.classes[0].students[0];
+  useStore.setState({ safetyUndoAction: null });
+  useStore.getState().disciplineStudent('a', 'Duplicate punishment must be rejected');
+  const twice = useStore.getState().data.classes[0].students[0];
+  assert.equal(twice.points, once.points);
+  assert.equal(twice.rankPoints, once.rankPoints);
+  assert.equal(twice.pet.fullness, once.pet.fullness);
+  assert.equal(twice.pet.happiness, once.pet.happiness);
+  assert.equal(twice.penaltyStatus?.until, once.penaltyStatus?.until);
+  assert.equal(twice.disciplineRecords?.length, 1);
+  assert.equal(twice.disciplineRecords?.[0].reason, 'Unsafe repeated conduct after prior reminders');
+  resetStoreForSession(2200);
+});
+
+test('a recorded reversal releases the 24-hour level decrease cooldown', () => {
+  const data = normalizeAppData({
+    currentClassId: 'class-a',
+    classes: [{
+      id: 'class-a',
+      name: 'Class A',
+      students: [{
+        ...createStudent('a', 'Alpha'),
+        pet: { ...createStudent().pet, type: 'dog', level: 3 },
+      }],
+    }],
+  }, 2000);
+  useStore.setState({
+    data,
+    toast: null,
+    undoAction: null,
+    safetyUndoAction: null,
+    showToast: () => undefined,
+  });
+
+  useStore.getState().decreaseLevel('a', 'Initial action entered in error');
+  useStore.getState().undoLastSafetyAction();
+  useStore.getState().decreaseLevel('a', 'Correctly documented level intervention');
+
+  const student = useStore.getState().data.classes[0].students[0];
+  assert.equal(student.pet.level, 2);
+  assert.equal(student.disciplineRecords?.filter((record) => record.type === 'levelDecrease').length, 2);
+  assert.equal(student.disciplineRecords?.filter((record) => record.type === 'reversal').length, 1);
+  const reversal = student.disciplineRecords?.find((record) => record.type === 'reversal');
+  const firstDecrease = student.disciplineRecords?.find(
+    (record) => record.type === 'levelDecrease' && record.reason === 'Initial action entered in error',
+  );
+  assert.equal(reversal?.reversesRecordId, firstDecrease?.id);
+  resetStoreForSession(2250);
+});
+
+test('formal discipline undo restores every affected state and keeps original plus reversal ledger records', () => {
+  const originalStudent = {
+    ...createStudent('a', 'Alpha'),
+    points: 15,
+    rankPoints: 10,
+    warningPoints: 2,
+    activeWarningTimestamps: [1000, 1100],
+    pet: {
+      ...createStudent().pet,
+      type: 'dog',
+      fullness: 10,
+      happiness: 8,
+      level: 3,
+    },
+  };
+  const data = normalizeAppData({
+    currentClassId: 'class-a',
+    classes: [{ id: 'class-a', name: 'Class A', students: [originalStudent] }],
+  }, 2000);
+  useStore.setState({
+    data,
+    toast: null,
+    undoAction: null,
+    safetyUndoAction: null,
+    showToast: () => undefined,
+  });
+
+  useStore.getState().disciplineStudent('a', 'Documented serious classroom safety incident');
+  const penalized = useStore.getState().data.classes[0].students[0];
+  assert.equal(penalized.points, 0);
+  assert.equal(penalized.rankPoints, 0);
+  assert.equal(penalized.pet.fullness, 0);
+  assert.equal(penalized.pet.happiness, 0);
+  assert.equal(penalized.warningPoints, 0);
+  assert.deepEqual(penalized.activeWarningTimestamps, []);
+  assert.equal(penalized.penaltyStatus?.source, 'discipline');
+  const originalRecordId = penalized.disciplineRecords?.[0].id;
+
+  useStore.getState().undoLastSafetyAction();
+  const restored = useStore.getState().data.classes[0].students[0];
+  assert.equal(restored.points, originalStudent.points);
+  assert.equal(restored.rankPoints, originalStudent.rankPoints);
+  assert.equal(restored.pet.fullness, originalStudent.pet.fullness);
+  assert.equal(restored.pet.happiness, originalStudent.pet.happiness);
+  assert.equal(restored.pet.level, originalStudent.pet.level);
+  assert.equal(restored.warningPoints, originalStudent.warningPoints);
+  assert.deepEqual(restored.activeWarningTimestamps, originalStudent.activeWarningTimestamps);
+  assert.equal(restored.penaltyStatus, undefined);
+  assert.deepEqual(restored.disciplineRecords?.map((record) => record.type), [
+    'reversal',
+    'discipline',
+  ]);
+  assert.equal(restored.disciplineRecords?.[0].reversesRecordId, originalRecordId);
+  assert.equal(restored.disciplineRecords?.[0].reason, 'Documented serious classroom safety incident');
+  assert.equal(restored.disciplineRecords?.[1].id, originalRecordId);
+  assert.ok(restored.disciplineRecords?.[1].safetyEffect);
+  assert.equal(useStore.getState().safetyUndoAction, null);
+
+  useStore.getState().importData(useStore.getState().data, Date.now());
+  const roundTrippedRecords = useStore.getState().data.classes[0].students[0].disciplineRecords ?? [];
+  assert.deepEqual(roundTrippedRecords.map((record) => record.type), ['reversal', 'discipline']);
+  assert.equal(roundTrippedRecords[0].reversesRecordId, originalRecordId);
+  assert.equal(roundTrippedRecords[0].reason, 'Documented serious classroom safety incident');
+  assert.equal(roundTrippedRecords[1].id, originalRecordId);
+  assert.equal(roundTrippedRecords[1].actionKind, 'discipline');
+  assert.deepEqual(roundTrippedRecords[1].safetyEffect?.before.activeWarningTimestamps, [1000, 1100]);
+  assert.equal(roundTrippedRecords[1].safetyEffect?.after.penaltyStatus?.source, 'discipline');
+  resetStoreForSession(2300);
+});
+
+test('discipline record import preserves legacy entries and rejects unknown ledger values', () => {
+  const data = normalizeAppData({
+    currentClassId: 'class-a',
+    classes: [{
+      id: 'class-a',
+      name: 'Class A',
+      students: [{
+        ...createStudent('a', 'Alpha'),
+        disciplineRecords: [
+          { id: 'legacy', type: 'warning', createdAt: 1000, warningCount: 1 },
+          {
+            id: 'unknown',
+            type: 'executeScript',
+            createdAt: 900,
+            reason: { unsafe: true },
+            actionKind: 'deleteStudent',
+            reversesRecordId: '<script>',
+            safetyEffect: { before: 'invalid', after: 'invalid' },
+          },
+        ],
+        pet: { ...createStudent().pet, type: 'dog' },
+      }],
+    }],
+  }, 2000);
+  const records = data.classes[0].students[0].disciplineRecords ?? [];
+  assert.equal(records[0].type, 'warning');
+  assert.equal(records[0].warningCount, 1);
+  assert.equal(records[1].type, 'warning');
+  assert.equal(records[1].reason, undefined);
+  assert.equal(records[1].actionKind, undefined);
+  assert.equal(records[1].reversesRecordId, undefined);
+  assert.equal(records[1].safetyEffect, undefined);
+});
+
+test('safety undo compensates deltas without overwriting newer warning or penalty state', () => {
+  const data = normalizeAppData({
+    currentClassId: 'class-a',
+    classes: [{
+      id: 'class-a',
+      name: 'Class A',
+      students: [{
+        ...createStudent('a', 'Alpha'),
+        pet: { ...createStudent().pet, type: 'dog', level: 3 },
+      }],
+    }],
+  }, 2000);
+  useStore.setState({
+    data,
+    toast: null,
+    undoAction: null,
+    safetyUndoAction: null,
+    showToast: () => undefined,
+  });
+  useStore.getState().decreaseLevel('a', 'Documented intervention');
+
+  const newerPenalty = { source: 'autoPenalty' as const, until: Date.now() + 50000 };
+  useStore.setState((state) => ({
+    data: {
+      ...state.data,
+      classes: state.data.classes.map((classData) => ({
+        ...classData,
+        students: classData.students.map((student) => student.id === 'a'
+          ? {
+              ...student,
+              points: student.points + 7,
+              rankPoints: (student.rankPoints ?? 0) + 3,
+              warningPoints: 1,
+              activeWarningTimestamps: [5555],
+              penaltyStatus: newerPenalty,
+              pet: {
+                ...student.pet,
+                level: student.pet.level + 1,
+                fullness: student.pet.fullness + 4,
+                happiness: student.pet.happiness + 2,
+              },
+            }
+          : student),
+      })),
+    },
+  }));
+
+  useStore.getState().undoLastSafetyAction();
+  const restored = useStore.getState().data.classes[0].students[0];
+  assert.equal(restored.points, 207);
+  assert.equal(restored.rankPoints, 103);
+  assert.equal(restored.pet.level, 4);
+  assert.equal(restored.pet.fullness, 84);
+  assert.equal(restored.pet.happiness, 52);
+  assert.equal(restored.warningPoints, 1);
+  assert.deepEqual(restored.activeWarningTimestamps, [5555]);
+  assert.deepEqual(restored.penaltyStatus, newerPenalty);
+  assert.deepEqual(restored.disciplineRecords?.map((record) => record.type), [
+    'reversal',
+    'levelDecrease',
+  ]);
+  resetStoreForSession(2400);
 });
 
 test('batch point adjustment undo restores clamped point values and removes its records', () => {
@@ -1734,6 +2348,64 @@ test('individual exam report uses A4 print CSS and escapes teacher-provided cont
   assert.match(html, /Progress &lt;Review&gt;/);
   assert.match(html, /Practice &lt;strong&gt;daily&lt;\/strong&gt;\./);
   assert.doesNotMatch(html, /<script>alert\(1\)<\/script>/);
+});
+
+test('bulk roster import appends once and preserves every existing pet field', () => {
+  const existingStudent = {
+    ...createStudent('existing', 'Alice'),
+    points: 487,
+    rankPoints: 73,
+    pet: {
+      type: 'dragon',
+      fullness: 37,
+      happiness: 64,
+      level: 8,
+      zeroFullnessSince: 1234,
+    },
+    badges: ['steady-growth'],
+  };
+  useStore.setState({
+    data: normalizeAppData({
+      lastOpened: 2000,
+      currentClassId: 'class-roster',
+      classes: [{
+        id: 'class-roster',
+        name: 'Roster Class',
+        students: [existingStudent],
+      }],
+    }, 2000),
+  });
+  const before = structuredClone(useStore.getState().data.classes[0].students[0]);
+  let dataMutations = 0;
+  const unsubscribe = useStore.subscribe((state, previousState) => {
+    if (state.data !== previousState.data) dataMutations += 1;
+  });
+
+  const added = useStore.getState().addStudentsByName([
+    ' Alice ',
+    'Ｂｏｂ',
+    'Bob',
+    '  Cara   Chen  ',
+  ]);
+  unsubscribe();
+
+  const students = useStore.getState().data.classes[0].students;
+  assert.equal(added, 2);
+  assert.equal(dataMutations, 1);
+  assert.deepEqual(students[0], before);
+  assert.deepEqual(students.slice(1).map((student) => student.name), [
+    'Bob',
+    'Cara Chen',
+  ]);
+  for (const student of students.slice(1)) {
+    assert.equal(student.points, 200);
+    assert.deepEqual(student.pet, {
+      type: 'egg',
+      fullness: 80,
+      happiness: 80,
+      level: 1,
+    });
+  }
 });
 
 let failures = 0;

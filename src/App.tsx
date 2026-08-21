@@ -1,11 +1,19 @@
-import React, { lazy, Suspense, useEffect } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect } from 'react';
 import {
-  AlertCircle, CloudOff, Database, Dices, Dog, RefreshCw, Settings, Smile, Users,
+  AlertCircle, CloudOff, Database, Dices, Dog, LogOut, RefreshCw, Settings, Smile, Users,
 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
-import { useStore } from './store/useStore';
+import { resetStoreForSession, useStore } from './store/useStore';
 import { translations } from './i18n/translations';
 import { useBackendSync } from './hooks/useBackendSync';
+import { AuthProvider, useAuth } from './auth/AuthProvider';
+import { AuthScreen } from './components/AuthScreen';
+import { LegacyDataMigration } from './components/LegacyDataMigration';
+import {
+  canAdministerWorkspace,
+  canExportWorkspace,
+  canWriteWorkspace,
+} from './auth/workspaceAccess';
 
 const ClassroomView = lazy(() =>
   import('./components/ClassroomView').then((module) => ({
@@ -18,8 +26,42 @@ const DashboardView = lazy(() =>
   })),
 );
 
-export default function App() {
-  const backendStatus = useBackendSync();
+const downloadUnsyncedWorkspace = (canExportFullData: boolean) => {
+  if (!canExportFullData) return;
+  const blob = new Blob(
+    [JSON.stringify(useStore.getState().data, null, 2)],
+    { type: 'application/json' },
+  );
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `epet-unsynced-${new Date().toISOString().slice(0, 10)}.json`;
+  anchor.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+};
+
+function WorkspaceApp() {
+  const { session, logout, selectWorkspace, invalidateSession } = useAuth();
+  const activeWorkspaceId = session?.activeWorkspaceId ?? null;
+  const activeWorkspace = session?.workspaces.find(
+    (workspace) => workspace.id === activeWorkspaceId,
+  );
+  const activeWorkspaceRole = activeWorkspace?.role ?? session?.user.role;
+  const canManage = canWriteWorkspace(activeWorkspaceRole);
+  const canAdminister = canAdministerWorkspace(activeWorkspaceRole);
+  const hasFullExportRole = canExportWorkspace(activeWorkspaceRole);
+  const handleAuthenticationInvalid = useCallback(
+    () => invalidateSession(),
+    [invalidateSession],
+  );
+  const backendStatus = useBackendSync(
+    true,
+    activeWorkspaceId,
+    handleAuthenticationInvalid,
+    canManage,
+  );
+  const canExportFullData =
+    hasFullExportRole && backendStatus === 'connected';
   const {
     view,
     toast,
@@ -42,10 +84,24 @@ export default function App() {
     })),
   );
   const tLang = translations[lang];
+  const activeWorkspaceName =
+    activeWorkspace?.name
+    ?? (lang === 'en' ? 'current workspace' : '目前工作區');
+  const effectiveView = canManage ? view : 'dashboard';
+  const workspaceReady =
+    backendStatus === 'connected' || backendStatus === 'saving';
 
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'auto' });
-  }, [view]);
+  }, [effectiveView]);
+
+  useEffect(() => {
+    document.documentElement.lang = lang === 'en' ? 'en' : 'zh-Hant';
+  }, [lang]);
+
+  const handleLogout = useCallback(async () => {
+    await logout();
+  }, [logout]);
 
   return (
     <div className="min-h-screen flex flex-col font-sans">
@@ -60,6 +116,25 @@ export default function App() {
               </span>
             </div>
             <div className="flex items-center gap-1.5 sm:gap-4">
+              {session && session.workspaces.length > 1 && (
+                <label className="hidden items-center gap-2 text-xs font-bold text-slate-600 lg:flex">
+                  <span>{lang === 'en' ? 'Workspace' : '工作區'}</span>
+                  <select
+                    value={activeWorkspaceId ?? ''}
+                    onChange={(event) => {
+                      resetStoreForSession();
+                      void selectWorkspace(event.target.value);
+                    }}
+                    className="min-h-10 max-w-48 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800"
+                  >
+                    {session.workspaces.map((workspace) => (
+                      <option key={workspace.id} value={workspace.id}>
+                        {workspace.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
               <span
                 className={`hidden h-8 w-8 items-center justify-center rounded-md sm:inline-flex ${
                   backendStatus === 'connected'
@@ -77,6 +152,8 @@ export default function App() {
                         ? (lang === 'en' ? 'Backend revision conflict' : '後端版本衝突')
                         : (lang === 'en' ? 'Offline local cache' : '離線本機快取')
                 }
+                role="status"
+                aria-live="polite"
               >
                 {backendStatus === 'connected' ? (
                   <Database className="h-4 w-4" />
@@ -85,32 +162,64 @@ export default function App() {
                 ) : (
                   <CloudOff className="h-4 w-4" />
                 )}
+                <span className="sr-only">
+                  {backendStatus === 'connected'
+                    ? (lang === 'en' ? 'Backend synchronized' : '後端已同步')
+                    : backendStatus === 'saving'
+                      ? (lang === 'en' ? 'Saving to backend' : '正在同步後端')
+                      : backendStatus === 'conflict'
+                        ? (lang === 'en' ? 'Backend revision conflict' : '後端版本衝突')
+                        : backendStatus === 'forbidden'
+                          ? (lang === 'en' ? 'Workspace access denied' : '沒有此工作區權限')
+                          : (lang === 'en' ? 'Offline local cache' : '離線本機模式')}
+                </span>
               </span>
-              <button
-                onClick={() => setView('classroom')}
-                aria-label={tLang.classroom}
-                title={tLang.classroom}
-                className={`flex h-10 w-10 items-center justify-center rounded-md text-sm font-medium transition-colors sm:h-auto sm:w-auto sm:px-4 sm:py-2 ${
-                  view === 'classroom' 
-                    ? 'bg-amber-100 text-amber-800' 
-                    : 'text-gray-600 hover:bg-gray-100'
-                }`}
-              >
-                <Users className="h-4 w-4 sm:mr-2" />
-                <span className="hidden sm:inline">{tLang.classroom}</span>
-              </button>
+              {canManage && (
+                <button
+                  onClick={() => setView('classroom')}
+                  aria-label={tLang.classroom}
+                  title={tLang.classroom}
+                  className={`flex h-10 w-10 items-center justify-center rounded-md text-sm font-medium transition-colors sm:h-auto sm:w-auto sm:px-4 sm:py-2 ${
+                    effectiveView === 'classroom'
+                      ? 'bg-amber-100 text-amber-800'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  <Users className="h-4 w-4 sm:mr-2" />
+                  <span className="hidden sm:inline">{tLang.classroom}</span>
+                </button>
+              )}
               <button
                 onClick={() => setView('dashboard')}
                 aria-label={tLang.dashboard}
                 title={tLang.dashboard}
                 className={`flex h-10 w-10 items-center justify-center rounded-md text-sm font-medium transition-colors sm:h-auto sm:w-auto sm:px-4 sm:py-2 ${
-                  view === 'dashboard' 
-                    ? 'bg-indigo-100 text-indigo-800' 
+                  effectiveView === 'dashboard'
+                    ? 'bg-indigo-100 text-indigo-800'
                     : 'text-gray-600 hover:bg-gray-100'
                 }`}
               >
                 <Settings className="h-4 w-4 sm:mr-2" />
                 <span className="hidden sm:inline">{tLang.dashboard}</span>
+              </button>
+              {session && (
+                <div className="hidden text-right xl:block">
+                  <p className="max-w-36 truncate text-xs font-bold text-slate-800">
+                    {session.user.displayName}
+                  </p>
+                  <p className="text-[11px] uppercase tracking-wide text-slate-500">
+                    {activeWorkspaceRole}
+                  </p>
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={() => void handleLogout()}
+                aria-label={lang === 'en' ? 'Log out' : '登出'}
+                title={lang === 'en' ? 'Log out' : '登出'}
+                className="flex h-10 w-10 items-center justify-center rounded-md text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900"
+              >
+                <LogOut className="h-4 w-4" aria-hidden="true" />
               </button>
             </div>
           </div>
@@ -118,29 +227,117 @@ export default function App() {
       </nav>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-auto">
-        <Suspense
-          fallback={(
-            <div className="flex min-h-64 items-center justify-center text-sm font-medium text-slate-500">
-              <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-              {tLang.loading}
-            </div>
-          )}
+      {backendStatus === 'connected' && canAdminister && (
+        <LegacyDataMigration workspaceName={activeWorkspaceName} />
+      )}
+      {(backendStatus === 'conflict' || backendStatus === 'forbidden') && (
+        <div
+          role="alert"
+          className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-center text-sm font-bold text-amber-900"
         >
-          {view === 'dashboard' ? <DashboardView /> : <ClassroomView />}
-        </Suspense>
+          {backendStatus === 'conflict'
+            ? (lang === 'en'
+                ? 'A newer workspace version exists. Reload before making more changes.'
+                : '雲端已有較新的工作區版本，請重新整理後再繼續操作。')
+            : (lang === 'en'
+                ? 'Your account does not have permission to open this workspace.'
+                : '目前帳號沒有開啟此工作區的權限。')}
+        </div>
+      )}
+      <main className="flex-1 overflow-auto">
+        {workspaceReady ? (
+          <Suspense
+            fallback={(
+              <div className="flex min-h-64 items-center justify-center text-sm font-medium text-slate-500">
+                <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                {tLang.loading}
+              </div>
+            )}
+          >
+            {effectiveView === 'dashboard'
+              ? (
+                  <DashboardView
+                    readOnly={!canManage}
+                    canExportFullData={canExportFullData}
+                    canAdministerWorkspace={canAdminister}
+                  />
+                )
+              : <ClassroomView />}
+          </Suspense>
+        ) : (
+          <section
+            className="mx-auto flex min-h-[60vh] max-w-xl flex-col items-center justify-center px-6 py-16 text-center"
+            aria-live="polite"
+          >
+            {backendStatus === 'checking' ? (
+              <>
+                <RefreshCw className="h-8 w-8 animate-spin text-indigo-600" aria-hidden="true" />
+                <h1 className="mt-5 text-xl font-black text-slate-900">
+                  {lang === 'en' ? 'Loading workspace' : '正在安全載入工作區'}
+                </h1>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  {lang === 'en'
+                    ? 'Editing will be enabled after the latest revision is loaded.'
+                    : '取得最新版本前暫停編輯，避免覆寫雲端資料。'}
+                </p>
+              </>
+            ) : (
+              <>
+                <CloudOff className="h-9 w-9 text-amber-600" aria-hidden="true" />
+                <h1 className="mt-5 text-xl font-black text-slate-900">
+                  {backendStatus === 'conflict'
+                    ? (lang === 'en' ? 'Revision conflict' : '資料版本衝突')
+                    : (lang === 'en' ? 'Workspace unavailable' : '目前無法安全開啟工作區')}
+                </h1>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  {lang === 'en'
+                    ? hasFullExportRole
+                      ? 'Editing is paused so unsynchronized student data is not lost or overwritten. Download the local draft before reloading.'
+                      : 'Editing is paused so unsynchronized student data is not lost or overwritten. Ask a workspace admin to handle a full-data export.'
+                    : hasFullExportRole
+                      ? '系統已暫停編輯，避免未同步的學生資料遺失或覆寫。你可以先下載目前記憶體中的草稿，再重新載入。'
+                      : '系統已暫停編輯，避免未同步的學生資料遺失或覆寫。完整資料匯出請由工作區管理者處理。'}
+                </p>
+                <div className="mt-6 flex flex-wrap justify-center gap-3">
+                  {hasFullExportRole && (
+                    <button
+                      type="button"
+                      onClick={() => downloadUnsyncedWorkspace(hasFullExportRole)}
+                      className="min-h-11 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-800 hover:bg-slate-50"
+                    >
+                      {lang === 'en' ? 'Download local draft' : '下載本機草稿'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => window.location.reload()}
+                    className="min-h-11 rounded-lg bg-indigo-700 px-4 py-2 text-sm font-bold text-white hover:bg-indigo-800"
+                  >
+                    {lang === 'en' ? 'Reload latest version' : '重新載入最新版本'}
+                  </button>
+                </div>
+              </>
+            )}
+          </section>
+        )}
       </main>
 
       {/* Upgrade Gacha Reward Modal */}
-      {upgradeReward && (
+      {upgradeReward && canManage && (
         <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
-          <div className="bg-white rounded-2xl shadow-xl max-w-md w-full overflow-hidden">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="upgrade-reward-title"
+            aria-describedby="upgrade-reward-description"
+            className="bg-white rounded-2xl shadow-xl max-w-md w-full overflow-hidden"
+          >
             <div className="p-6">
               <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-amber-100">
                 <Dices className="h-7 w-7 text-amber-600" />
               </div>
-              <h3 className="text-xl font-bold text-slate-900 text-center mb-2">{tLang.upgradeGachaTitle}</h3>
-              <p className="text-sm text-slate-600 text-center leading-6">
+              <h3 id="upgrade-reward-title" className="text-xl font-bold text-slate-900 text-center mb-2">{tLang.upgradeGachaTitle}</h3>
+              <p id="upgrade-reward-description" className="text-sm text-slate-600 text-center leading-6">
                 {tLang.upgradeGachaDesc
                   .replace('{name}', upgradeReward.studentName)
                   .replace('{level}', upgradeReward.reachedLevel.toString())}
@@ -176,7 +373,10 @@ export default function App() {
       {/* Toast Notification */}
       {toast && (
         <div className="fixed bottom-6 right-6 z-50 animate-[bounce_0.5s_ease-in-out]">
-          <div className={`px-4 py-3 rounded-lg shadow-lg flex items-center ${
+          <div
+            role={toast.type === 'success' ? 'status' : 'alert'}
+            aria-live={toast.type === 'success' ? 'polite' : 'assertive'}
+            className={`px-4 py-3 rounded-lg shadow-lg flex items-center ${
             toast.type === 'success' ? 'bg-green-100 text-green-800 border border-green-200' : 'bg-red-100 text-red-800 border border-red-200'
           }`}>
             {toast.type === 'success' ? <Smile className="h-5 w-5 mr-2" /> : <AlertCircle className="h-5 w-5 mr-2" />}
@@ -185,5 +385,18 @@ export default function App() {
         </div>
       )}
     </div>
+  );
+}
+
+const AuthenticatedApp = () => {
+  const { status } = useAuth();
+  return status === 'authenticated' ? <WorkspaceApp /> : <AuthScreen />;
+};
+
+export default function App() {
+  return (
+    <AuthProvider onSessionCleared={resetStoreForSession}>
+      <AuthenticatedApp />
+    </AuthProvider>
   );
 }

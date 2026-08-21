@@ -1,0 +1,1207 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="ePet 班級寵物養成系統商業化產品稽核看板">
+  <title>ePet 商業化產品稽核｜2026-07-30</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --canvas: #f8fafc;
+      --surface: #ffffff;
+      --surface-alt: #f1f5f9;
+      --ink: #0f172a;
+      --ink-soft: #475569;
+      --muted: #64748b;
+      --brand: #4338ca;
+      --brand-deep: #312e81;
+      --brand-soft: #eef2ff;
+      --teal: #0f4c45;
+      --teal-soft: #ccfbf1;
+      --positive: #047857;
+      --positive-soft: #d1fae5;
+      --warning: #b45309;
+      --warning-soft: #fef3c7;
+      --danger: #be123c;
+      --danger-soft: #ffe4e6;
+      --border: #e2e8f0;
+      --border-strong: #cbd5e1;
+      --shadow: 0 18px 50px rgba(15, 23, 42, 0.09);
+      --radius-lg: 24px;
+      --radius-md: 16px;
+      --radius-sm: 12px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      background: var(--canvas);
+      color: var(--ink);
+      font-family: "Noto Sans TC", "Microsoft JhengHei UI", "Microsoft JhengHei", sans-serif;
+      line-height: 1.55;
+    }
+
+    button,
+    a {
+      font: inherit;
+    }
+
+    a {
+      color: inherit;
+    }
+
+    .utility {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 12px max(24px, calc((100vw - 1460px) / 2));
+      color: #fff;
+      background: rgba(15, 23, 42, 0.96);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+      backdrop-filter: blur(14px);
+    }
+
+    .utility__brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: max-content;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+    }
+
+    .utility__mark {
+      display: grid;
+      place-items: center;
+      width: 32px;
+      height: 32px;
+      color: var(--brand-deep);
+      background: #fff;
+      border-radius: 10px;
+      font-size: 13px;
+      font-weight: 900;
+    }
+
+    .utility nav {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+
+    .utility nav a {
+      padding: 8px 10px;
+      color: #cbd5e1;
+      border-radius: 8px;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .utility nav a:hover,
+    .utility nav a:focus-visible {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.12);
+      outline: none;
+    }
+
+    .utility__actions {
+      display: flex;
+      gap: 8px;
+      min-width: max-content;
+    }
+
+    .button {
+      appearance: none;
+      padding: 9px 13px;
+      color: var(--ink);
+      background: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.24);
+      border-radius: 9px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .button--quiet {
+      color: #e2e8f0;
+      background: transparent;
+    }
+
+    .button[aria-pressed="true"] {
+      color: #fff;
+      background: var(--danger);
+      border-color: var(--danger);
+    }
+
+    .board {
+      width: min(1460px, calc(100% - 48px));
+      margin: 28px auto 80px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 30px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.7fr) minmax(430px, 0.8fr);
+      gap: 54px;
+      padding: 64px 72px;
+      color: #fff;
+      background: var(--brand);
+    }
+
+    .eyebrow,
+    .section__eyebrow,
+    .kicker {
+      margin: 0 0 12px;
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+
+    .hero .eyebrow {
+      color: #c7d2fe;
+    }
+
+    .hero h1 {
+      max-width: 820px;
+      margin: 0;
+      font-size: clamp(42px, 5vw, 70px);
+      line-height: 1.02;
+      letter-spacing: -0.045em;
+    }
+
+    .hero__lead {
+      max-width: 840px;
+      margin: 24px 0 0;
+      color: #e0e7ff;
+      font-size: 19px;
+    }
+
+    .hero__meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 30px;
+    }
+
+    .hero__meta span {
+      padding: 8px 11px;
+      color: #e0e7ff;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .verdict {
+      display: grid;
+      align-content: center;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+
+    .verdict__card {
+      min-height: 184px;
+      padding: 24px;
+      color: var(--ink);
+      background: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.4);
+      border-radius: var(--radius-md);
+    }
+
+    .verdict__label {
+      display: block;
+      color: var(--ink-soft);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .verdict__score {
+      display: block;
+      margin-top: 5px;
+      color: var(--brand);
+      font-size: 54px;
+      font-weight: 900;
+      line-height: 1;
+      letter-spacing: -0.06em;
+    }
+
+    .verdict__note {
+      display: block;
+      margin-top: 16px;
+      color: var(--ink-soft);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .section {
+      padding: 64px 72px;
+      border-top: 1px solid var(--border);
+    }
+
+    .section--tint {
+      background: #fbfdff;
+    }
+
+    .section--dark {
+      color: #fff;
+      background: #0f172a;
+      border-top-color: #1e293b;
+    }
+
+    .section__head {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 32px;
+      margin-bottom: 30px;
+    }
+
+    .section__eyebrow {
+      color: var(--brand);
+    }
+
+    .section--dark .section__eyebrow {
+      color: #a5b4fc;
+    }
+
+    .section h2 {
+      margin: 0;
+      font-size: clamp(28px, 3vw, 44px);
+      line-height: 1.1;
+      letter-spacing: -0.035em;
+    }
+
+    .section__summary {
+      max-width: 620px;
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 15px;
+    }
+
+    .section--dark .section__summary {
+      color: #cbd5e1;
+    }
+
+    .score-grid {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .score-card {
+      display: flex;
+      flex-direction: column;
+      min-height: 220px;
+      padding: 20px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+    }
+
+    .score-card__status {
+      width: fit-content;
+      padding: 4px 8px;
+      color: var(--status-color);
+      background: var(--status-bg);
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 900;
+    }
+
+    .score-card h3 {
+      margin: 28px 0 0;
+      font-size: 15px;
+      line-height: 1.35;
+    }
+
+    .score-card strong {
+      display: block;
+      margin-top: auto;
+      font-size: 44px;
+      line-height: 1;
+      letter-spacing: -0.05em;
+    }
+
+    .score-card__bar {
+      height: 7px;
+      margin-top: 15px;
+      overflow: hidden;
+      background: var(--surface-alt);
+      border-radius: 99px;
+    }
+
+    .score-card__bar span {
+      display: block;
+      width: calc(var(--score) * 10%);
+      height: 100%;
+      background: var(--status-color);
+      border-radius: inherit;
+    }
+
+    .status--good {
+      --status-color: var(--positive);
+      --status-bg: var(--positive-soft);
+    }
+
+    .status--watch {
+      --status-color: var(--warning);
+      --status-bg: var(--warning-soft);
+    }
+
+    .status--risk {
+      --status-color: var(--danger);
+      --status-bg: var(--danger-soft);
+    }
+
+    .evidence-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 24px;
+    }
+
+    .evidence {
+      overflow: hidden;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+    }
+
+    .evidence__image {
+      display: grid;
+      place-items: center;
+      min-height: 350px;
+      padding: 16px;
+      background: var(--surface-alt);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .evidence__image img {
+      display: block;
+      width: 100%;
+      max-height: 410px;
+      object-fit: contain;
+      border-radius: 8px;
+      box-shadow: 0 8px 26px rgba(15, 23, 42, 0.12);
+    }
+
+    .evidence--mobile .evidence__image img {
+      width: auto;
+      height: 410px;
+    }
+
+    .evidence__body {
+      padding: 22px 24px 25px;
+    }
+
+    .evidence__number {
+      display: block;
+      color: var(--brand);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.14em;
+    }
+
+    .evidence h3 {
+      margin: 8px 0 8px;
+      font-size: 20px;
+    }
+
+    .evidence p {
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 14px;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+    }
+
+    .panel {
+      padding: 30px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+    }
+
+    .panel--positive {
+      background: #f7fffb;
+      border-color: #a7f3d0;
+    }
+
+    .panel--risk {
+      background: #fff9fa;
+      border-color: #fecdd3;
+    }
+
+    .panel h3 {
+      margin: 0 0 22px;
+      font-size: 24px;
+    }
+
+    .finding-list {
+      display: grid;
+      gap: 12px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .finding-list li {
+      display: grid;
+      grid-template-columns: 38px 1fr;
+      gap: 14px;
+      padding: 16px;
+      background: rgba(255, 255, 255, 0.74);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+    }
+
+    .finding-list__index {
+      display: grid;
+      place-items: center;
+      width: 38px;
+      height: 38px;
+      color: var(--brand);
+      background: var(--brand-soft);
+      border-radius: 10px;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .panel--positive .finding-list__index {
+      color: var(--positive);
+      background: var(--positive-soft);
+    }
+
+    .panel--risk .finding-list__index {
+      color: var(--danger);
+      background: var(--danger-soft);
+    }
+
+    .finding-list strong,
+    .finding-list span {
+      display: block;
+    }
+
+    .finding-list strong {
+      margin-bottom: 3px;
+      font-size: 15px;
+    }
+
+    .finding-list span:not(.finding-list__index) {
+      color: var(--ink-soft);
+      font-size: 13px;
+    }
+
+    .blocker-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .blocker {
+      position: relative;
+      min-height: 270px;
+      padding: 26px;
+      overflow: hidden;
+      background: #fff;
+      border: 1px solid #fecdd3;
+      border-radius: var(--radius-md);
+    }
+
+    .blocker::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 5px;
+      background: var(--danger);
+    }
+
+    .blocker__topline {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      color: var(--danger);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.12em;
+    }
+
+    .blocker h3 {
+      margin: 48px 0 10px;
+      font-size: 21px;
+    }
+
+    .blocker p {
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 14px;
+    }
+
+    .blocker__done {
+      display: block;
+      margin-top: 18px;
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .roadmap {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .roadmap__lane {
+      min-height: 510px;
+      padding: 28px;
+      color: var(--ink);
+      background: #fff;
+      border-radius: var(--radius-md);
+    }
+
+    .roadmap__lane:nth-child(1) {
+      border-top: 6px solid var(--danger);
+    }
+
+    .roadmap__lane:nth-child(2) {
+      border-top: 6px solid var(--warning);
+    }
+
+    .roadmap__lane:nth-child(3) {
+      border-top: 6px solid var(--positive);
+    }
+
+    .roadmap__lane .kicker {
+      color: var(--muted);
+    }
+
+    .roadmap__lane h3 {
+      margin: 0;
+      font-size: 25px;
+    }
+
+    .roadmap__lane > p {
+      min-height: 46px;
+      margin: 8px 0 24px;
+      color: var(--ink-soft);
+      font-size: 13px;
+    }
+
+    .roadmap__lane ol {
+      display: grid;
+      gap: 13px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      counter-reset: roadmap;
+    }
+
+    .roadmap__lane li {
+      counter-increment: roadmap;
+      position: relative;
+      padding: 15px 15px 15px 46px;
+      background: var(--surface-alt);
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      font-size: 14px;
+      font-weight: 800;
+    }
+
+    .roadmap__lane li::before {
+      content: counter(roadmap, decimal-leading-zero);
+      position: absolute;
+      left: 15px;
+      top: 15px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 900;
+    }
+
+    .positioning {
+      display: grid;
+      grid-template-columns: 1.35fr 0.65fr;
+      gap: 26px;
+    }
+
+    .positioning__statement {
+      padding: 42px;
+      color: #fff;
+      background: var(--teal);
+      border-radius: var(--radius-lg);
+    }
+
+    .positioning__statement .kicker {
+      color: #99f6e4;
+    }
+
+    .positioning__statement h3 {
+      margin: 0;
+      font-size: 38px;
+      line-height: 1.12;
+      letter-spacing: -0.035em;
+    }
+
+    .positioning__statement p {
+      max-width: 760px;
+      margin: 20px 0 0;
+      color: #ccfbf1;
+      font-size: 17px;
+    }
+
+    .package-grid {
+      display: grid;
+      gap: 12px;
+    }
+
+    .package {
+      padding: 19px 21px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+    }
+
+    .package strong,
+    .package span {
+      display: block;
+    }
+
+    .package strong {
+      font-size: 17px;
+    }
+
+    .package span {
+      margin-top: 4px;
+      color: var(--ink-soft);
+      font-size: 13px;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 26px;
+    }
+
+    .metric {
+      padding: 20px;
+      background: var(--surface-alt);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+    }
+
+    .metric strong,
+    .metric span {
+      display: block;
+    }
+
+    .metric strong {
+      color: var(--brand);
+      font-size: 26px;
+      line-height: 1.1;
+    }
+
+    .metric span {
+      margin-top: 7px;
+      color: var(--ink-soft);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      gap: 30px;
+      padding: 24px 72px;
+      color: var(--muted);
+      background: #fff;
+      border-top: 1px solid var(--border);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    body.p0-only [data-priority]:not([data-priority="P0"]) {
+      display: none;
+    }
+
+    @media (max-width: 1180px) {
+      .utility nav {
+        display: none;
+      }
+
+      .hero {
+        grid-template-columns: 1fr;
+      }
+
+      .score-grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+
+      .blocker-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 820px) {
+      .board {
+        width: min(100% - 24px, 700px);
+        margin-top: 12px;
+        border-radius: 20px;
+      }
+
+      .utility {
+        padding: 10px 12px;
+      }
+
+      .utility__brand span:last-child,
+      .button--quiet {
+        display: none;
+      }
+
+      .hero,
+      .section {
+        padding: 42px 26px;
+      }
+
+      .hero {
+        gap: 34px;
+      }
+
+      .verdict,
+      .split,
+      .evidence-grid,
+      .roadmap,
+      .positioning {
+        grid-template-columns: 1fr;
+      }
+
+      .score-grid,
+      .metrics,
+      .blocker-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .section__head {
+        align-items: start;
+        flex-direction: column;
+      }
+
+      .roadmap__lane {
+        min-height: auto;
+      }
+
+      .footer {
+        padding: 22px 26px;
+        flex-direction: column;
+      }
+    }
+
+    @media (max-width: 520px) {
+      .score-grid,
+      .metrics,
+      .blocker-grid,
+      .verdict {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media print {
+      @page {
+        size: A3 portrait;
+        margin: 10mm;
+      }
+
+      body {
+        background: #fff;
+      }
+
+      .utility {
+        display: none;
+      }
+
+      .board {
+        width: 100%;
+        margin: 0;
+        border: 0;
+        border-radius: 0;
+        box-shadow: none;
+      }
+
+      .section,
+      .hero {
+        break-inside: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="utility">
+    <div class="utility__brand">
+      <span class="utility__mark">eP</span>
+      <span>ePet 商業化稽核</span>
+    </div>
+    <nav aria-label="看板章節">
+      <a href="#score">成熟度</a>
+      <a href="#evidence">產品證據</a>
+      <a href="#findings">優勢與風險</a>
+      <a href="#blockers">上架阻斷</a>
+      <a href="#roadmap">路線圖</a>
+      <a href="#positioning">定位</a>
+    </nav>
+    <div class="utility__actions">
+      <button class="button button--quiet" id="p0Toggle" type="button" aria-pressed="false">只看 P0</button>
+      <button class="button" id="printBoard" type="button">列印／存 PDF</button>
+    </div>
+  </header>
+
+  <main class="board">
+    <section class="hero" aria-labelledby="audit-title">
+      <div>
+        <p class="eyebrow">Commercial readiness audit · 2026-07-30</p>
+        <h1 id="audit-title">很有教育產品的骨架，還不是能安全規模化的商品。</h1>
+        <p class="hero__lead">
+          ePet 已把班級激勵、形成性學習證據、考試趨勢與個別報告串成一條有差異化的教師工作流；
+          目前真正限制上架的不是功能量，而是身分、個資、資料架構與安全遊戲化治理。
+        </p>
+        <div class="hero__meta" aria-label="稽核範圍">
+          <span>React · Vite · Tailwind · Zustand</span>
+          <span>Cloudflare Worker · D1</span>
+          <span>教師端 Web SaaS</span>
+          <span>lint / rules / server / build 通過</span>
+        </div>
+      </div>
+      <div class="verdict" aria-label="整體成熟度">
+        <article class="verdict__card">
+          <span class="verdict__label">封閉式教師試點</span>
+          <strong class="verdict__score">7/10</strong>
+          <span class="verdict__note">可進 1–3 班、明確告知限制的付費前試點。</span>
+        </article>
+        <article class="verdict__card">
+          <span class="verdict__label">公開商業上架</span>
+          <strong class="verdict__score">4/10</strong>
+          <span class="verdict__note">需先完成 P0 治理、權限與資料層改造。</span>
+        </article>
+      </div>
+    </section>
+
+    <section class="section section--tint" id="score" aria-labelledby="score-title">
+      <div class="section__head">
+        <div>
+          <p class="section__eyebrow">01 · Readiness score</p>
+          <h2 id="score-title">商業化成熟度一覽</h2>
+        </div>
+        <p class="section__summary">
+          教育價值和教師效益已明顯成形；最低分集中在商業軟體必須可信賴的基礎層。
+          上架順序應由「補功能」轉成「先消除制度性風險」。
+        </p>
+      </div>
+      <div class="score-grid">
+        <article class="score-card status--good" style="--score: 8">
+          <span class="score-card__status">可放大</span>
+          <h3>教育遊戲化</h3>
+          <strong>8</strong>
+          <div class="score-card__bar"><span></span></div>
+        </article>
+        <article class="score-card status--good" style="--score: 7">
+          <span class="score-card__status">可試點</span>
+          <h3>教師價值</h3>
+          <strong>7</strong>
+          <div class="score-card__bar"><span></span></div>
+        </article>
+        <article class="score-card status--watch" style="--score: 6">
+          <span class="score-card__status">需精簡</span>
+          <h3>UX／行動操作</h3>
+          <strong>6</strong>
+          <div class="score-card__bar"><span></span></div>
+        </article>
+        <article class="score-card status--good" style="--score: 7">
+          <span class="score-card__status">具差異化</span>
+          <h3>包容與倫理</h3>
+          <strong>7</strong>
+          <div class="score-card__bar"><span></span></div>
+        </article>
+        <article class="score-card status--watch" style="--score: 5">
+          <span class="score-card__status">需驗證</span>
+          <h3>無障礙</h3>
+          <strong>5</strong>
+          <div class="score-card__bar"><span></span></div>
+        </article>
+        <article class="score-card status--risk" style="--score: 2">
+          <span class="score-card__status">P0 風險</span>
+          <h3>資安與隱私</h3>
+          <strong>2</strong>
+          <div class="score-card__bar"><span></span></div>
+        </article>
+        <article class="score-card status--risk" style="--score: 3">
+          <span class="score-card__status">P0 風險</span>
+          <h3>多校擴充</h3>
+          <strong>3</strong>
+          <div class="score-card__bar"><span></span></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" id="evidence" aria-labelledby="evidence-title">
+      <div class="section__head">
+        <div>
+          <p class="section__eyebrow">02 · Product evidence</p>
+          <h2 id="evidence-title">現況證據與產品判讀</h2>
+        </div>
+        <p class="section__summary">
+          以下均取自實際運行畫面。這套產品最有說服力的不是單一寵物機制，而是教師從班級輸入到個別回饋的完整閉環。
+        </p>
+      </div>
+      <div class="evidence-grid">
+        <article class="evidence">
+          <div class="evidence__image">
+            <img src="02-teacher-class-setup.png" alt="導師控制台的學生與班級設定畫面">
+          </div>
+          <div class="evidence__body">
+            <span class="evidence__number">EVIDENCE 01</span>
+            <h3>教師主導的班級工作台</h3>
+            <p>資訊架構已清楚分成學生、獎勵、活動、個人分析、規則與紀錄；下一步是把初次建班、匯入名單與權限設定變成 10 分鐘內可完成的導入精靈。</p>
+          </div>
+        </article>
+        <article class="evidence">
+          <div class="evidence__image">
+            <img src="03-reward-management.png" alt="導師以常用原因批次加減積分的獎勵管理畫面">
+          </div>
+          <div class="evidence__body">
+            <span class="evidence__number">EVIDENCE 02</span>
+            <h3>高頻、可追溯的獎勵操作</h3>
+            <p>常用原因、批次操作、飢餓與心情狀態形成了可理解的遊戲化回饋；應補上撤銷、異常偵測與可配置的班級公平政策。</p>
+          </div>
+        </article>
+        <article class="evidence">
+          <div class="evidence__image">
+            <img src="04-personal-analytics-overview.png" alt="學生個人學習分析與學習證據輸入畫面">
+          </div>
+          <div class="evidence__body">
+            <span class="evidence__number">EVIDENCE 03</span>
+            <h3>積分與學習證據有意識地分離</h3>
+            <p>這是最值得商業化的教育設計：遊戲獎勵不直接冒充學習成效。分析頁需從長表單改成「摘要—解讀—下一步」的教師決策節奏。</p>
+          </div>
+        </article>
+        <article class="evidence evidence--mobile">
+          <div class="evidence__image">
+            <img src="07-mobile-exam-entry.png" alt="行動版考試趨勢與個別報告輸入畫面">
+          </div>
+          <div class="evidence__body">
+            <span class="evidence__number">EVIDENCE 04</span>
+            <h3>考試輸入到 A4 報告的價值主張成立</h3>
+            <p>「全班一次輸入 → 自動趨勢與弱項 → 教師評語 → 個別 PDF」具直接節省時間的付費理由；行動版仍需固定操作列、批次貼上與離線草稿。</p>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section section--tint" id="findings" aria-labelledby="findings-title">
+      <div class="section__head">
+        <div>
+          <p class="section__eyebrow">03 · Findings</p>
+          <h2 id="findings-title">值得保留的優勢，與不能帶進商店的風險</h2>
+        </div>
+      </div>
+      <div class="split">
+        <article class="panel panel--positive">
+          <h3>產品優勢</h3>
+          <ul class="finding-list">
+            <li>
+              <span class="finding-list__index">01</span>
+              <div><strong>形成性證據與遊戲積分分離</strong><span>避免把順從、獎勵或排名誤當成學習成效。</span></div>
+            </li>
+            <li>
+              <span class="finding-list__index">02</span>
+              <div><strong>具包容性模式的產品意識</strong><span>已看見公開比較、處罰與情緒壓力對學生的影響。</span></div>
+            </li>
+            <li>
+              <span class="finding-list__index">03</span>
+              <div><strong>魔王討伐獎勵可拆分、可追溯</strong><span>排名、參與、進步獎勵的拆分有助於公平與說明。</span></div>
+            </li>
+            <li>
+              <span class="finding-list__index">04</span>
+              <div><strong>考試分析規則可解釋、可測試</strong><span>比黑箱 AI 更適合教師採用，也更容易接受學校審查。</span></div>
+            </li>
+          </ul>
+        </article>
+        <article class="panel panel--risk">
+          <h3>結構性風險</h3>
+          <ul class="finding-list">
+            <li>
+              <span class="finding-list__index">01</span>
+              <div><strong>缺少正式身分與角色權限</strong><span>工作區識別不足以保護學生成績、評語與處罰紀錄。</span></div>
+            </li>
+            <li>
+              <span class="finding-list__index">02</span>
+              <div><strong>學生個資與學習資料治理未成形</strong><span>需有資料最小化、保存期限、匯出、刪除與稽核紀錄。</span></div>
+            </li>
+            <li>
+              <span class="finding-list__index">03</span>
+              <div><strong>單一大型 JSON 狀態成為擴充瓶頸</strong><span>同步衝突、局部查詢、備份、稽核與多校隔離都會受限。</span></div>
+            </li>
+            <li>
+              <span class="finding-list__index">04</span>
+              <div><strong>教師導入仍高度手動</strong><span>空班級、長分析頁與逐格考試輸入會阻礙真實課堂採用。</span></div>
+            </li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" id="blockers" aria-labelledby="blockers-title">
+      <div class="section__head">
+        <div>
+          <p class="section__eyebrow">04 · Launch blockers</p>
+          <h2 id="blockers-title">公開上架前的四個 P0</h2>
+        </div>
+        <p class="section__summary">這四項不是「之後再優化」；它們決定學校、家長與平台商店是否能信任產品。</p>
+      </div>
+      <div class="blocker-grid">
+        <article class="blocker" data-priority="P0">
+          <div class="blocker__topline"><span>P0 · 01</span><span>IDENTITY</span></div>
+          <h3>身分、角色與租戶邊界</h3>
+          <p>導師、協同教師、行政、學生與家長應有明確角色；每個請求必須由伺服器驗證所屬學校與班級。</p>
+          <span class="blocker__done">完成定義：越權測試與稽核紀錄通過</span>
+        </article>
+        <article class="blocker" data-priority="P0">
+          <div class="blocker__topline"><span>P0 · 02</span><span>PRIVACY</span></div>
+          <h3>未成年人個資治理</h3>
+          <p>建立最小收集、同意基礎、保存期限、刪除／匯出流程、隱私聲明與資料處理者盤點。</p>
+          <span class="blocker__done">完成定義：可回應家長與學校資料請求</span>
+        </article>
+        <article class="blocker" data-priority="P0">
+          <div class="blocker__topline"><span>P0 · 03</span><span>DATA</span></div>
+          <h3>正規化資料與可靠同步</h3>
+          <p>拆分學生、事件、獎勵、考試與報告；加入版本、交易、備份還原、衝突處理與租戶隔離。</p>
+          <span class="blocker__done">完成定義：故障演練可恢復且不遺失資料</span>
+        </article>
+        <article class="blocker" data-priority="P0">
+          <div class="blocker__topline"><span>P0 · 04</span><span>SAFETY</span></div>
+          <h3>安全遊戲化與無障礙基線</h3>
+          <p>預設隱藏敏感排名、限制負向操作、提供撤銷；完成鍵盤、焦點、對比、動態減量與螢幕閱讀測試。</p>
+          <span class="blocker__done">完成定義：WCAG 2.2 AA 核心流程通過</span>
+        </article>
+      </div>
+    </section>
+
+    <section class="section section--dark" id="roadmap" aria-labelledby="roadmap-title">
+      <div class="section__head">
+        <div>
+          <p class="section__eyebrow">05 · Commercial roadmap</p>
+          <h2 id="roadmap-title">從封閉試點到多校商品</h2>
+        </div>
+        <p class="section__summary">每一階段都要能被真實教師驗證，而不只是完成功能清單。</p>
+      </div>
+      <div class="roadmap">
+        <article class="roadmap__lane" data-priority="P0">
+          <p class="kicker">0–8 weeks · P0</p>
+          <h3>上架阻斷</h3>
+          <p>先建立可信任的產品底座。</p>
+          <ol>
+            <li>正式登入、RBAC 與班級／學校租戶隔離</li>
+            <li>學生資料生命週期與管理者稽核工具</li>
+            <li>從單一 JSON 拆分核心資料表與事件紀錄</li>
+            <li>備份還原、同步衝突與離線草稿策略</li>
+            <li>安全遊戲化預設值與 WCAG 核心流程</li>
+          </ol>
+        </article>
+        <article class="roadmap__lane" data-priority="P1">
+          <p class="kicker">8–16 weeks · P1</p>
+          <h3>付費教師試點</h3>
+          <p>證明節省時間與提升回饋品質。</p>
+          <ol>
+            <li>名單 CSV 匯入、示範班與 10 分鐘導入精靈</li>
+            <li>考試成績批次貼上、驗證與快速鍵</li>
+            <li>個人分析改成摘要、解讀、下一步三層</li>
+            <li>個別 PDF 批次產生、校務品牌與列印驗證</li>
+            <li>教師回饋、功能採用與報告時間的產品分析</li>
+          </ol>
+        </article>
+        <article class="roadmap__lane" data-priority="P2">
+          <p class="kicker">16+ weeks · P2</p>
+          <h3>規模化與商店</h3>
+          <p>從單班工具升級成可採購的平台。</p>
+          <ol>
+            <li>多校管理、班級搬移、學年封存與跨裝置同步</li>
+            <li>方案、授權席次、試用、續訂與發票流程</li>
+            <li>家長／學生安全檢視與細緻分享權限</li>
+            <li>校務系統整合與可攜的資料匯入匯出</li>
+            <li>商店素材、支援 SLA、事件回報與營運手冊</li>
+          </ol>
+        </article>
+      </div>
+    </section>
+
+    <section class="section section--tint" id="positioning" aria-labelledby="positioning-title">
+      <div class="section__head">
+        <div>
+          <p class="section__eyebrow">06 · Positioning & packaging</p>
+          <h2 id="positioning-title">先成為教師願意付費的 SaaS，再談學生商店遊戲</h2>
+        </div>
+      </div>
+      <div class="positioning">
+        <article class="positioning__statement">
+          <p class="kicker">Recommended market position</p>
+          <h3>教師主導的 B2B2C Web SaaS</h3>
+          <p>班級激勵 × 形成性證據 × 家長可讀報告。寵物是持續參與的媒介；教師決策效率、學習回饋品質與資料可信度才是購買理由。</p>
+        </article>
+        <div class="package-grid" aria-label="建議方案">
+          <article class="package"><strong>Free</strong><span>1 班、基礎獎勵與有限報告</span></article>
+          <article class="package"><strong>Teacher Pro</strong><span>多班、考試分析、批次 PDF、進階規則</span></article>
+          <article class="package"><strong>School</strong><span>管理、SSO、稽核、資料政策與 SLA</span></article>
+        </div>
+      </div>
+      <div class="metrics" aria-label="試點成功指標">
+        <article class="metric"><strong>&lt; 10 分鐘</strong><span>首次建班與匯入完成</span></article>
+        <article class="metric"><strong>−50%</strong><span>教師產生個別報告所需時間</span></article>
+        <article class="metric"><strong>99.9%</strong><span>同步與資料可用性目標</span></article>
+        <article class="metric"><strong>0 件</strong><span>越權與未授權資料事件</span></article>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <span>ePet 商業化產品稽核 · 產品／設計／工程共同決策稿</span>
+      <span>核心判斷：教育價值可試點；治理底座未達公開上架標準。</span>
+    </footer>
+  </main>
+
+  <script>
+    const p0Toggle = document.querySelector("#p0Toggle");
+    const printBoard = document.querySelector("#printBoard");
+
+    p0Toggle.addEventListener("click", () => {
+      const nextState = p0Toggle.getAttribute("aria-pressed") !== "true";
+      p0Toggle.setAttribute("aria-pressed", String(nextState));
+      document.body.classList.toggle("p0-only", nextState);
+      p0Toggle.textContent = nextState ? "顯示全部" : "只看 P0";
+    });
+
+    printBoard.addEventListener("click", () => window.print());
+  </script>
+</body>
+</html>

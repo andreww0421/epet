@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   ClipboardList,
+  Download,
   FilePlus2,
   FileText,
   Minus,
@@ -21,6 +22,11 @@ import {
   computeExamStudentAnalysis,
 } from '../../examAnalytics';
 import { createExamReportHtml } from '../../examReport';
+import {
+  applyExamScorePaste,
+  createExamCsvTemplate,
+  previewExamScorePaste,
+} from '../../imports/tabularImport';
 import type {
   ExamRecord,
   ExamStudentResult,
@@ -98,7 +104,24 @@ const formatDelta = (value: number | null) =>
 
 const hasScore = (value: number | undefined) => Number.isFinite(value);
 
-export const ExamAssessmentPanel: React.FC = () => {
+const createSafeFilenameSegment = (value: string, fallback: string) =>
+  value
+    .normalize('NFKC')
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^[-_.]+|[-_.]+$/g, '')
+    .slice(0, 60) || fallback;
+
+type ExamAssessmentPanelProps = {
+  classId?: string;
+  readOnly?: boolean;
+};
+
+export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
+  classId,
+  readOnly = false,
+}) => {
   const {
     currentClass,
     lang,
@@ -108,7 +131,7 @@ export const ExamAssessmentPanel: React.FC = () => {
   } = useStore(
     useShallow((state) => ({
       currentClass: state.data.classes.find(
-        (classData) => classData.id === state.data.currentClassId,
+        (classData) => classData.id === (classId ?? state.data.currentClassId),
       ),
       lang: state.data.settings?.language || 'zh',
       saveExamRecord: state.saveExamRecord,
@@ -140,7 +163,26 @@ export const ExamAssessmentPanel: React.FC = () => {
         addItem: 'Add item',
         duplicateItems: 'Item names must be unique.',
         classScores: 'Class score sheet',
-        classScoresHint: 'Click a learner row to open the individual analysis below.',
+        classScoresHint: 'Click a learner for analysis. Paste an Excel or Google Sheets block into any score cell; Tab moves right and Enter moves down.',
+        downloadScoreTemplate: 'Download score CSV',
+        templateFailed: 'The score template could not be created.',
+        pastePreview: 'Score paste preview',
+        pasteConfirm: 'Apply to draft',
+        pasteCancel: 'Cancel',
+        pasteBlocked: 'Fix every error before applying this paste.',
+        pasteApplied: '{count} scores were added to the unsaved draft.',
+        pasteMoreIssues: '{count} more issues are not shown.',
+        pasteIssueMessages: {
+          'empty-paste': 'The pasted range is empty.',
+          'invalid-start-position': 'The starting score cell is invalid.',
+          'parse-error': 'The pasted table could not be parsed.',
+          'matrix-overflow': 'The pasted range extends beyond the score sheet.',
+          'invalid-score': 'Enter a valid numeric score.',
+          'negative-score': 'A score cannot be negative.',
+          'score-over-maximum': 'A score exceeds the item maximum.',
+          'formula-risk': 'Spreadsheet formulas are not accepted as scores.',
+          'no-score-changes': 'No score changes were found; blank cells remain unchanged.',
+        },
         learner: 'Learner',
         completion: 'Completion',
         entered: 'scores entered',
@@ -191,7 +233,26 @@ export const ExamAssessmentPanel: React.FC = () => {
         addItem: '新增項目',
         duplicateItems: '項目名稱不可重複。',
         classScores: '全班成績表',
-        classScoresHint: '點選學生列，即可在下方查看個別分析。',
+        classScoresHint: '點選學生可查看分析；也可將 Excel 或 Google 試算表的多格資料貼到任一成績格，Tab 向右、Enter 向下。',
+        downloadScoreTemplate: '下載成績 CSV 範本',
+        templateFailed: '無法產生成績範本。',
+        pastePreview: '成績貼上預覽',
+        pasteConfirm: '套用至草稿',
+        pasteCancel: '取消',
+        pasteBlocked: '請先修正所有錯誤，再套用這批成績。',
+        pasteApplied: '已將 {count} 筆成績加入尚未保存的草稿。',
+        pasteMoreIssues: '另有 {count} 個問題未顯示。',
+        pasteIssueMessages: {
+          'empty-paste': '貼上的範圍沒有資料。',
+          'invalid-start-position': '起始成績格無效。',
+          'parse-error': '無法解析貼上的表格。',
+          'matrix-overflow': '貼上範圍超出目前成績表。',
+          'invalid-score': '請輸入有效的數字成績。',
+          'negative-score': '成績不可小於零。',
+          'score-over-maximum': '成績超過該項目的滿分。',
+          'formula-risk': '成績欄不接受試算表公式。',
+          'no-score-changes': '沒有可套用的成績；空白儲存格會保留原值。',
+        },
         learner: '學生',
         completion: '輸入進度',
         entered: '筆成績已輸入',
@@ -230,12 +291,16 @@ export const ExamAssessmentPanel: React.FC = () => {
   const [draft, setDraft] = useState<ExamRecord>(() => createExamDraft(lang, 1));
   const [selectedStudentId, setSelectedStudentId] = useState('');
   const [isDirty, setIsDirty] = useState(false);
+  const [scorePastePreview, setScorePastePreview] = useState<
+    ReturnType<typeof previewExamScorePaste> | null
+  >(null);
 
   useEffect(() => {
     const firstExam = exams[0];
     setDraft(firstExam ? cloneExam(firstExam) : createExamDraft(lang, exams.length + 1));
     setSelectedStudentId(students[0]?.id ?? '');
     setIsDirty(false);
+    setScorePastePreview(null);
   }, [currentClass?.id]);
 
   useEffect(() => {
@@ -252,10 +317,12 @@ export const ExamAssessmentPanel: React.FC = () => {
       currentStoredExam.updatedAt !== draft.updatedAt
     ) {
       setDraft(cloneExam(currentStoredExam));
+      setScorePastePreview(null);
       return;
     }
     if (!currentStoredExam && exams[0]) {
       setDraft(cloneExam(exams[0]));
+      setScorePastePreview(null);
     }
   }, [exams]);
 
@@ -274,6 +341,7 @@ export const ExamAssessmentPanel: React.FC = () => {
     draft.items.length > 0 &&
     draft.items.every((item) => item.name.trim() && item.maxScore > 0) &&
     !hasDuplicateItemNames;
+  const canPrint = canSave && (!readOnly || Boolean(storedExam));
   const allExamsForAnalysis = [
     draft,
     ...exams.filter((exam) => exam.id !== draft.id),
@@ -310,10 +378,29 @@ export const ExamAssessmentPanel: React.FC = () => {
       : analysis?.trend === 'declining'
         ? 'text-rose-700'
         : 'text-slate-700';
+  const scorePasteHasErrors = scorePastePreview?.issues.some(
+    (issue) => issue.severity === 'error',
+  ) ?? false;
+  const scorePasteErrorCount = scorePastePreview?.issues.filter(
+    (issue) => issue.severity === 'error',
+  ).length ?? 0;
+  const scorePasteWarningCount = scorePastePreview?.issues.filter(
+    (issue) => issue.severity === 'warning',
+  ).length ?? 0;
+  const canApplyScorePaste = Boolean(
+    scorePastePreview?.canApply &&
+    !scorePasteHasErrors &&
+    scorePastePreview.patches.length > 0,
+  );
+  const pastedStudentCount = scorePastePreview
+    ? new Set(scorePastePreview.patches.map((patch) => patch.studentId)).size
+    : 0;
 
   const markDirty = (next: ExamRecord) => {
+    if (readOnly) return;
     setDraft(next);
     setIsDirty(true);
+    setScorePastePreview(null);
   };
 
   const chooseExam = (examId: string) => {
@@ -326,9 +413,11 @@ export const ExamAssessmentPanel: React.FC = () => {
     }
     setSelectedStudentId(students[0]?.id ?? '');
     setIsDirty(false);
+    setScorePastePreview(null);
   };
 
   const saveDraft = () => {
+    if (readOnly) return;
     if (!canSave) {
       showToast(copy.completeRequired, 'error');
       return;
@@ -363,6 +452,148 @@ export const ExamAssessmentPanel: React.FC = () => {
     );
   };
 
+  const downloadScoreTemplate = () => {
+    if (readOnly || !canSave) return;
+    try {
+      const generatedCsv = createExamCsvTemplate(draft, students, lang);
+      const csv = generatedCsv.startsWith('\uFEFF')
+        ? generatedCsv
+        : `\uFEFF${generatedCsv}`;
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      const className = createSafeFilenameSegment(currentClass.name, 'class');
+      const examName = createSafeFilenameSegment(draft.title, 'assessment');
+      anchor.href = objectUrl;
+      anchor.download = `${className}_${examName}_${draft.examDate}.csv`;
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+    } catch {
+      showToast(copy.templateFailed, 'error');
+    }
+  };
+
+  const handleScorePaste = (
+    event: React.ClipboardEvent<HTMLInputElement>,
+    studentIndex: number,
+    itemIndex: number,
+  ) => {
+    if (readOnly) return;
+    const source = event.clipboardData.getData('text/plain');
+    if (!/[\t\r\n]/.test(source)) return;
+    event.preventDefault();
+    setScorePastePreview(
+      previewExamScorePaste(source, {
+        exam: draft,
+        students,
+        startStudentIndex: studentIndex,
+        startItemIndex: itemIndex,
+      }),
+    );
+  };
+
+  const applyScorePaste = () => {
+    if (!scorePastePreview || !canApplyScorePaste || scorePasteHasErrors) return;
+    const preview = scorePastePreview;
+    const patchCount = preview.patches.length;
+    markDirty(applyExamScorePaste(draft, preview, Date.now()));
+    showToast(
+      copy.pasteApplied.replace('{count}', patchCount.toString()),
+      'success',
+    );
+  };
+
+  const focusScoreCell = (studentIndex: number, itemIndex: number) => {
+    const target = document.querySelector<HTMLInputElement>(
+      `input[data-score-row="${studentIndex}"][data-score-column="${itemIndex}"]`,
+    );
+    if (!target) return false;
+    target.focus();
+    target.select();
+    return true;
+  };
+
+  const handleScoreKeyDown = (
+    event: React.KeyboardEvent<HTMLInputElement>,
+    studentIndex: number,
+    itemIndex: number,
+  ) => {
+    if (
+      readOnly ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.altKey ||
+      (event.key !== 'Enter' && event.key !== 'Tab')
+    ) {
+      return;
+    }
+    let nextStudentIndex = studentIndex;
+    let nextItemIndex = itemIndex;
+    if (event.key === 'Enter') {
+      nextStudentIndex += event.shiftKey ? -1 : 1;
+    } else {
+      const nextLinearIndex =
+        studentIndex * draft.items.length +
+        itemIndex +
+        (event.shiftKey ? -1 : 1);
+      if (
+        nextLinearIndex < 0 ||
+        nextLinearIndex >= students.length * draft.items.length
+      ) {
+        return;
+      }
+      nextStudentIndex = Math.floor(nextLinearIndex / draft.items.length);
+      nextItemIndex = nextLinearIndex % draft.items.length;
+    }
+    if (!focusScoreCell(nextStudentIndex, nextItemIndex)) return;
+    event.preventDefault();
+  };
+
+  const formatScorePasteIssue = (
+    issue: ReturnType<typeof previewExamScorePaste>['issues'][number],
+  ) => {
+    const label = copy.pasteIssueMessages[
+      issue.code as keyof typeof copy.pasteIssueMessages
+    ] ?? issue.code;
+    const locationParts = [
+      issue.row == null
+        ? null
+        : lang === 'en'
+          ? `row ${issue.row}`
+          : `第 ${issue.row} 列`,
+      issue.column == null
+        ? null
+        : lang === 'en'
+          ? `column ${issue.column}`
+          : `第 ${issue.column} 欄`,
+    ].filter((part): part is string => Boolean(part));
+    const locationLabel = locationParts.length > 0
+      ? `${locationParts.join(lang === 'en' ? ', ' : '、')}：${label}`
+      : label;
+    const studentName = typeof issue.details?.studentName === 'string'
+      ? issue.details.studentName
+      : '';
+    const itemName = typeof issue.details?.itemName === 'string'
+      ? issue.details.itemName
+      : '';
+    const maximumScore = typeof issue.details?.maximumScore === 'number'
+      ? issue.details.maximumScore
+      : null;
+    if (!studentName && !itemName && maximumScore == null) return locationLabel;
+    const targetLabel = [studentName, itemName].filter(Boolean).join(' / ');
+    const maximumLabel = maximumScore == null
+      ? ''
+      : lang === 'en'
+        ? `maximum ${maximumScore}`
+        : `滿分 ${maximumScore}`;
+    const detailsLabel = [targetLabel, maximumLabel]
+      .filter(Boolean)
+      .join(lang === 'en' ? ', ' : '，');
+    return lang === 'en'
+      ? `${locationLabel} (${detailsLabel})`
+      : `${locationLabel}（${detailsLabel}）`;
+  };
+
   const updateComment = (studentId: string, mentorComment: string) => {
     markDirty(
       upsertStudentResult(draft, studentId, (result) => ({
@@ -374,7 +605,7 @@ export const ExamAssessmentPanel: React.FC = () => {
   };
 
   const printReport = () => {
-    if (!selectedStudent || !analysis || !canSave) {
+    if (!selectedStudent || !analysis || !canPrint) {
       showToast(copy.completeRequired, 'error');
       return;
     }
@@ -383,7 +614,7 @@ export const ExamAssessmentPanel: React.FC = () => {
       showToast(copy.popupBlocked, 'error');
       return;
     }
-    saveDraft();
+    if (!readOnly) saveDraft();
     reportWindow.opener = null;
     reportWindow.document.open();
     reportWindow.document.write(
@@ -469,6 +700,7 @@ export const ExamAssessmentPanel: React.FC = () => {
               <input
                 value={draft.title}
                 maxLength={100}
+                readOnly={readOnly}
                 onChange={(event) =>
                   markDirty({ ...draft, title: event.target.value })
                 }
@@ -480,12 +712,14 @@ export const ExamAssessmentPanel: React.FC = () => {
               <input
                 type="date"
                 value={draft.examDate}
+                readOnly={readOnly}
                 onChange={(event) =>
                   markDirty({ ...draft, examDate: event.target.value })
                 }
                 className="mt-1 w-full rounded-md border border-slate-300 p-2 text-sm"
               />
             </label>
+            {!readOnly && (
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
@@ -499,6 +733,7 @@ export const ExamAssessmentPanel: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => {
+                    if (readOnly) return;
                     if (!window.confirm(copy.deleteConfirm)) return;
                     deleteExamRecord(draft.id);
                     const remaining = exams.filter((exam) => exam.id !== draft.id);
@@ -516,6 +751,7 @@ export const ExamAssessmentPanel: React.FC = () => {
                 </button>
               )}
             </div>
+            )}
           </div>
 
           <div className="border-b border-slate-200 bg-[#f8f4ea] px-5 py-4">
@@ -524,6 +760,7 @@ export const ExamAssessmentPanel: React.FC = () => {
                 <h3 className="text-sm font-black text-slate-900">{copy.itemSettings}</h3>
                 <p className="mt-1 text-xs text-slate-500">{copy.itemSettingsHint}</p>
               </div>
+              {!readOnly && (
               <button
                 type="button"
                 disabled={draft.items.length >= MAX_EXAM_ITEMS}
@@ -547,6 +784,7 @@ export const ExamAssessmentPanel: React.FC = () => {
                 <Plus className="mr-1.5 h-4 w-4" />
                 {copy.addItem}
               </button>
+              )}
             </div>
             <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
               {draft.items.map((item, itemIndex) => (
@@ -559,6 +797,7 @@ export const ExamAssessmentPanel: React.FC = () => {
                     <input
                       value={item.name}
                       maxLength={80}
+                      readOnly={readOnly}
                       onChange={(event) =>
                         markDirty({
                           ...draft,
@@ -580,6 +819,7 @@ export const ExamAssessmentPanel: React.FC = () => {
                       max="1000"
                       step="0.5"
                       value={item.maxScore}
+                      readOnly={readOnly}
                       onChange={(event) => {
                         const nextMax = Math.min(
                           1000,
@@ -609,6 +849,7 @@ export const ExamAssessmentPanel: React.FC = () => {
                       className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm text-slate-900"
                     />
                   </label>
+                  {!readOnly && (
                   <button
                     type="button"
                     disabled={draft.items.length <= 1}
@@ -630,6 +871,7 @@ export const ExamAssessmentPanel: React.FC = () => {
                   >
                     <X className="h-4 w-4" />
                   </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -647,7 +889,18 @@ export const ExamAssessmentPanel: React.FC = () => {
                 <h3 className="text-sm font-black text-slate-900">{copy.classScores}</h3>
                 <p className="mt-1 text-xs text-slate-500">{copy.classScoresHint}</p>
               </div>
-              <div className="flex items-center gap-3 text-xs">
+              <div className="flex flex-wrap items-center justify-end gap-3 text-xs">
+                {!readOnly && (
+                  <button
+                    type="button"
+                    onClick={downloadScoreTemplate}
+                    disabled={!canSave}
+                    className="inline-flex items-center rounded-md border border-teal-300 bg-white px-3 py-2 font-bold text-teal-800 hover:bg-teal-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                  >
+                    <Download className="mr-1.5 h-4 w-4" aria-hidden="true" />
+                    {copy.downloadScoreTemplate}
+                  </button>
+                )}
                 <span className="font-bold text-slate-600">
                   {enteredScoreCount} / {totalScoreCount} {copy.entered}
                 </span>
@@ -657,6 +910,80 @@ export const ExamAssessmentPanel: React.FC = () => {
                 </span>
               </div>
             </div>
+            {scorePastePreview && (
+              <div
+                className={`mt-3 border-l-4 px-4 py-3 ${
+                  scorePasteHasErrors
+                    ? 'border-rose-500 bg-rose-50'
+                    : 'border-teal-500 bg-teal-50'
+                }`}
+                role="region"
+                aria-live="polite"
+                aria-label={copy.pastePreview}
+              >
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className={`text-sm font-black ${
+                      scorePasteHasErrors ? 'text-rose-950' : 'text-teal-950'
+                    }`}>
+                      {copy.pastePreview}
+                    </p>
+                    <p className="mt-1 text-xs leading-5 text-slate-700">
+                      {lang === 'en'
+                        ? `${scorePastePreview.rowCount} rows × ${scorePastePreview.columnCount} columns; ${scorePastePreview.patches.length} score changes across ${pastedStudentCount} learners. ${scorePasteErrorCount} errors, ${scorePasteWarningCount} warnings.`
+                        : `${scorePastePreview.rowCount} 列 × ${scorePastePreview.columnCount} 欄；共 ${scorePastePreview.patches.length} 筆成績異動、${pastedStudentCount} 位學生。${scorePasteErrorCount} 個錯誤、${scorePasteWarningCount} 個提醒。`}
+                    </p>
+                    {scorePasteHasErrors && (
+                      <p className="mt-1 text-xs font-bold text-rose-800">
+                        {copy.pasteBlocked}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex shrink-0 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setScorePastePreview(null)}
+                      className="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
+                    >
+                      {copy.pasteCancel}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={applyScorePaste}
+                      disabled={!canApplyScorePaste}
+                      className="rounded-md bg-teal-700 px-3 py-2 text-xs font-bold text-white hover:bg-teal-600 disabled:cursor-not-allowed disabled:bg-slate-300"
+                    >
+                      {copy.pasteConfirm}
+                    </button>
+                  </div>
+                </div>
+                {scorePastePreview.issues.length > 0 && (
+                  <div className="mt-3 max-h-40 overflow-y-auto border-t border-slate-200 pt-2">
+                    <ul className="space-y-1 text-xs text-slate-700">
+                      {scorePastePreview.issues.slice(0, 12).map((issue, issueIndex) => (
+                        <li
+                          key={`${issue.code}-${issue.row ?? 'all'}-${issue.column ?? 'all'}-${issueIndex}`}
+                          className={issue.severity === 'error'
+                            ? 'font-bold text-rose-800'
+                            : 'text-amber-800'}
+                        >
+                          {issue.severity === 'error' ? '•' : '△'}{' '}
+                          {formatScorePasteIssue(issue)}
+                        </li>
+                      ))}
+                    </ul>
+                    {scorePastePreview.issues.length > 12 && (
+                      <p className="mt-2 text-xs font-bold text-slate-600">
+                        {copy.pasteMoreIssues.replace(
+                          '{count}',
+                          (scorePastePreview.issues.length - 12).toString(),
+                        )}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
             <div className="mt-3 overflow-x-auto border border-slate-200">
               <table className="min-w-full border-collapse text-sm">
                 <thead>
@@ -706,15 +1033,24 @@ export const ExamAssessmentPanel: React.FC = () => {
                         >
                           {student.name}
                         </th>
-                        {draft.items.map((item) => (
+                        {draft.items.map((item, itemIndex) => (
                           <td key={item.id} className="border-r border-slate-200 px-2 py-1.5">
                             <input
                               type="number"
+                              data-score-row={studentIndex}
+                              data-score-column={itemIndex}
                               min="0"
                               max={item.maxScore}
                               step="0.5"
                               value={result?.scores[item.id] ?? ''}
+                              readOnly={readOnly}
                               onFocus={() => setSelectedStudentId(student.id)}
+                              onPaste={(event) =>
+                                handleScorePaste(event, studentIndex, itemIndex)
+                              }
+                              onKeyDown={(event) =>
+                                handleScoreKeyDown(event, studentIndex, itemIndex)
+                              }
                               onChange={(event) =>
                                 updateScore(
                                   student.id,
@@ -847,12 +1183,13 @@ export const ExamAssessmentPanel: React.FC = () => {
                   <FileText className="mr-2 h-4 w-4 text-teal-700" />
                   {copy.mentorComment}
                 </h3>
-                <textarea
+                  <textarea
                   value={
                     getStudentResult(draft, selectedStudent.id)?.mentorComment ?? ''
                   }
                   maxLength={MAX_EXAM_COMMENT_LENGTH}
-                  rows={8}
+                    rows={8}
+                    readOnly={readOnly}
                   onChange={(event) =>
                     updateComment(selectedStudent.id, event.target.value)
                   }
@@ -860,6 +1197,7 @@ export const ExamAssessmentPanel: React.FC = () => {
                   className="mt-3 w-full resize-y rounded-md border border-slate-300 bg-white p-3 text-sm leading-6 focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
                 />
                 <div className="mt-4 grid gap-2">
+                  {!readOnly && (
                   <button
                     type="button"
                     onClick={saveDraft}
@@ -869,10 +1207,11 @@ export const ExamAssessmentPanel: React.FC = () => {
                     <Save className="mr-2 h-4 w-4" />
                     {copy.save}
                   </button>
+                  )}
                   <button
                     type="button"
                     onClick={printReport}
-                    disabled={!canSave}
+                    disabled={!canPrint}
                     className="inline-flex items-center justify-center rounded-md bg-teal-700 px-4 py-2.5 text-sm font-bold text-white hover:bg-teal-600 disabled:bg-slate-300"
                   >
                     <Printer className="mr-2 h-4 w-4" />

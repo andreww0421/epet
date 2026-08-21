@@ -11,7 +11,9 @@
     "enabled": true
   },
   "vars": {
-    "ALLOWED_ORIGINS": "https://andreww0421.github.io,http://localhost:3000,http://127.0.0.1:3000"
+    "ALLOWED_ORIGINS": "https://andreww0421.github.io,http://localhost:3000,http://127.0.0.1:3000",
+    "PUBLIC_APP_URL": "https://andreww0421.github.io/epet/",
+    "REGISTRATION_ENABLED": "false"
   },
   "d1_databases": [
     {

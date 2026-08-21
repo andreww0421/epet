@@ -12,18 +12,20 @@
 ## 目前功能
 
 - 班級管理：新增班級、切換班級、刪除班級
-- 學生管理：新增學生、刪除學生、手動加減分、降級
+- 學生管理：新增／刪除學生、CSV／TSV 名冊預覽匯入、手動加減分、降級
 - 寵物養成：餵食、升級、扭蛋、免費升級換寵
 - 對戰排行：對戰、勝敗統計、段位排行與近 7 日成長回饋榜
 - 魔王副本：輸出貢獻排行、參與與進步獎勵、名次獎勵自動遞減設定
-- 懲罰系統：警告、正式處罰、虛弱狀態
-- 記錄系統：處罰記錄、加減分記錄、導師每日評語與常用原因歷史
+- 懲罰系統：警告、正式處罰、虛弱狀態、降級冷卻與補償式撤銷帳本
+- 記錄系統：處罰、加減分、導師每日評語與魔王獎勵拆分記錄
 - 教育連結：五種能力標籤、每班最多三個學習目標、學生下一目標與導師每日評語
 - 學習證據：觀察、作業、反思、專題與評量紀錄，與遊戲積分完全分開
 - 個人分析：學生能力概況、最近證據、支持需求、證據趨勢與遊戲狀態對照
+- 考試分析：試算表多格貼上、整批分數驗證、學習趨勢／弱項、導師評語與個別 A4 PDF
 - 教育指標：證據覆蓋、進展／精熟率、目標對齊、支持後進展與能力涵蓋
 - 公開安全：可切換的包容性模式、姓名遮罩、排行榜模式、週末暫停衰減與友善照護
-- 資料管理：Cloudflare D1 同步、revision 衝突保護、localStorage 離線快取與 JSON 匯出 / 匯入
+- 會員安全：註冊、登入、登出、忘記／重設密碼、可撤銷 session 與工作區角色權限
+- 資料管理：Cloudflare D1 同步、revision 衝突保護、版本快照、JSON 匯出 / 匯入與舊本機資料明確遷移
 
 ## 遊戲規則摘要
 
@@ -58,6 +60,8 @@
 - `正式處罰`：直接套用較重處罰
 - 自動處罰後會進入 `24 小時` 虛弱
 - 正式處罰後會進入 `48 小時` 虛弱
+- 正式處罰與降級必須填寫理由並二次確認；降級同一學生 `24 小時` 內不可重複執行
+- 正式處罰與降級有 `10 秒` 撤銷視窗；撤銷保留原事件並追加補償紀錄，不會覆蓋後續合法變更
 - 快速加減分與手動調整都會留下操作記錄
 - 導師可自訂常用回饋的中英文名稱、獎懲分數與能力標籤
 - 單人、批次與全班加減分會記住最近輸入的具體原因，點擊欄位或輸入文字即可搜尋重用
@@ -84,15 +88,17 @@
 
 - `處罰記錄`
 - `加減分記錄`
+- `每日評語`
+- `魔王獎勵記錄`（積分、RP、心情及排名／參與／進步獎勵拆分）
 
-這兩種記錄都會依時間排序，方便導師快速追蹤班級狀況。
+各種記錄都會依時間排序，方便導師快速追蹤班級狀況。
 
 ## 技術架構
 
 - 前端：React 19、TypeScript、Vite、Tailwind CSS 4、Zustand、Lucide React
 - 共用領域層：學習證據分析、魔王公平排名與資料正規化
-- 本機後端：Node HTTP API、JSON repository、revision 衝突控制
-- 正式後端：Cloudflare Workers、D1、條件式 revision 更新
+- 本機後端：Node HTTP API、JSON repository、會員驗證與 revision 衝突控制
+- 正式後端：Cloudflare Workers、D1、租戶隔離、RBAC 與條件式 revision 更新
 - 效能：展示大廳、導師控制台與學生分析採 lazy loading
 
 ## 本機開發
@@ -115,6 +121,8 @@ npm run dev:full
 - API：`http://localhost:8787`
 
 只啟動前端可使用 `npm run dev`；Vite 會將 `/api` 代理到本機 `8787`。
+
+首次使用請建立導師帳號。密碼長度為 12–128 字元；登入 token 只保存在該分頁工作階段的 `sessionStorage`。未登入者不能讀寫工作區資料。
 
 ## 驗證
 
@@ -142,13 +150,18 @@ src/
 shared/
   education.ts
 server/
+  auth.ts
   api.ts
+  contracts.ts
   repository.ts
 worker/
   index.ts
+  passwordResetEmail.ts
   repository.ts
 migrations/
   0001_create_workspaces.sql
+  0002_auth_rbac.sql
+  0003_core_entities.sql
 .github/
   workflows/
     deploy.yml
@@ -160,20 +173,35 @@ wrangler.jsonc
 ## 資料保存
 
 - 正式 API：`https://epet-api.jtwen12345us.workers.dev`
-- Cloudflare D1 是連線時的主要資料來源，瀏覽器 `localStorage` 是離線快取
+- Cloudflare D1 是連線時的主要資料來源；學生個資預設不寫入 `localStorage`
 - 每次寫入帶有 `baseRevision`；版本不符時 API 回傳 `409`，避免靜默覆蓋
-- 正式網站會為每個瀏覽器產生高熵 workspace 能力金鑰，不使用公開的 `local-demo`
+- 每次資料請求都先驗證 Bearer session，再驗證工作區 membership；工作區 ID 本身不是憑證
+- D1 保留最近 25 份 workspace revision 快照，供稽核與受控復原
+- 核心班級、學生、考試、學習證據、加減分、處罰與魔王獎勵交易式雙寫至正規化表；`data_json` 保留為相容讀取層
+- `admin` 可透過 API 查看／復原 revision，並匯出單一學生的限縮資料集，不夾帶同班其他學生
 - 可匯出為 JSON 備份
 - 可匯入既有資料，系統會自動補齊新版欄位
+- 找到舊版固定本機資料時，畫面只提供「下載備份／明確匯入／稍後」，不會自動掛到新帳號
 - 舊的單一班級目標會自動遷移成新版目標清單
 - 舊導師每日評語會遷移為獨立、可版本化的學習證據
 - 未自訂競爭或懲罰規則的舊資料會啟用包容性模式；已有明確自訂規則者會保留原設定
 
-目前的能力金鑰同步適合單一導師、單一瀏覽器的初期部署，不等同完整帳號系統。正式提供多校、多導師或跨裝置使用前，應加入身分驗證、角色權限、workspace 金鑰復原與稽核記錄。
+完整會員、安全與舊資料上線設計見 [`docs/membership-and-p0-plan.md`](docs/membership-and-p0-plan.md)；學生資料盤點、保存／刪除與請求處理見 [`docs/privacy-data-governance.md`](docs/privacy-data-governance.md)。公開註冊前仍應完成 Email 驗證、機器人防護與同站 `HttpOnly` cookie；目前跨站 GitHub Pages／Worker 架構使用可撤銷的短效 opaque Bearer session。
 
 ## Cloudflare 部署
 
-D1 資料庫名稱為 `epet-production`。首次建立環境或新增 migration：
+D1 資料庫名稱為 `epet-production`。部署順序不可顛倒：先 migration、再 Worker、最後才部署有登入閘門的前端。
+
+正式環境要先設定寄件服務。`RESEND_API_KEY` 必須使用 Worker secret，不可寫入 `wrangler.jsonc`：
+
+```bash
+npx wrangler secret put RESEND_API_KEY
+npx wrangler secret put PASSWORD_RESET_FROM
+```
+
+`PUBLIC_APP_URL` 與 `REGISTRATION_ENABLED` 可使用 Worker vars。專案預設關閉正式環境公開註冊；完成寄信、Email 驗證與濫用防護前不要開啟。若未設定寄件金鑰或寄件者，忘記密碼 API 仍會回覆通用訊息，但不會寄出郵件；不可在此狀態開放正式使用。
+
+套用 migration：
 
 ```bash
 npm run db:migrate:remote

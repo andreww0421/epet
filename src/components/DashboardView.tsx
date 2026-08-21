@@ -22,7 +22,7 @@ import {
   TEAM_BATTLE_DEFENDER_FULLNESS_COST, TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST,
   DEFAULT_BOSS_ATTACK_MAX_TARGETS, DEFAULT_BOSS_ATTACK_DAMAGE, DEFAULT_BOSS_REWARD_TIERS,
   DEFAULT_BOSS_PARTICIPATION_REWARD, DEFAULT_BOSS_IMPROVEMENT_REWARD,
-  getDateKey,
+  getDateKey, hasActiveLevelDecreaseCooldown,
   type DisciplineRecordType
 } from '../gameRules';
 import {
@@ -30,6 +30,9 @@ import {
 } from '../educationInsights';
 import { BossRewardSettings } from './dashboard/BossRewardSettings';
 import { PointReasonSettings } from './dashboard/PointReasonSettings';
+import { RosterImportPanel } from './dashboard/RosterImportPanel';
+import { runWorkspaceMutation } from '../auth/workspaceAccess';
+import { exportWorkspacePrivacyData } from '../services/backendApi';
 
 const StudentAnalyticsPanel = lazy(() =>
   import('./dashboard/StudentAnalyticsPanel').then((module) => ({
@@ -42,6 +45,43 @@ type PointAdjustmentTarget =
   | { kind: 'batch'; ids: string[]; count: number }
   | { kind: 'class'; count: number };
 
+type DashboardSection = 'students' | 'rewards' | 'activities' | 'analytics' | 'rules' | 'records';
+
+type DashboardViewProps = {
+  readOnly?: boolean;
+  canExportFullData?: boolean;
+  canAdministerWorkspace?: boolean;
+};
+
+const READ_ONLY_MUTATION_ACTIONS = new Set([
+  'addClass',
+  'addPoints',
+  'adjustPointsForStudents',
+  'addStudent',
+  'addStudentsByName',
+  'airdropPoints',
+  'decreaseLevel',
+  'deleteClass',
+  'deleteStudent',
+  'disciplineStudent',
+  'editStudentName',
+  'importData',
+  'removeBoss',
+  'removePenalty',
+  'removeWarning',
+  'replacePointReasons',
+  'resetSeason',
+  'saveMentorDailyFeedback',
+  'setClassGoal',
+  'summonBoss',
+  'switchClass',
+  'togglePinnedReason',
+  'undoLastPointAdjustment',
+  'undoLastSafetyAction',
+  'updateSettings',
+  'warnStudent',
+]);
+
 type BossRewardRecordWithStudent = BossRewardRecord & {
   studentId: string;
   studentName: string;
@@ -52,14 +92,19 @@ type DailyFeedbackRecordWithStudent = DailyReflection & {
   studentName: string;
 };
 
-export const DashboardView: React.FC = () => {
-  const store = useStore(
+export const DashboardView: React.FC<DashboardViewProps> = ({
+  readOnly = false,
+  canExportFullData = false,
+  canAdministerWorkspace = false,
+}) => {
+  const dashboardStore = useStore(
     useShallow((state) => ({
       data: state.data,
       addClass: state.addClass,
       addPoints: state.addPoints,
       adjustPointsForStudents: state.adjustPointsForStudents,
       addStudent: state.addStudent,
+      addStudentsByName: state.addStudentsByName,
       airdropPoints: state.airdropPoints,
       decreaseLevel: state.decreaseLevel,
       deleteClass: state.deleteClass,
@@ -80,13 +125,40 @@ export const DashboardView: React.FC = () => {
       togglePinnedReason: state.togglePinnedReason,
       undoAction: state.undoAction,
       undoLastPointAdjustment: state.undoLastPointAdjustment,
+      safetyUndoAction: state.safetyUndoAction,
+      undoLastSafetyAction: state.undoLastSafetyAction,
       updateSettings: state.updateSettings,
       warnStudent: state.warnStudent,
     })),
   );
-  const data = store.data;
+  const data = dashboardStore.data;
   const lang = data.settings?.language || 'zh';
   const tLang = translations[lang];
+  const store = useMemo(() => {
+    if (!readOnly) return dashboardStore;
+    return new Proxy(dashboardStore, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (
+          typeof property !== 'string' ||
+          !READ_ONLY_MUTATION_ACTIONS.has(property) ||
+          typeof value !== 'function'
+        ) {
+          return value;
+        }
+        return (...args: unknown[]) => runWorkspaceMutation(
+          false,
+          () => Reflect.apply(value, target, args),
+          () => target.showToast(
+            lang === 'en'
+              ? 'This workspace is read-only for your account.'
+              : '目前帳號只能閱讀此工作區。',
+            'error',
+          ),
+        );
+      },
+    });
+  }, [dashboardStore, lang, readOnly]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const selectAllCheckboxRef = useRef<HTMLInputElement>(null);
 
@@ -97,8 +169,9 @@ export const DashboardView: React.FC = () => {
   const [pointAdjustmentReason, setPointAdjustmentReason] = useState('');
   const [pointAdjustmentCompetency, setPointAdjustmentCompetency] =
     useState<LearningCompetency>('participation');
-  const [dashboardSection, setDashboardSection] =
-    useState<'students' | 'rewards' | 'activities' | 'analytics' | 'rules' | 'records'>('students');
+  const [dashboardSection, setDashboardSection] = useState<DashboardSection>(
+    readOnly ? 'analytics' : 'students',
+  );
   const [recordView, setRecordView] =
     useState<'discipline' | 'points' | 'feedback' | 'boss'>('discipline');
   const [decayAmount, setDecayAmount] = useState(data.settings?.decayAmount ?? 2);
@@ -129,6 +202,7 @@ export const DashboardView: React.FC = () => {
   const [maxTeamSize, setMaxTeamSize] = useState(data.settings?.maxTeamSize ?? DEFAULT_MAX_TEAM_SIZE);
   const [currentLang, setCurrentLang] = useState<Language>(lang);
   const [reviveCost, setReviveCost] = useState(data.settings?.reviveCost ?? 120);
+  const [readOnlyClassId, setReadOnlyClassId] = useState(data.currentClassId);
 
   const defaultBrackets = data.settings?.rankBrackets ?? { diamond: 400, platinum: 300, gold: 200, silver: 100 };
   const [bracketDiamond, setBracketDiamond] = useState(defaultBrackets.diamond);
@@ -226,7 +300,8 @@ export const DashboardView: React.FC = () => {
     useState<DailyAssessment>('progressing');
   const [mentorFeedbackText, setMentorFeedbackText] = useState('');
 
-  const currentClass = data.classes.find((c: any) => c.id === data.currentClassId);
+  const selectedClassId = readOnly ? readOnlyClassId : data.currentClassId;
+  const currentClass = data.classes.find((c: any) => c.id === selectedClassId);
   const currentStudents = useMemo(() => currentClass?.students || [], [currentClass]);
   const competencyLabels = useMemo<Record<LearningCompetency, string>>(() => ({
     participation: tLang.competencyParticipation,
@@ -319,6 +394,25 @@ export const DashboardView: React.FC = () => {
       weeklyInsights.positiveCount,
     ],
   );
+
+  useEffect(() => {
+    if (readOnly && dashboardSection !== 'analytics' && dashboardSection !== 'records') {
+      setDashboardSection('analytics');
+    }
+  }, [dashboardSection, readOnly]);
+
+  useEffect(() => {
+    if (!readOnly && !canAdministerWorkspace && dashboardSection === 'rules') {
+      setDashboardSection('students');
+    }
+  }, [canAdministerWorkspace, dashboardSection, readOnly]);
+
+  useEffect(() => {
+    if (!readOnly) return;
+    if (!data.classes.some((classData) => classData.id === readOnlyClassId)) {
+      setReadOnlyClassId(data.currentClassId || data.classes[0]?.id || '');
+    }
+  }, [data.classes, data.currentClassId, readOnly, readOnlyClassId]);
 
   useEffect(() => {
     setEditingClassGoalId(null);
@@ -414,12 +508,16 @@ export const DashboardView: React.FC = () => {
   const getRecordLabel = (type: DisciplineRecordType) => {
     if (type === 'autoPenalty') return tLang.recordAutoPenalty;
     if (type === 'discipline') return tLang.recordDiscipline;
+    if (type === 'levelDecrease') return lang === 'en' ? 'Level decrease' : '降級';
+    if (type === 'reversal') return lang === 'en' ? 'Compensating reversal' : '撤銷補償';
     return tLang.recordWarning;
   };
 
   const getRecordTone = (type: DisciplineRecordType) => {
     if (type === 'autoPenalty') return 'bg-amber-100 text-amber-700';
     if (type === 'discipline') return 'bg-rose-100 text-rose-700';
+    if (type === 'levelDecrease') return 'bg-orange-100 text-orange-700';
+    if (type === 'reversal') return 'bg-emerald-100 text-emerald-800';
     return 'bg-slate-100 text-slate-700';
   };
 
@@ -444,6 +542,30 @@ export const DashboardView: React.FC = () => {
       .replace('{points}', points.toString())
       .replace('{rankPoints}', rankPoints.toString())
       .replace('{happiness}', happiness.toString());
+
+  const requestSafetyAction = (
+    actionLabel: string,
+    studentName: string,
+    applyAction: (reason: string) => void,
+  ) => {
+    const enteredReason = window.prompt(
+      lang === 'en'
+        ? `Required reason for ${actionLabel.toLocaleLowerCase()} (${studentName})`
+        : `請填寫${actionLabel}理由（${studentName}）`,
+    );
+    if (enteredReason === null) return;
+    const reason = enteredReason.trim();
+    if (!reason) {
+      store.showToast(lang === 'en' ? 'A reason is required.' : '理由不可留白。', 'error');
+      return;
+    }
+    const confirmed = window.confirm(
+      lang === 'en'
+        ? `Confirm ${actionLabel.toLocaleLowerCase()} for ${studentName}?\nReason: ${reason}`
+        : `確定對 ${studentName} 執行${actionLabel}？\n理由：${reason}`,
+    );
+    if (confirmed) applyAction(reason);
+  };
 
   const pinnedReasonIds = data.settings?.pinnedReasonIds ?? [];
   const recentReasonIds = data.settings?.recentReasonIds ?? [];
@@ -483,6 +605,7 @@ export const DashboardView: React.FC = () => {
     feedbackReasonHistory.forEach((label) => {
       suggestions.set(label.toLocaleLowerCase(), { label });
     });
+
     pointReasonOptions.forEach((option) => {
       const key = option.label.toLocaleLowerCase();
       if (!suggestions.has(key)) {
@@ -503,7 +626,7 @@ export const DashboardView: React.FC = () => {
   const guideStudentItems =
     lang === 'en'
       ? [
-          'Students use points for feeding, upgrades, revives, and gacha; pets still lose fullness over time even after export/import.',
+          'Students use points for feeding, upgrades, revives, and gacha; importing a backup preserves saved pet status and restarts its decay clock.',
           'Students can build teams from 2 to 6 members depending on the current system setting.',
           'Battle mode is controlled in System Settings and can run as solo only, team only, or automatic fallback.',
           'Team battles use a weighted support formula, so larger teams help without multiplying total power linearly.',
@@ -513,7 +636,7 @@ export const DashboardView: React.FC = () => {
             : 'Free reroll milestones are consumed at levels 2, 4, 6, then 8. At zero fullness, pets rest until they are fed.',
         ]
       : [
-          '學生可用積分餵食、升級、復活與扭蛋；資料匯出後再匯入也會依時間持續扣除飽食度。',
+          '學生可用積分餵食、升級、復活與扭蛋；匯入備份會完整保留寵物狀態，並從匯入時間重新計算衰減。',
           '雙方互相選定隊友後會形成隊伍；若兩邊都有可出戰隊友，對戰會自動切換成隊伍模式。',
           '隊伍對戰採用主將全額、隊友加權的戰力公式，隊友能支援但不會直接把總戰力翻倍。',
           '完整雙人隊伍獲勝時，每位獲勝成員都會獲得隊伍專屬獎勵：+10 積分、+6 心情。',
@@ -624,16 +747,26 @@ export const DashboardView: React.FC = () => {
     setNewStudentName('');
   };
 
-  const exportData = () => {
-    const snapshot = applyDecay({ ...data }, Date.now());
-    const dataStr = JSON.stringify(snapshot, null, 2);
-    const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
-    const exportFileDefaultName = `tamagotchi_classroom_${new Date().toISOString().slice(0,10)}.json`;
-
-    const linkElement = document.createElement('a');
-    linkElement.setAttribute('href', dataUri);
-    linkElement.setAttribute('download', exportFileDefaultName);
-    linkElement.click();
+  const exportData = async () => {
+    if (!canExportFullData) return;
+    try {
+      const snapshot = await exportWorkspacePrivacyData();
+      if (!snapshot.activeWorkspace.state) {
+        throw new Error('Workspace state is unavailable');
+      }
+      const blob = new Blob(
+        [JSON.stringify(snapshot.activeWorkspace.state, null, 2)],
+        { type: 'application/json' },
+      );
+      const dataUrl = URL.createObjectURL(blob);
+      const linkElement = document.createElement('a');
+      linkElement.href = dataUrl;
+      linkElement.download = `epet_workspace_export_${snapshot.exportedAt.slice(0, 10)}.json`;
+      linkElement.click();
+      window.setTimeout(() => URL.revokeObjectURL(dataUrl), 0);
+    } catch {
+      store.showToast(tLang.exportFailed, 'error');
+    }
   };
 
   const importData = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -782,27 +915,34 @@ export const DashboardView: React.FC = () => {
           <p className="mt-2 text-sm text-slate-600">{tLang.dashboardDesc}</p>
         </div>
         <div className="mt-4 sm:mt-0 flex space-x-3">
-          <button
-            onClick={exportData}
-            className="inline-flex items-center px-4 py-2 border border-slate-300 rounded-md shadow-sm text-sm font-medium text-slate-700 bg-white hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors"
-          >
-            <Download className="h-4 w-4 mr-2" />
-            {tLang.exportData}
-          </button>
-          <input 
-            type="file" 
-            accept=".json" 
-            className="hidden" 
-            ref={fileInputRef} 
-            onChange={importData} 
-          />
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors"
-          >
-            <Upload className="h-4 w-4 mr-2" />
-            {tLang.importData}
-          </button>
+          {canExportFullData && (
+            <button
+              type="button"
+              onClick={() => void exportData()}
+              className="inline-flex items-center px-4 py-2 border border-slate-300 rounded-md shadow-sm text-sm font-medium text-slate-700 bg-white hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors"
+            >
+              <Download className="h-4 w-4 mr-2" />
+              {tLang.exportData}
+            </button>
+          )}
+          {canAdministerWorkspace && (
+            <>
+              <input
+                type="file"
+                accept=".json"
+                className="hidden"
+                ref={fileInputRef}
+                onChange={importData}
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors"
+              >
+                <Upload className="h-4 w-4 mr-2" />
+                {tLang.importData}
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -818,7 +958,12 @@ export const DashboardView: React.FC = () => {
           ['analytics', tLang.dashboardTabAnalytics, BarChart3],
           ['rules', tLang.dashboardTabRules, Settings],
           ['records', tLang.dashboardTabRecords, BookOpen],
-        ] as const).map(([section, label, Icon]) => (
+        ] as const)
+          .filter(([section]) => {
+            if (readOnly) return section === 'analytics' || section === 'records';
+            return canAdministerWorkspace || section !== 'rules';
+          })
+          .map(([section, label, Icon]) => (
           <button
             key={section}
             type="button"
@@ -837,7 +982,39 @@ export const DashboardView: React.FC = () => {
         ))}
       </div>
 
-      {store.undoAction && (
+      {readOnly && (
+        <div
+          className="mb-6 border-l-4 border-sky-500 bg-sky-50 px-4 py-4 text-sky-950"
+          role="status"
+        >
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="text-sm font-black">
+                {lang === 'en' ? 'Read-only workspace' : '唯讀工作區'}
+              </p>
+              <p className="mt-1 text-xs leading-5 text-sky-800">
+                {lang === 'en'
+                  ? 'You can review analytics, records, and saved A4 reports. Editing controls are unavailable.'
+                  : '你可查看個人分析、紀錄與已儲存的 A4 報告；編輯功能已停用。'}
+              </p>
+            </div>
+            <label className="text-xs font-bold text-sky-900">
+              {lang === 'en' ? 'Class to review' : '查看班級'}
+              <select
+                value={selectedClassId}
+                onChange={(event) => setReadOnlyClassId(event.target.value)}
+                className="mt-1 block min-h-10 min-w-52 rounded-md border border-sky-300 bg-white px-3 py-2 text-sm text-slate-900"
+              >
+                {data.classes.map((classData) => (
+                  <option key={classData.id} value={classData.id}>{classData.name}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </div>
+      )}
+
+      {!readOnly && store.undoAction && (
         <div
           className="mb-6 flex items-center gap-3 border-l-4 border-indigo-500 bg-indigo-50 px-4 py-3 text-indigo-950"
           role="status"
@@ -857,6 +1034,32 @@ export const DashboardView: React.FC = () => {
         </div>
       )}
 
+      {!readOnly && store.safetyUndoAction && (
+        <div
+          className="mb-6 flex items-center gap-3 border-l-4 border-rose-500 bg-rose-50 px-4 py-3 text-rose-950"
+          role="status"
+          aria-live="assertive"
+        >
+          <Undo2 className="h-5 w-5 shrink-0 text-rose-600" aria-hidden="true" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-bold">{store.safetyUndoAction.label}</p>
+            <p className="mt-0.5 text-xs text-rose-800">
+              {lang === 'en'
+                ? 'Undo is available for 10 seconds. The original event stays in the ledger and a reversal is added.'
+                : '10 秒內可撤銷；原始事件會保留，系統另新增補償紀錄。'}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={store.undoLastSafetyAction}
+            aria-label={lang === 'en' ? 'Undo formal action' : '撤銷正式操作'}
+            className="shrink-0 rounded-md border border-rose-300 bg-white px-3 py-1.5 text-sm font-bold text-rose-700 hover:bg-rose-100"
+          >
+            {tLang.undo}
+          </button>
+        </div>
+      )}
+
       {dashboardSection === 'analytics' && (
         <Suspense
           fallback={(
@@ -866,7 +1069,7 @@ export const DashboardView: React.FC = () => {
             </div>
           )}
         >
-          <StudentAnalyticsPanel />
+          <StudentAnalyticsPanel readOnly={readOnly} classId={selectedClassId} />
         </Suspense>
       )}
 
@@ -886,38 +1089,41 @@ export const DashboardView: React.FC = () => {
               ))}
             </select>
           </div>
-          <div className="flex space-x-3 mt-4 sm:mt-0 items-end">
-            <button
-              onClick={() => setShowAddClass(true)}
-              className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors"
-            >
-              <Plus className="h-4 w-4 mr-2" />
-              {tLang.addClass}
-            </button>
-            <button
-              onClick={() => {
-                if (window.confirm(tLang.resetSeason + '?')) {
-                  store.resetSeason();
-                }
-              }}
-              className="inline-flex items-center px-4 py-2 border border-slate-300 rounded-md shadow-sm text-sm font-medium text-amber-600 bg-white hover:bg-amber-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-500 transition-colors"
-            >
-              <RefreshCw className="h-4 w-4 mr-2" />
-              {tLang.resetSeason}
-            </button>
-            <button
-              onClick={() => setClassToDelete(data.currentClassId)}
-              disabled={data.classes.length <= 1}
-              className="inline-flex items-center px-4 py-2 border border-slate-300 rounded-md shadow-sm text-sm font-medium text-red-600 bg-white hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              <Trash2 className="h-4 w-4 mr-2" />
-              {tLang.deleteClass}
-            </button>
-          </div>
+          {canAdministerWorkspace && (
+            <div className="flex space-x-3 mt-4 sm:mt-0 items-end">
+              <button
+                onClick={() => setShowAddClass(true)}
+                className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors"
+              >
+                <Plus className="h-4 w-4 mr-2" />
+                {tLang.addClass}
+              </button>
+              <button
+                onClick={() => {
+                  if (window.confirm(tLang.resetSeason + '?')) {
+                    store.resetSeason();
+                  }
+                }}
+                className="inline-flex items-center px-4 py-2 border border-slate-300 rounded-md shadow-sm text-sm font-medium text-amber-600 bg-white hover:bg-amber-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-500 transition-colors"
+              >
+                <RefreshCw className="h-4 w-4 mr-2" />
+                {tLang.resetSeason}
+              </button>
+              <button
+                onClick={() => setClassToDelete(data.currentClassId)}
+                disabled={data.classes.length <= 1}
+                className="inline-flex items-center px-4 py-2 border border-slate-300 rounded-md shadow-sm text-sm font-medium text-red-600 bg-white hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                <Trash2 className="h-4 w-4 mr-2" />
+                {tLang.deleteClass}
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
       {/* Add Student Form */}
+      {!readOnly && (
       <div className={`${dashboardSection === 'students' ? '' : 'hidden'} bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200 mb-6 p-5`}>
         <h3 className="text-lg font-medium text-slate-900 mb-4 flex items-center">
           <Users className="h-5 w-5 mr-2 text-indigo-500" />
@@ -945,7 +1151,13 @@ export const DashboardView: React.FC = () => {
             {tLang.add}
           </button>
         </div>
+        <RosterImportPanel
+          lang={lang}
+          students={currentStudents}
+          onImport={store.addStudentsByName}
+        />
       </div>
+      )}
 
       {/* Students Table */}
       <div className={`${dashboardSection === 'rewards' ? '' : 'hidden'} bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200`}>
@@ -968,6 +1180,7 @@ export const DashboardView: React.FC = () => {
           configuredReasons={configuredPointReasons}
           competencyLabels={competencyLabels}
           labels={tLang}
+          editable={canAdministerWorkspace}
           onTogglePinned={store.togglePinnedReason}
           onSave={store.replacePointReasons}
         />
@@ -1042,6 +1255,7 @@ export const DashboardView: React.FC = () => {
                   const PetIcon = petConfig.icon;
                   const warningPoints = student.warningPoints ?? 0;
                   const activePenalty = isPenaltyActive(student.penaltyStatus);
+                  const levelDecreaseOnCooldown = hasActiveLevelDecreaseCooldown(student.disciplineRecords);
                   
                   return (
                     <tr
@@ -1205,28 +1419,53 @@ export const DashboardView: React.FC = () => {
 
                           {/* Decrease Level */}
                           <button
-                            onClick={() => store.decreaseLevel(student.id)}
-                            disabled={(student.pet.level || 1) <= 1}
+                            type="button"
+                            onClick={() => {
+                              requestSafetyAction(
+                                tLang.decreaseLevel,
+                                student.name,
+                                (reason) => store.decreaseLevel(student.id, reason),
+                              );
+                            }}
+                            disabled={
+                              (student.pet.level || 1) <= 1 ||
+                              levelDecreaseOnCooldown ||
+                              Boolean(store.safetyUndoAction)
+                            }
+                            aria-label={`${tLang.decreaseLevel}：${student.name}`}
                             className="p-1.5 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                            title={tLang.decreaseLevel}
+                            title={levelDecreaseOnCooldown
+                              ? (lang === 'en' ? 'Level decrease is on a 24-hour cooldown' : '降級操作尚在 24 小時冷卻期')
+                              : tLang.decreaseLevel}
                           >
-                            <ChevronsDown className="h-4 w-4" />
+                            <ChevronsDown className="h-4 w-4" aria-hidden="true" />
                           </button>
 
                           <div className="flex space-x-1 bg-amber-50 p-1 rounded-md border border-amber-100">
                             <button
+                              type="button"
                               onClick={() => store.warnStudent(student.id)}
+                              aria-label={`${tLang.issueWarning}：${student.name}`}
                               className="inline-flex items-center px-2 py-1 rounded text-xs font-medium text-amber-700 hover:bg-amber-200 transition-colors"
                               title={tLang.issueWarning}
                             >
-                              <AlertCircle className="h-3 w-3" />
+                              <AlertCircle className="h-3 w-3" aria-hidden="true" />
                             </button>
                             <button
-                              onClick={() => store.disciplineStudent(student.id)}
-                              className="inline-flex items-center px-2 py-1 rounded text-xs font-medium text-red-700 hover:bg-red-100 transition-colors"
+                              type="button"
+                              onClick={() => {
+                                requestSafetyAction(
+                                  tLang.discipline,
+                                  student.name,
+                                  (reason) => store.disciplineStudent(student.id, reason),
+                                );
+                              }}
+                              disabled={activePenalty || Boolean(store.safetyUndoAction)}
+                              aria-label={`${tLang.discipline}：${student.name}`}
+                              className="inline-flex items-center px-2 py-1 rounded text-xs font-medium text-red-700 hover:bg-red-100 transition-colors disabled:cursor-not-allowed disabled:opacity-40"
                               title={tLang.discipline}
                             >
-                              <Shield className="h-3 w-3" />
+                              <Shield className="h-3 w-3" aria-hidden="true" />
                             </button>
                           </div>
 
@@ -1607,8 +1846,24 @@ export const DashboardView: React.FC = () => {
                         ? tLang.warningIssued.replace('{name}', record.studentName).replace('{count}', String(record.warningCount ?? 1))
                         : record.type === 'autoPenalty'
                           ? penaltySummary(WARNING_AUTO_PENALTY)
-                          : penaltySummary(DIRECT_DISCIPLINE_PENALTY)}
+                          : record.type === 'discipline'
+                            ? penaltySummary(DIRECT_DISCIPLINE_PENALTY)
+                            : record.type === 'levelDecrease'
+                              ? (lang === 'en' ? 'Pet level decreased by 1.' : '寵物等級降低 1 級。')
+                              : (lang === 'en'
+                                  ? 'Original event retained; a compensating reversal was recorded.'
+                                  : '原始事件已保留，並新增一筆撤銷補償紀錄。')}
                     </div>
+                    {record.reason && (
+                      <div className="mt-1 text-xs text-slate-500">
+                        {lang === 'en' ? 'Reason' : '理由'}：{record.reason}
+                      </div>
+                    )}
+                    {record.reversesRecordId && (
+                      <div className="mt-1 font-mono text-[11px] text-slate-400">
+                        {lang === 'en' ? 'Reverses' : '撤銷事件'}：{record.reversesRecordId}
+                      </div>
+                    )}
                   </div>
                   <div className="text-xs font-medium text-slate-400">{formatRecordTime(record.createdAt)}</div>
                 </div>

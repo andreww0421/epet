@@ -3,8 +3,16 @@ import { stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { Readable } from 'node:stream';
-import { createApiHandler } from './api';
+import { createApiHandler, type ApiOptions } from './api';
 import { JsonWorkspaceRepository } from './repository';
+
+const TRUSTED_CLIENT_IDENTITY_HEADER = 'x-epet-transport-client';
+const UNTRUSTED_FORWARDING_HEADERS = new Set([
+  'cf-connecting-ip',
+  'x-epet-transport-client',
+  'x-forwarded-for',
+  'x-real-ip',
+]);
 
 const MIME_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
@@ -37,6 +45,13 @@ const serveStatic = async (
   }
   response.writeHead(200, {
     'content-type': MIME_TYPES[extname(filePath)] ?? 'application/octet-stream',
+    'cache-control': filePath.endsWith('index.html')
+      ? 'no-store'
+      : 'public, max-age=31536000, immutable',
+    'x-content-type-options': 'nosniff',
+    'referrer-policy': 'no-referrer',
+    'permissions-policy': 'camera=(), microphone=(), geolocation=()',
+    'cross-origin-opener-policy': 'same-origin',
   });
   createReadStream(filePath).pipe(response);
   return true;
@@ -45,6 +60,10 @@ const serveStatic = async (
 export type EpetServerOptions = {
   dataFile: string;
   distDirectory: string;
+  auth?: ApiOptions['auth'];
+  forgotResponseFloorMs?: number;
+  passwordResetMailer?: ApiOptions['passwordResetMailer'];
+  registrationEnabled?: boolean;
 };
 
 export const createEpetServer = (options: EpetServerOptions) => {
@@ -52,6 +71,12 @@ export const createEpetServer = (options: EpetServerOptions) => {
   const handleApi = createApiHandler(repository, {
     allowLocalWorkspaceIds: true,
     allowedOrigins: ['*'],
+    auth: options.auth,
+    clientIdentity: (request) =>
+      request.headers.get(TRUSTED_CLIENT_IDENTITY_HEADER),
+    forgotResponseFloorMs: options.forgotResponseFloorMs,
+    passwordResetMailer: options.passwordResetMailer,
+    registrationEnabled: options.registrationEnabled === true,
   });
 
   const server = createServer(async (request, response) => {
@@ -60,12 +85,17 @@ export const createEpetServer = (options: EpetServerOptions) => {
     if (url.pathname.startsWith('/api/')) {
       const headers = new Headers();
       Object.entries(request.headers).forEach(([name, value]) => {
+        if (UNTRUSTED_FORWARDING_HEADERS.has(name.toLocaleLowerCase())) return;
         if (Array.isArray(value)) {
           value.forEach((entry) => headers.append(name, entry));
         } else if (value != null) {
           headers.set(name, value);
         }
       });
+      headers.set(
+        TRUSTED_CLIENT_IDENTITY_HEADER,
+        request.socket.remoteAddress ?? 'unknown-client',
+      );
       const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
       const webRequest = new Request(url, {
         method: request.method,

@@ -1,0 +1,755 @@
+import type { AppData } from '../src/store/types';
+import {
+  EmailAlreadyExistsError,
+  type AuditEventRecord,
+  type AuthRateLimitResult,
+  type AuthRateLimitScope,
+  type AuthRepository,
+  type AuthSessionRecord,
+  type AuthUserRecord,
+  type PasswordCredential,
+  type UserWorkspaceAccess,
+  type WorkspaceMembershipRecord,
+  type WorkspaceRepository,
+  type WorkspaceRole,
+} from './contracts';
+
+export const DEFAULT_PASSWORD_ITERATIONS = 600_000;
+export const DEFAULT_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const DEFAULT_PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
+export const CLOUD_WORKSPACE_ID_PATTERN = /^ws_[a-zA-Z0-9_-]{24,61}$/;
+export const PASSWORD_RESET_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+
+const ROLE_LEVEL: Record<WorkspaceRole, number> = {
+  viewer: 1,
+  teacher: 2,
+  admin: 3,
+  owner: 4,
+};
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const textEncoder = new TextEncoder();
+
+export type AuthSessionUser = {
+  id: string;
+  email: string;
+  displayName: string;
+  role: WorkspaceRole;
+};
+
+export type AuthSessionView = {
+  user: AuthSessionUser;
+  workspaces: UserWorkspaceAccess[];
+  activeWorkspaceId: string | null;
+};
+
+export type AuthSessionEnvelope = {
+  sessionToken: string;
+  session: AuthSessionView;
+};
+
+export type RegisterInput = {
+  email: string;
+  password: string;
+  displayName: string;
+  workspaceName: string;
+  initialWorkspaceData: AppData;
+};
+
+export type LoginInput = {
+  email: string;
+  password: string;
+};
+
+export type PasswordResetDelivery = {
+  email: string;
+  displayName: string;
+  token: string;
+  expiresAt: number;
+};
+
+export type AuthorizedWorkspace = {
+  user: AuthSessionUser;
+  membership: WorkspaceMembershipRecord;
+  session: AuthSessionView;
+};
+
+export type AuthServiceOptions = {
+  crypto?: Crypto;
+  now?: () => number;
+  passwordIterations?: number;
+  sessionTtlMs?: number;
+  passwordResetTtlMs?: number;
+};
+
+export type AuthRateLimitPolicy = {
+  windowMs: number;
+  maxAttempts: number;
+  blockMs: number;
+};
+
+export class AuthValidationError extends Error {
+  constructor(readonly code: string) {
+    super(code);
+  }
+}
+
+export class InvalidCredentialsError extends Error {
+  constructor() {
+    super('INVALID_CREDENTIALS');
+  }
+}
+
+export class InvalidSessionError extends Error {
+  constructor() {
+    super('INVALID_SESSION');
+  }
+}
+
+export class AuthForbiddenError extends Error {
+  constructor() {
+    super('FORBIDDEN');
+  }
+}
+
+export class InvalidPasswordResetTokenError extends Error {
+  constructor() {
+    super('INVALID_PASSWORD_RESET_TOKEN');
+  }
+}
+
+const bytesToBase64Url = (bytes: Uint8Array) => {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary)
+    .replaceAll('+', '-')
+    .replaceAll('/', '_')
+    .replace(/=+$/, '');
+};
+
+const base64UrlToBytes = (value: string) => {
+  const normalized = value.replaceAll('-', '+').replaceAll('_', '/');
+  const padding = '='.repeat((4 - (normalized.length % 4)) % 4);
+  const binary = atob(`${normalized}${padding}`);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+};
+
+const constantTimeEqual = (left: Uint8Array, right: Uint8Array) => {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left[index] ^ right[index];
+  }
+  return difference === 0;
+};
+
+const getCrypto = (provided?: Crypto) => {
+  const implementation = provided ?? globalThis.crypto;
+  if (!implementation?.subtle || !implementation.getRandomValues) {
+    throw new Error('Web Crypto is required for authentication');
+  }
+  return implementation;
+};
+
+const randomToken = (cryptoImplementation: Crypto, byteLength = 32) => {
+  const bytes = new Uint8Array(byteLength);
+  cryptoImplementation.getRandomValues(bytes);
+  return bytesToBase64Url(bytes);
+};
+
+const randomId = (
+  cryptoImplementation: Crypto,
+  prefix: string,
+  byteLength = 18,
+) => `${prefix}${randomToken(cryptoImplementation, byteLength)}`;
+
+const derivePasswordHash = async (
+  password: string,
+  salt: Uint8Array,
+  iterations: number,
+  cryptoImplementation: Crypto,
+) => {
+  const key = await cryptoImplementation.subtle.importKey(
+    'raw',
+    textEncoder.encode(password),
+    'PBKDF2',
+    false,
+    ['deriveBits'],
+  );
+  const bits = await cryptoImplementation.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      hash: 'SHA-256',
+      salt,
+      iterations,
+    },
+    key,
+    256,
+  );
+  return new Uint8Array(bits);
+};
+
+export const normalizeEmail = (email: string) =>
+  email.trim().toLocaleLowerCase('en-US');
+
+export const isRoleAtLeast = (
+  actual: WorkspaceRole,
+  required: WorkspaceRole,
+) => ROLE_LEVEL[actual] >= ROLE_LEVEL[required];
+
+export const parseBearerToken = (authorizationHeader: string | null) => {
+  if (!authorizationHeader) return null;
+  const match = authorizationHeader.match(/^Bearer ([A-Za-z0-9_-]{20,256})$/);
+  return match?.[1] ?? null;
+};
+
+export const isPasswordResetToken = (value: string) =>
+  PASSWORD_RESET_TOKEN_PATTERN.test(value);
+
+export const hashOpaqueToken = async (
+  token: string,
+  cryptoImplementation = getCrypto(),
+) => {
+  const digest = await cryptoImplementation.subtle.digest(
+    'SHA-256',
+    textEncoder.encode(token),
+  );
+  return bytesToBase64Url(new Uint8Array(digest));
+};
+
+export const createPasswordCredential = async (
+  password: string,
+  iterations = DEFAULT_PASSWORD_ITERATIONS,
+  cryptoImplementation = getCrypto(),
+): Promise<PasswordCredential> => {
+  if (!Number.isInteger(iterations) || iterations < 1) {
+    throw new Error('Password iterations must be a positive integer');
+  }
+  if (password.length > 128) {
+    throw new AuthValidationError('INVALID_PASSWORD');
+  }
+  const salt = new Uint8Array(16);
+  cryptoImplementation.getRandomValues(salt);
+  const hash = await derivePasswordHash(
+    password,
+    salt,
+    iterations,
+    cryptoImplementation,
+  );
+  return {
+    algorithm: 'PBKDF2-HMAC-SHA256',
+    salt: bytesToBase64Url(salt),
+    hash: bytesToBase64Url(hash),
+    iterations,
+  };
+};
+
+export const verifyPassword = async (
+  password: string,
+  credential: PasswordCredential,
+  cryptoImplementation = getCrypto(),
+) => {
+  if (password.length > 128) return false;
+  if (
+    credential.algorithm !== 'PBKDF2-HMAC-SHA256' ||
+    !Number.isInteger(credential.iterations) ||
+    credential.iterations < 1
+  ) {
+    return false;
+  }
+  try {
+    const actual = await derivePasswordHash(
+      password,
+      base64UrlToBytes(credential.salt),
+      credential.iterations,
+      cryptoImplementation,
+    );
+    return constantTimeEqual(actual, base64UrlToBytes(credential.hash));
+  } catch {
+    return false;
+  }
+};
+
+const validateEmail = (email: string) => {
+  const normalized = normalizeEmail(email);
+  if (
+    normalized.length > 254 ||
+    !EMAIL_PATTERN.test(normalized)
+  ) {
+    throw new AuthValidationError('INVALID_EMAIL');
+  }
+  return normalized;
+};
+
+const validatePassword = (password: string) => {
+  if (password.length < 12 || password.length > 128) {
+    throw new AuthValidationError('INVALID_PASSWORD');
+  }
+};
+
+const validateLabel = (
+  value: string,
+  maximumLength: number,
+  code: string,
+) => {
+  const normalized = value.trim();
+  if (!normalized || normalized.length > maximumLength) {
+    throw new AuthValidationError(code);
+  }
+  return normalized;
+};
+
+export class AuthService {
+  private readonly crypto: Crypto;
+  private readonly now: () => number;
+  private readonly passwordIterations: number;
+  private readonly sessionTtlMs: number;
+  private readonly passwordResetTtlMs: number;
+
+  constructor(
+    private readonly repository: AuthRepository & WorkspaceRepository,
+    options: AuthServiceOptions = {},
+  ) {
+    this.crypto = getCrypto(options.crypto);
+    this.now = options.now ?? Date.now;
+    this.passwordIterations =
+      options.passwordIterations ?? DEFAULT_PASSWORD_ITERATIONS;
+    this.sessionTtlMs = options.sessionTtlMs ?? DEFAULT_SESSION_TTL_MS;
+    this.passwordResetTtlMs =
+      options.passwordResetTtlMs ?? DEFAULT_PASSWORD_RESET_TTL_MS;
+    if (
+      !Number.isInteger(this.passwordIterations) ||
+      this.passwordIterations < 1
+    ) {
+      throw new Error('Password iterations must be a positive integer');
+    }
+  }
+
+  private createAuditEvent(
+    action: string,
+    actorUserId?: string,
+    workspaceId?: string,
+    targetType?: string,
+    targetId?: string,
+    metadata?: Record<string, unknown>,
+  ): AuditEventRecord {
+    return {
+      id: randomId(this.crypto, 'evt_', 18),
+      action,
+      actorUserId,
+      workspaceId,
+      targetType,
+      targetId,
+      metadata,
+      createdAt: this.now(),
+    };
+  }
+
+  private async issueSession(
+    userId: string,
+    preferredWorkspaceId?: string,
+  ): Promise<AuthSessionEnvelope> {
+    const workspaces = await this.repository.listUserWorkspaces(userId);
+    const activeWorkspaceId = workspaces.some(
+      (workspace) => workspace.id === preferredWorkspaceId,
+    )
+      ? preferredWorkspaceId ?? null
+      : workspaces[0]?.id ?? null;
+    const rawToken = randomToken(this.crypto);
+    const tokenHash = await hashOpaqueToken(rawToken, this.crypto);
+    const now = this.now();
+    const session: AuthSessionRecord = {
+      tokenHash,
+      userId,
+      activeWorkspaceId,
+      createdAt: now,
+      expiresAt: now + this.sessionTtlMs,
+      lastSeenAt: now,
+      revokedAt: null,
+    };
+    await this.repository.createAuthSession(session);
+    return {
+      sessionToken: rawToken,
+      session: await this.buildSessionView(session),
+    };
+  }
+
+  private async buildSessionView(
+    session: AuthSessionRecord,
+    suppliedUser?: AuthUserRecord,
+  ): Promise<AuthSessionView> {
+    const user =
+      suppliedUser ?? await this.repository.getUserById(session.userId);
+    if (!user || user.status !== 'active') throw new InvalidSessionError();
+    const workspaces = await this.repository.listUserWorkspaces(user.id);
+    const activeWorkspace = workspaces.find(
+      (workspace) => workspace.id === session.activeWorkspaceId,
+    ) ?? workspaces[0];
+    if (
+      activeWorkspace &&
+      activeWorkspace.id !== session.activeWorkspaceId
+    ) {
+      await this.repository.setAuthSessionActiveWorkspace(
+        session.tokenHash,
+        activeWorkspace.id,
+      );
+    }
+    return {
+      user: {
+        id: user.id,
+        email: user.email,
+        displayName: user.displayName,
+        role: activeWorkspace?.role ?? 'viewer',
+      },
+      workspaces,
+      activeWorkspaceId: activeWorkspace?.id ?? null,
+    };
+  }
+
+  private async resolveSession(rawToken: string) {
+    if (!rawToken) throw new InvalidSessionError();
+    const tokenHash = await hashOpaqueToken(rawToken, this.crypto);
+    const record = await this.repository.getAuthSessionByTokenHash(tokenHash);
+    const now = this.now();
+    if (!record || record.revokedAt != null || record.expiresAt <= now) {
+      if (record && record.revokedAt == null) {
+        await this.repository.revokeAuthSession(tokenHash, now);
+      }
+      throw new InvalidSessionError();
+    }
+    const user = await this.repository.getUserById(record.userId);
+    if (!user || user.status !== 'active') throw new InvalidSessionError();
+    return {
+      tokenHash,
+      record,
+      user,
+      view: await this.buildSessionView(record, user),
+    };
+  }
+
+  async register(input: RegisterInput): Promise<AuthSessionEnvelope> {
+    const normalizedEmail = validateEmail(input.email);
+    validatePassword(input.password);
+    const displayName = validateLabel(
+      input.displayName,
+      80,
+      'INVALID_DISPLAY_NAME',
+    );
+    const workspaceName = validateLabel(
+      input.workspaceName,
+      120,
+      'INVALID_WORKSPACE_NAME',
+    );
+    if (await this.repository.findUserByNormalizedEmail(normalizedEmail)) {
+      throw new EmailAlreadyExistsError();
+    }
+    const now = this.now();
+    const userId = randomId(this.crypto, 'usr_', 18);
+    const workspaceId = randomId(this.crypto, 'ws_', 24);
+    const user: AuthUserRecord = {
+      id: userId,
+      email: input.email.trim(),
+      normalizedEmail,
+      displayName,
+      status: 'active',
+      password: await createPasswordCredential(
+        input.password,
+        this.passwordIterations,
+        this.crypto,
+      ),
+      createdAt: now,
+      updatedAt: now,
+      passwordChangedAt: now,
+    };
+    const membership: WorkspaceMembershipRecord = {
+      workspaceId,
+      userId,
+      role: 'owner',
+      createdAt: now,
+      createdByUserId: userId,
+    };
+    await this.repository.createUserWithWorkspace({
+      user,
+      workspace: {
+        id: workspaceId,
+        name: workspaceName,
+        data: input.initialWorkspaceData,
+        createdAt: now,
+      },
+      membership,
+      auditEvent: this.createAuditEvent(
+        'auth.register',
+        userId,
+        workspaceId,
+        'workspace',
+        workspaceId,
+      ),
+    });
+    return this.issueSession(userId, workspaceId);
+  }
+
+  async login(input: LoginInput): Promise<AuthSessionEnvelope> {
+    let normalizedEmail: string;
+    try {
+      normalizedEmail = validateEmail(input.email);
+    } catch {
+      normalizedEmail = '';
+    }
+    const user = normalizedEmail
+      ? await this.repository.findUserByNormalizedEmail(normalizedEmail)
+      : null;
+    const passwordCandidate =
+      input.password.length <= 128
+        ? input.password
+        : 'invalid-password-candidate';
+    if (!user || input.password.length > 128) {
+      await derivePasswordHash(
+        passwordCandidate,
+        new Uint8Array(16),
+        this.passwordIterations,
+        this.crypto,
+      );
+      throw new InvalidCredentialsError();
+    }
+    const valid = await verifyPassword(
+      input.password,
+      user.password,
+      this.crypto,
+    );
+    if (!valid || user.status !== 'active') {
+      throw new InvalidCredentialsError();
+    }
+    const issued = await this.issueSession(user.id);
+    await this.repository.appendAuditEvent(
+      this.createAuditEvent(
+        'auth.login',
+        user.id,
+        issued.session.activeWorkspaceId ?? undefined,
+        'user',
+        user.id,
+      ),
+    );
+    return issued;
+  }
+
+  async getSession(rawToken: string): Promise<AuthSessionView> {
+    return (await this.resolveSession(rawToken)).view;
+  }
+
+  async logout(rawToken: string): Promise<void> {
+    try {
+      const resolved = await this.resolveSession(rawToken);
+      const now = this.now();
+      await this.repository.revokeAuthSession(resolved.tokenHash, now);
+      await this.repository.appendAuditEvent(
+        this.createAuditEvent(
+          'auth.logout',
+          resolved.user.id,
+          resolved.view.activeWorkspaceId ?? undefined,
+          'user',
+          resolved.user.id,
+        ),
+      );
+    } catch (error) {
+      if (!(error instanceof InvalidSessionError)) throw error;
+    }
+  }
+
+  async requestPasswordReset(
+    email: string,
+  ): Promise<PasswordResetDelivery | null> {
+    let normalizedEmail: string;
+    try {
+      normalizedEmail = validateEmail(email);
+    } catch {
+      normalizedEmail = '';
+    }
+    const rawToken = randomToken(this.crypto);
+    const tokenHash = await hashOpaqueToken(rawToken, this.crypto);
+    const user = normalizedEmail
+      ? await this.repository.findUserByNormalizedEmail(normalizedEmail)
+      : null;
+    if (!user || user.status !== 'active') return null;
+    const now = this.now();
+    const expiresAt = now + this.passwordResetTtlMs;
+    await this.repository.createPasswordResetToken({
+      tokenHash,
+      userId: user.id,
+      createdAt: now,
+      expiresAt,
+      usedAt: null,
+    });
+    return {
+      email: user.email,
+      displayName: user.displayName,
+      token: rawToken,
+      expiresAt,
+    };
+  }
+
+  async resetPassword(rawToken: string, password: string): Promise<void> {
+    // Reject malformed tokens before the deliberately expensive password KDF.
+    // Well-formed guesses are additionally bounded by the API's IP-global and
+    // token-specific rate limits.
+    if (!isPasswordResetToken(rawToken)) {
+      throw new InvalidPasswordResetTokenError();
+    }
+    validatePassword(password);
+    const now = this.now();
+    const user = await this.repository.consumePasswordResetToken({
+      tokenHash: await hashOpaqueToken(rawToken, this.crypto),
+      password: await createPasswordCredential(
+        password,
+        this.passwordIterations,
+        this.crypto,
+      ),
+      usedAt: now,
+    });
+    if (!user) throw new InvalidPasswordResetTokenError();
+    await this.repository.appendAuditEvent(
+      this.createAuditEvent(
+        'auth.password_reset',
+        user.id,
+        undefined,
+        'user',
+        user.id,
+      ),
+    );
+  }
+
+  async authorizeWorkspace(
+    rawToken: string,
+    workspaceId: string,
+    minimumRole: WorkspaceRole = 'viewer',
+  ): Promise<AuthorizedWorkspace> {
+    const resolved = await this.resolveSession(rawToken);
+    const membership = await this.repository.getWorkspaceMembership(
+      workspaceId,
+      resolved.user.id,
+    );
+    if (!membership || !isRoleAtLeast(membership.role, minimumRole)) {
+      throw new AuthForbiddenError();
+    }
+    if (resolved.record.activeWorkspaceId !== workspaceId) {
+      await this.repository.setAuthSessionActiveWorkspace(
+        resolved.tokenHash,
+        workspaceId,
+      );
+    }
+    const activeWorkspace = resolved.view.workspaces.find(
+      (workspace) => workspace.id === workspaceId,
+    );
+    return {
+      user: {
+        id: resolved.user.id,
+        email: resolved.user.email,
+        displayName: resolved.user.displayName,
+        role: activeWorkspace?.role ?? membership.role,
+      },
+      membership,
+      session: {
+        ...resolved.view,
+        user: {
+          ...resolved.view.user,
+          role: membership.role,
+        },
+        activeWorkspaceId: workspaceId,
+      },
+    };
+  }
+
+  async consumeRateLimit(
+    scope: AuthRateLimitScope,
+    subject: string,
+    policy: AuthRateLimitPolicy,
+  ): Promise<AuthRateLimitResult> {
+    if (
+      !Number.isFinite(policy.windowMs) ||
+      policy.windowMs <= 0 ||
+      !Number.isInteger(policy.maxAttempts) ||
+      policy.maxAttempts < 1 ||
+      !Number.isFinite(policy.blockMs) ||
+      policy.blockMs <= 0
+    ) {
+      throw new Error('Invalid authentication rate-limit policy');
+    }
+    return this.repository.consumeAuthRateLimit({
+      scope,
+      subjectHash: await hashOpaqueToken(subject, this.crypto),
+      now: this.now(),
+      windowMs: Math.floor(policy.windowMs),
+      maxAttempts: policy.maxAttempts,
+      blockMs: Math.floor(policy.blockMs),
+    });
+  }
+
+  async claimLegacyWorkspace(
+    rawToken: string,
+    workspaceId: string,
+  ): Promise<AuthSessionView> {
+    if (!CLOUD_WORKSPACE_ID_PATTERN.test(workspaceId)) {
+      throw new AuthValidationError('INVALID_LEGACY_WORKSPACE');
+    }
+    const resolved = await this.resolveSession(rawToken);
+    const now = this.now();
+    await this.repository.claimLegacyWorkspace({
+      workspaceId,
+      userId: resolved.user.id,
+      createdAt: now,
+      auditEvent: this.createAuditEvent(
+        'workspace.legacy_claim',
+        resolved.user.id,
+        workspaceId,
+        'workspace',
+        workspaceId,
+      ),
+    });
+    await this.repository.setAuthSessionActiveWorkspace(
+      resolved.tokenHash,
+      workspaceId,
+    );
+    return this.getSession(rawToken);
+  }
+
+  async createWorkspace(
+    rawToken: string,
+    name: string,
+    initialData: AppData,
+  ): Promise<AuthSessionView> {
+    const workspaceName = validateLabel(
+      name,
+      120,
+      'INVALID_WORKSPACE_NAME',
+    );
+    const resolved = await this.resolveSession(rawToken);
+    const now = this.now();
+    const workspaceId = randomId(this.crypto, 'ws_', 24);
+    await this.repository.createWorkspaceForUser({
+      workspace: {
+        id: workspaceId,
+        name: workspaceName,
+        data: initialData,
+        createdAt: now,
+      },
+      membership: {
+        workspaceId,
+        userId: resolved.user.id,
+        role: 'owner',
+        createdAt: now,
+        createdByUserId: resolved.user.id,
+      },
+      auditEvent: this.createAuditEvent(
+        'workspace.create',
+        resolved.user.id,
+        workspaceId,
+        'workspace',
+        workspaceId,
+      ),
+    });
+    await this.repository.setAuthSessionActiveWorkspace(
+      resolved.tokenHash,
+      workspaceId,
+    );
+    return this.getSession(rawToken);
+  }
+}

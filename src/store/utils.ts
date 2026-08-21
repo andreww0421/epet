@@ -8,6 +8,7 @@ import {
   DEFAULT_BOSS_PARTICIPATION_REWARD, DEFAULT_BOSS_IMPROVEMENT_REWARD, isLearningCompetency,
   MAX_ACTIVITY_RECORDS, MAX_POINT_ADJUSTMENT_RECORDS, MAX_BOSS_REWARD_RECORDS,
   MAX_DAILY_REFLECTIONS, type BossRewardTier, type BossReward, type BossRewardRecord,
+  type SafetyActionEffect, type SafetyActionSnapshot,
 } from '../gameRules';
 import {
   AppData, Student, DisciplineRecord, PointAdjustmentRecord, WorldBoss, ClassGoal,
@@ -47,6 +48,87 @@ export const computeBadges = (student: Pick<Student, 'points' | 'pet' | 'stats'>
   if ((student.pet.level || 1) >= 10) badges.add('badgeMaxLevel');
 
   return Array.from(badges);
+};
+
+const normalizeLedgerPenaltyStatus = (raw: unknown): SafetyActionSnapshot['penaltyStatus'] => {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const source = (raw as { source?: unknown }).source;
+  const until = toFiniteNumber((raw as { until?: unknown }).until, 0);
+  if ((source !== 'autoPenalty' && source !== 'discipline') || until <= 0) return undefined;
+  return { source, until };
+};
+
+const normalizeSafetyActionSnapshot = (raw: unknown): SafetyActionSnapshot | undefined => {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const snapshot = raw as Record<string, unknown>;
+  const activeWarningTimestamps = Array.isArray(snapshot.activeWarningTimestamps)
+    ? snapshot.activeWarningTimestamps
+        .map((timestamp) => toFiniteNumber(timestamp, -1))
+        .filter((timestamp) => timestamp >= 0)
+        .slice(0, MAX_ACTIVITY_RECORDS)
+    : undefined;
+  return {
+    points: clamp(Math.floor(toFiniteNumber(snapshot.points, 0)), 0, 700),
+    rankPoints: Math.max(0, Math.floor(toFiniteNumber(snapshot.rankPoints, 0))),
+    fullness: clamp(Math.floor(toFiniteNumber(snapshot.fullness, 0)), 0, 100),
+    happiness: clamp(Math.floor(toFiniteNumber(snapshot.happiness, 0)), 0, 100),
+    level: clamp(Math.floor(toFiniteNumber(snapshot.level, 1)), 1, 10),
+    warningPoints: snapshot.warningPoints == null
+      ? undefined
+      : Math.max(0, Math.floor(toFiniteNumber(snapshot.warningPoints, 0))),
+    activeWarningTimestamps,
+    penaltyStatus: normalizeLedgerPenaltyStatus(snapshot.penaltyStatus),
+  };
+};
+
+const normalizeSafetyActionEffect = (raw: unknown): SafetyActionEffect | undefined => {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const before = normalizeSafetyActionSnapshot((raw as { before?: unknown }).before);
+  const after = normalizeSafetyActionSnapshot((raw as { after?: unknown }).after);
+  return before && after ? { before, after } : undefined;
+};
+
+const normalizeDisciplineRecord = (
+  raw: unknown,
+  fallbackId: string,
+  now: number,
+): DisciplineRecord => {
+  const record = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+  const type =
+    record.type === 'warning' ||
+    record.type === 'autoPenalty' ||
+    record.type === 'discipline' ||
+    record.type === 'levelDecrease' ||
+    record.type === 'reversal'
+      ? record.type
+      : 'warning';
+  const actionKind = record.actionKind === 'discipline' || record.actionKind === 'levelDecrease'
+    ? record.actionKind
+    : undefined;
+  const reason = typeof record.reason === 'string'
+    ? record.reason.trim().slice(0, 240) || undefined
+    : undefined;
+  const reversesRecordId = type === 'reversal' && typeof record.reversesRecordId === 'string'
+    ? record.reversesRecordId.trim().slice(0, 200) || undefined
+    : undefined;
+  const safetyEffect = type === 'discipline' || type === 'levelDecrease'
+    ? normalizeSafetyActionEffect(record.safetyEffect)
+    : undefined;
+
+  return {
+    id: typeof record.id === 'string' && record.id.trim()
+      ? record.id.trim().slice(0, 200)
+      : fallbackId,
+    type,
+    createdAt: toFiniteNumber(record.createdAt, now),
+    warningCount: record.warningCount == null
+      ? undefined
+      : Math.max(0, Math.floor(toFiniteNumber(record.warningCount, 0))),
+    reason,
+    actionKind,
+    reversesRecordId,
+    safetyEffect,
+  };
 };
 
 const normalizeBossReward = (reward: unknown, fallback: BossReward): BossReward => {
@@ -251,7 +333,7 @@ export const createInitialData = (now = Date.now()): AppData => ({
     pauseDecayOnWeekends: true,
     petCareMode: 'rest',
     publicNameMode: 'masked',
-    publicLeaderboardMode: 'growth',
+  publicLeaderboardMode: 'hidden',
     language: 'zh',
     feedCost: 10,
     feedGain: 20,
@@ -316,18 +398,11 @@ export const normalizeStudent = (student: any, fallbackIndex: number, now = Date
     penaltyStatus: normalizePenaltyStatus(student?.penaltyStatus, now),
     disciplineRecords: Array.isArray(student?.disciplineRecords)
       ? student.disciplineRecords
-          .map((record: any, index: number) => ({
-            id:
-              typeof record?.id === 'string' && record.id
-                ? record.id
-                : `record-${now}-${fallbackIndex}-${index}`,
-            type:
-              record?.type === 'warning' || record?.type === 'autoPenalty' || record?.type === 'discipline'
-                ? record.type
-                : 'warning',
-            createdAt: toFiniteNumber(record?.createdAt, now),
-            warningCount: record?.warningCount == null ? undefined : Math.max(0, Math.floor(toFiniteNumber(record.warningCount, 0))),
-          }))
+          .map((record: unknown, index: number) => normalizeDisciplineRecord(
+            record,
+            `record-${now}-${fallbackIndex}-${index}`,
+            now,
+          ))
           .sort((a: DisciplineRecord, b: DisciplineRecord) => b.createdAt - a.createdAt)
           .slice(0, MAX_ACTIVITY_RECORDS)
       : [],
@@ -391,9 +466,36 @@ export const normalizeStudent = (student: any, fallbackIndex: number, now = Date
             rewardPoints: Math.max(0, Math.floor(toFiniteNumber(record?.rewardPoints, 0))),
             rewardRankPoints: Math.max(0, Math.floor(toFiniteNumber(record?.rewardRankPoints, 0))),
             rewardHappiness: Math.max(0, Math.floor(toFiniteNumber(record?.rewardHappiness, 0))),
-            rankRewardPoints: Math.max(0, Math.floor(toFiniteNumber(record?.rankRewardPoints, 0))),
-            rankRewardRankPoints: Math.max(0, Math.floor(toFiniteNumber(record?.rankRewardRankPoints, 0))),
-            rankRewardHappiness: Math.max(0, Math.floor(toFiniteNumber(record?.rankRewardHappiness, 0))),
+            rankRewardPoints: Math.max(0, Math.floor(toFiniteNumber(
+              record?.rankRewardPoints,
+              [
+                record?.rankRewardPoints,
+                record?.participationRewardPoints,
+                record?.improvementRewardPoints,
+              ].some((value) => value != null)
+                ? 0
+                : record?.rewardPoints ?? 0,
+            ))),
+            rankRewardRankPoints: Math.max(0, Math.floor(toFiniteNumber(
+              record?.rankRewardRankPoints,
+              [
+                record?.rankRewardRankPoints,
+                record?.participationRewardRankPoints,
+                record?.improvementRewardRankPoints,
+              ].some((value) => value != null)
+                ? 0
+                : record?.rewardRankPoints ?? 0,
+            ))),
+            rankRewardHappiness: Math.max(0, Math.floor(toFiniteNumber(
+              record?.rankRewardHappiness,
+              [
+                record?.rankRewardHappiness,
+                record?.participationRewardHappiness,
+                record?.improvementRewardHappiness,
+              ].some((value) => value != null)
+                ? 0
+                : record?.rewardHappiness ?? 0,
+            ))),
             participationRewardPoints: Math.max(0, Math.floor(toFiniteNumber(record?.participationRewardPoints, 0))),
             participationRewardRankPoints: Math.max(0, Math.floor(toFiniteNumber(record?.participationRewardRankPoints, 0))),
             participationRewardHappiness: Math.max(0, Math.floor(toFiniteNumber(record?.participationRewardHappiness, 0))),

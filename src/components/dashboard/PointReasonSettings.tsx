@@ -18,6 +18,7 @@ type PointReasonSettingsProps = {
   configuredReasons: PointReasonOption[];
   competencyLabels: Record<LearningCompetency, string>;
   labels: typeof translations.zh;
+  editable?: boolean;
   onTogglePinned: (reasonId: string) => void;
   onSave: (reasons: PointReasonOption[]) => void;
 };
@@ -34,6 +35,7 @@ export const PointReasonSettings: React.FC<PointReasonSettingsProps> = ({
   configuredReasons,
   competencyLabels,
   labels,
+  editable = true,
   onTogglePinned,
   onSave,
 }) => {
@@ -64,19 +66,21 @@ export const PointReasonSettings: React.FC<PointReasonSettingsProps> = ({
           <Pin className="mr-1.5 h-3.5 w-3.5" />
           {labels.reasonShortcuts}
         </span>
-        <button
-          type="button"
-          onClick={() => {
-            setShowManager((open) => {
-              if (!open) setDrafts(clonePointReasons(configuredReasons));
-              return !open;
-            });
-          }}
-          className="inline-flex items-center rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
-        >
-          <Settings className="mr-1.5 h-3.5 w-3.5" />
-          {labels.managePointReasons}
-        </button>
+        {editable && (
+          <button
+            type="button"
+            onClick={() => {
+              setShowManager((open) => {
+                if (!open) setDrafts(clonePointReasons(configuredReasons));
+                return !open;
+              });
+            }}
+            className="inline-flex items-center rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
+          >
+            <Settings className="mr-1.5 h-3.5 w-3.5" />
+            {labels.managePointReasons}
+          </button>
+        )}
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -86,8 +90,9 @@ export const PointReasonSettings: React.FC<PointReasonSettingsProps> = ({
             type="button"
             aria-pressed={option.isPinned}
             onClick={() => onTogglePinned(option.id)}
+            disabled={!editable}
             title={option.isPinned ? labels.unpinReason : labels.pinReason}
-            className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium transition-colors ${
+            className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium transition-colors disabled:cursor-default ${
               option.isPinned
                 ? 'border-indigo-300 bg-indigo-50 text-indigo-800'
                 : option.isRecent
@@ -110,7 +115,7 @@ export const PointReasonSettings: React.FC<PointReasonSettingsProps> = ({
       </div>
       <p className="mt-2 text-xs text-slate-500">{labels.reasonShortcutsHint}</p>
 
-      {showManager && (
+      {editable && showManager && (
         <div className="mt-4 border-t border-slate-200 pt-4">
           <div className="space-y-3">
             {drafts.map((reason, index) => (
