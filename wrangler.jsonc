@@ -10,6 +10,9 @@
   "observability": {
     "enabled": true
   },
+  "triggers": {
+    "crons": ["17 3 * * *"]
+  },
   "vars": {
     "ALLOWED_ORIGINS": "https://andreww0421.github.io,http://localhost:3000,http://127.0.0.1:3000",
     "PUBLIC_APP_URL": "https://andreww0421.github.io/epet/",

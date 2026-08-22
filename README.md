@@ -162,6 +162,8 @@ migrations/
   0001_create_workspaces.sql
   0002_auth_rbac.sql
   0003_core_entities.sql
+  0004_workspace_class_assignments.sql
+  0005_workspace_invitations.sql
 .github/
   workflows/
     deploy.yml
@@ -177,7 +179,11 @@ wrangler.jsonc
 - 每次寫入帶有 `baseRevision`；版本不符時 API 回傳 `409`，避免靜默覆蓋
 - 每次資料請求都先驗證 Bearer session，再驗證工作區 membership；工作區 ID 本身不是憑證
 - D1 保留最近 25 份 workspace revision 快照，供稽核與受控復原
+- autosave 使用串行 queue、退避重試、版本衝突保護與 `sessionStorage` 未同步草稿；登出或切換工作區前會先 flush
 - 核心班級、學生、考試、學習證據、加減分、處罰與魔王獎勵交易式雙寫至正規化表；`data_json` 保留為相容讀取層
+- owner／admin 可邀請成員、管理角色與班級範圍；owner 可移轉所有權及雙重確認刪除工作區
+- 帳號可自助刪除，但必須先移轉或刪除其擁有的工作區
+- 刪除學生時會連同所有保留 revision 中的該生資料清除
 - `admin` 可透過 API 查看／復原 revision，並匯出單一學生的限縮資料集，不夾帶同班其他學生
 - 可匯出為 JSON 備份
 - 可匯入既有資料，系統會自動補齊新版欄位
@@ -199,7 +205,9 @@ npx wrangler secret put RESEND_API_KEY
 npx wrangler secret put PASSWORD_RESET_FROM
 ```
 
-`PUBLIC_APP_URL` 與 `REGISTRATION_ENABLED` 可使用 Worker vars。專案預設關閉正式環境公開註冊；完成寄信、Email 驗證與濫用防護前不要開啟。若未設定寄件金鑰或寄件者，忘記密碼 API 仍會回覆通用訊息，但不會寄出郵件；不可在此狀態開放正式使用。
+`PUBLIC_APP_URL` 與 `REGISTRATION_ENABLED` 可使用 Worker vars。同一組核准的寄件者設定同時用於密碼重設與工作區邀請。專案預設關閉正式環境公開註冊；完成公開註冊的 Email 驗證與 bot 防護前不要開啟。若未設定寄件金鑰或寄件者，忘記密碼會保持通用回覆，邀請 API 則會關閉寄送；不可在此狀態開放正式使用。
+
+Worker 每日由 cron 清理到期驗證資料。正式上線前還必須依 [`docs/p0-operations-runbook.md`](docs/p0-operations-runbook.md) 完成備份還原演練並核定 RPO／RTO。
 
 套用 migration：
 

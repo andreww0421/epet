@@ -24,13 +24,17 @@ import {
   type AuthRateLimitPolicy,
   type AuthServiceOptions,
   type PasswordResetDelivery,
+  type WorkspaceInvitationDelivery,
 } from './auth';
 import {
   EmailAlreadyExistsError,
+  InvalidWorkspaceInvitationError,
   WorkspaceAlreadyClaimedError,
   WorkspaceConflictError,
   WorkspaceDataTooLargeError,
+  WorkspaceMembershipNotFoundError,
   WorkspaceNotFoundError,
+  WorkspaceOwnerTransferRequiredError,
   type AuthRateLimitScope,
   type AuthRateLimitResult,
   type AuthRepository,
@@ -107,6 +111,9 @@ export type ApiOptions = {
   auth?: AuthServiceOptions;
   passwordResetMailer?: (
     delivery: PasswordResetDelivery,
+  ) => Promise<void>;
+  workspaceInvitationMailer?: (
+    delivery: WorkspaceInvitationDelivery,
   ) => Promise<void>;
   clientIdentity?: (request: Request) => string | null | undefined;
   deferBackgroundTask?: (task: Promise<void>) => void;
@@ -319,7 +326,7 @@ const getCorsHeaders = (request: Request, allowedOrigins: string[]) => {
       ...(allowedOrigin ? { 'access-control-allow-origin': allowedOrigin } : {}),
       'access-control-allow-headers':
         'authorization, content-type, x-epet-workspace, x-request-id',
-      'access-control-allow-methods': 'GET, PUT, POST, OPTIONS',
+      'access-control-allow-methods': 'GET, PUT, POST, PATCH, DELETE, OPTIONS',
       vary: 'Origin',
     },
   };
@@ -372,6 +379,7 @@ export const createApiHandler = (
           service: 'epet-api',
           version: 1,
           registrationEnabled,
+          invitationEnabled: Boolean(options.workspaceInvitationMailer),
         },
         200,
         cors.headers,
@@ -612,10 +620,80 @@ export const createApiHandler = (
         return json({ ok: true }, 200, cors.headers);
       }
 
+      if (
+        request.method === 'POST' &&
+        url.pathname === '/api/v1/auth/invitations/accept'
+      ) {
+        const body = await readJsonBody(request, MAX_AUTH_BODY_BYTES);
+        const invitationToken = getString(body.token);
+        const rateLimit = await consumeRequestRateLimit(
+          authService,
+          'reset',
+          normalizeClientIdentity(resolveClientIdentity(request)),
+          invitationToken,
+        );
+        if (!rateLimit.allowed) {
+          return json(
+            { error: 'RATE_LIMITED' },
+            429,
+            {
+              ...cors.headers,
+              'retry-after': String(
+                Math.max(1, Math.ceil(rateLimit.retryAfterMs / 1000)),
+              ),
+            },
+          );
+        }
+        return json(
+          await authService.acceptWorkspaceInvitation(
+            invitationToken,
+            getString(body.displayName),
+            getString(body.password),
+          ),
+          201,
+          cors.headers,
+        );
+      }
+
       const token = parseBearerToken(
         request.headers.get('authorization'),
       );
       if (!token) throw new InvalidSessionError();
+
+      if (
+        request.method === 'DELETE' &&
+        url.pathname === '/api/v1/account'
+      ) {
+        const body = await readJsonBody(request, MAX_AUTH_BODY_BYTES);
+        await authService.deleteAccount(
+          token,
+          getString(body.password),
+          getString(body.confirmation),
+        );
+        return new Response(null, {
+          status: 204,
+          headers: { ...cors.headers, 'cache-control': 'no-store' },
+        });
+      }
+
+      if (
+        request.method === 'POST' &&
+        url.pathname === '/api/v1/workspaces'
+      ) {
+        const body = await readJsonBody(request, MAX_AUTH_BODY_BYTES);
+        return json(
+          {
+            session: await authService.createWorkspace(
+              token,
+              getString(body.name),
+              createInitialData(),
+            ),
+          },
+          201,
+          cors.headers,
+        );
+      }
+
       const workspaceId = getWorkspaceId(
         request,
         allowLocalWorkspaceIds,
@@ -643,6 +721,145 @@ export const createApiHandler = (
           throw new AuthForbiddenError();
         }
       };
+
+      if (
+        request.method === 'GET' &&
+        url.pathname === '/api/v1/members'
+      ) {
+        return json(
+          { members: await authService.listWorkspaceMembers(token, workspaceId) },
+          200,
+          cors.headers,
+        );
+      }
+
+      if (url.pathname === '/api/v1/invitations') {
+        if (request.method === 'GET') {
+          return json(
+            {
+              invitations: await authService.listWorkspaceInvitations(
+                token,
+                workspaceId,
+              ),
+            },
+            200,
+            cors.headers,
+          );
+        }
+        if (request.method === 'POST') {
+          if (!options.workspaceInvitationMailer) {
+            return json(
+              { error: 'INVITATION_DELIVERY_UNAVAILABLE' },
+              503,
+              cors.headers,
+            );
+          }
+          const body = await readJsonBody(request, MAX_AUTH_BODY_BYTES);
+          const role = getString(body.role);
+          if (!['admin', 'teacher', 'viewer'].includes(role)) {
+            return json({ error: 'INVALID_ROLE' }, 400, cors.headers);
+          }
+          const delivery = await authService.createWorkspaceInvitation(
+            token,
+            workspaceId,
+            getString(body.email),
+            role as 'admin' | 'teacher' | 'viewer',
+            Array.isArray(body.classIds)
+              ? body.classIds.filter((value): value is string =>
+                  typeof value === 'string')
+              : [],
+          );
+          const deliveryTask = options.workspaceInvitationMailer(delivery)
+            .catch((error: unknown) => {
+              console.error('Workspace invitation delivery failed', error);
+            });
+          deferBackgroundTask(deliveryTask);
+          return json({ accepted: true }, 202, cors.headers);
+        }
+      }
+
+      const invitationRevokeMatch = url.pathname.match(
+        /^\/api\/v1\/invitations\/([^/]+)$/,
+      );
+      if (invitationRevokeMatch && request.method === 'DELETE') {
+        return json(
+          {
+            invitations: await authService.revokeWorkspaceInvitation(
+              token,
+              workspaceId,
+              decodeURIComponent(invitationRevokeMatch[1]),
+            ),
+          },
+          200,
+          cors.headers,
+        );
+      }
+
+      const memberMatch = url.pathname.match(
+        /^\/api\/v1\/members\/([^/]+)$/,
+      );
+      if (memberMatch && request.method === 'PATCH') {
+        const body = await readJsonBody(request, MAX_AUTH_BODY_BYTES);
+        const role = getString(body.role);
+        if (!['admin', 'teacher', 'viewer'].includes(role)) {
+          return json({ error: 'INVALID_ROLE' }, 400, cors.headers);
+        }
+        const members = await authService.updateWorkspaceMember(
+          token,
+          workspaceId,
+          decodeURIComponent(memberMatch[1]),
+          role as 'admin' | 'teacher' | 'viewer',
+          Array.isArray(body.classIds)
+            ? body.classIds.filter((value): value is string =>
+                typeof value === 'string')
+            : [],
+        );
+        return json({ members }, 200, cors.headers);
+      }
+      if (memberMatch && request.method === 'DELETE') {
+        const members = await authService.removeWorkspaceMember(
+          token,
+          workspaceId,
+          decodeURIComponent(memberMatch[1]),
+        );
+        return json({ members }, 200, cors.headers);
+      }
+
+      const ownershipTransferMatch = url.pathname.match(
+        /^\/api\/v1\/members\/([^/]+)\/transfer-ownership$/,
+      );
+      if (ownershipTransferMatch && request.method === 'POST') {
+        return json(
+          {
+            session: await authService.transferWorkspaceOwnership(
+              token,
+              workspaceId,
+              decodeURIComponent(ownershipTransferMatch[1]),
+            ),
+          },
+          200,
+          cors.headers,
+        );
+      }
+
+      if (
+        request.method === 'DELETE' &&
+        url.pathname === '/api/v1/workspace'
+      ) {
+        const body = await readJsonBody(request, MAX_AUTH_BODY_BYTES);
+        return json(
+          {
+            session: await authService.deleteWorkspace(
+              token,
+              workspaceId,
+              getString(body.password),
+              getString(body.confirmation),
+            ),
+          },
+          200,
+          cors.headers,
+        );
+      }
 
       if (url.pathname === '/api/v1/state') {
         if (request.method === 'GET') {
@@ -1116,6 +1333,15 @@ export const createApiHandler = (
           409,
           cors.headers,
         );
+      }
+      if (error instanceof WorkspaceMembershipNotFoundError) {
+        return json({ error: 'MEMBERSHIP_NOT_FOUND' }, 404, cors.headers);
+      }
+      if (error instanceof WorkspaceOwnerTransferRequiredError) {
+        return json({ error: 'OWNER_TRANSFER_REQUIRED' }, 409, cors.headers);
+      }
+      if (error instanceof InvalidWorkspaceInvitationError) {
+        return json({ error: 'INVALID_WORKSPACE_INVITATION' }, 400, cors.headers);
       }
       if (error instanceof SyntaxError) {
         return json({ error: 'INVALID_JSON' }, 400, cors.headers);

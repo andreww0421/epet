@@ -1,10 +1,10 @@
 # ePet 會員系統與 P0 上架計畫
 
-日期：2026-07-31
+日期：2026-08-23
 
 ## 目前落地狀態
 
-本輪已完成可供封閉教師試點驗證的會員底座：
+已完成可供封閉教師試點驗證的會員與資料安全底座：
 
 - Email／密碼註冊、登入、登出、session 復原及忘記／重設密碼。
 - opaque token 雜湊保存、持久 rate limit、短效一次性 reset token。
@@ -14,14 +14,19 @@
 - 核心班級、學生、考試、證據、事件與魔王獎勵正規化 D1 表、舊 blob 回填與交易式 staged dual-write。
 - 學生個資本機快取預設關閉、完整工作區與單一學生 admin 匯出、學生 live-state 級聯刪除。
 - revision 查詢／復原 API，以新 revision 保留復原軌跡；處罰／降級防重複與補償式撤銷 ledger。
+- 串行 autosave、指數退避重試、sessionStorage 未同步草稿、離開前警示與丟失回應後的幂等復原。
+- Email 工作區邀請（一次性 token hash／7 日到期／撤銷／防重放）與班級範圍管理。
+- 成員角色變更、移除、owner 移轉、工作區與帳號雙重確認刪除。
+- 刪除學生時同步清除所有保留 revision 與正規化投影中的該生資料。
+- Worker cron 與 Node 每日清理到期／撤銷 session、reset token、rate limit 與邀請。
 
-這不等於已達公開商業上架。下列仍是 release blocker：
+這不等於已達公開商業上架。下列仍是需要外部決策或正式環境的 release blocker：
 
-- Email 驗證、bot 防護、邀請／成員管理及公開可查的管理者稽核工具。
-- revision／備份中的受控刪除、帳號／工作區刪除與 owner 移轉。
+- 公開註冊的 Email 驗證與 bot 防護；完成前必須維持 `REGISTRATION_ENABLED=false` 並使用邀請制。
 - 正規化表與相容 blob 的全量對帳、切換讀取來源及 blob 退場計畫。
-- revision 復原與單生匯出的管理 UI、離線草稿／重試 queue、D1 備份還原演練與 RPO／RTO。
+- revision 復原、單生匯出與稽核查詢的管理 UI，以及 D1 備份還原演練與核定的 RPO／RTO。
 - 同站 `HttpOnly` cookie 與完整 WCAG 2.2 AA 核心流程驗證。
+- 法定營運者、隱私窗口、保留期限、學校資料處理協議與正式寄件者身分核准。
 
 隱私盤點、保留／刪除缺口與資料請求 runbook 見
 [`privacy-data-governance.md`](privacy-data-governance.md)。
@@ -73,16 +78,17 @@
 
 ### 成員邀請與帳號生命週期
 
-封閉試點先只開教師型帳號，不提供學生或家長登入。下一階段依序實作：
+封閉試點只開教師型帳號，不提供學生或家長登入。目前已實作：
 
-1. `owner/admin` 輸入教師 Email、角色與有效期限，後端建立一次性 invitation token；
+1. `owner/admin` 輸入教師 Email、角色與班級範圍，後端建立七日有效的一次性 invitation token；
    資料庫只保存 token hash。
-2. 受邀者完成 Email 驗證並登入後才建立 membership；邀請過期、撤銷或使用後不可重放。
+2. 受邀者必須持有 Email 內的一次性連結；邀請過期、撤銷或使用後不可重放。
 3. `admin` 可邀請／移除 `teacher/viewer`，只有 `owner` 可管理 `admin`。
-4. 移除成員會撤銷其該 workspace 存取及相關 session，保留 actor、理由與時間的 audit event。
-5. 刪除帳號前先處理其擁有的 workspace：移轉唯一 owner、封存／刪除，或取消操作；
+4. 移除成員會立即撤銷其該 workspace 存取、清除 session 的 active workspace，並保留 actor、前一角色與時間的 audit event。
+5. 刪除帳號前先處理其擁有的 workspace：移轉唯一 owner、刪除，或取消操作；
    不允許產生沒有 owner 的工作區。
-6. 帳號停用、Email 變更、密碼重設與所有權移轉都寄送安全通知，但通知不含學生資料。
+
+帳號停用、Email 變更與所有權移轉安全通知尚未實作；導入學校身分系統前不開放 Email 變更或帳號停用 UI。
 
 學生／家長入口等資料分享、法源、可見範圍與撤銷流程確定後再獨立設計，
 不可直接沿用教師的完整 workspace 權限。
@@ -112,6 +118,7 @@ P0 新增：
 - `workspace_revisions`：每次保存的版本快照，支援稽核與復原。
 - `audit_events`：登入、登出、密碼重設、會員與資料異動的安全事件。
 - `auth_rate_limits`：登入、註冊與忘記密碼的濫用限制。
+- `workspace_invitations`：一次性邀請 token hash、角色、班級範圍、到期、接受與撤銷狀態。
 
 現有 `workspaces.data_json` 保留為相容讀取層；P0 已依下列順序回填並建立交易式 dual-write：
 
@@ -174,5 +181,9 @@ P0 新增：
 - 存在與不存在帳號的 forgot 請求皆為相同 `202` 回覆。
 - reset 成功後舊 session 不可再使用。
 - 登出與帳號切換後，畫面及 autosave 不保留前一工作區資料。
+- 斷線保存可重試；切換工作區、登出或刪除帳號前必須先 flush 成功。
+- 邀請過期／撤銷／重複使用失敗；admin 不能管理 admin，只有 owner 可移轉所有權。
+- 沒有 owner 的工作區不可產生；工作區／帳號刪除需密碼與明確確認字串。
+- 刪除學生後，所有保留 D1／JSON revision 都不再含該 student ID。
 - 舊資料正規化、魔王獎勵拆分與規則測試全部通過。
 - `lint`、`test:rules`、`test:auth`、`test:server`、`test:d1-core`、`build`、Worker dry-run 全部通過。

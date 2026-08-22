@@ -28,7 +28,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../auth/AuthProvider';
 
-type AuthMode = 'login' | 'register' | 'forgot' | 'reset';
+type AuthMode = 'login' | 'register' | 'forgot' | 'reset' | 'invite';
 type FieldErrors = Partial<Record<
   'displayName' | 'email' | 'password' | 'passwordConfirmation',
   string
@@ -43,6 +43,7 @@ const routeForMode: Record<AuthMode, string> = {
   register: '/register',
   forgot: '/forgot-password',
   reset: '/reset-password',
+  invite: '/accept-invitation',
 };
 
 const readLocationState = (): { mode: AuthMode; resetToken: string } => {
@@ -61,6 +62,9 @@ const readLocationState = (): { mode: AuthMode; resetToken: string } => {
     ''
   ).trim();
 
+  if (hashPath === '/accept-invitation') {
+    return { mode: 'invite', resetToken };
+  }
   if (resetToken || hashPath === '/reset-password') {
     return { mode: 'reset', resetToken };
   }
@@ -122,6 +126,12 @@ const authErrorMessage = (error: unknown, mode: AuthMode) => {
     code.includes('TOKEN')
   )) {
     return '此重設連結無效或已逾期，請重新申請。';
+  }
+  if (mode === 'invite') {
+    if (code.includes('CREDENTIAL')) {
+      return '此信箱已有帳號，請輸入原本的帳號密碼接受邀請。';
+    }
+    return '邀請連結無效、已使用或已逾期，請聯絡工作區管理員重新邀請。';
   }
   return '操作未完成，請稍後再試。';
 };
@@ -288,6 +298,7 @@ export const AuthScreen = () => {
     register,
     forgotPassword,
     resetPassword,
+    acceptInvitation,
   } = useAuth();
   const initialLocation = useMemo(readLocationState, []);
   const [mode, setMode] = useState<AuthMode>(initialLocation.mode);
@@ -341,6 +352,13 @@ export const AuthScreen = () => {
       submit: '更新密碼',
       benefits: ['更新後，其他裝置可能需要重新登入'],
     },
+    invite: {
+      kicker: '工作區邀請',
+      title: '加入你的教學團隊',
+      description: '設定顯示名稱與安全密碼後，即可依管理員配置的角色和班級範圍加入工作區。若已有帳號，請輸入原密碼。',
+      submit: '接受邀請並加入',
+      benefits: ['邀請連結只能使用一次，並會在期限後失效'],
+    },
   }[mode];
 
   useEffect(() => {
@@ -359,6 +377,7 @@ export const AuthScreen = () => {
     // Keep the one-time token only in component memory. Removing it from both
     // query and hash prevents referrer, history, screenshot, and log leakage.
     if (initialLocation.mode === 'reset') replaceAuthRoute('reset');
+    if (initialLocation.mode === 'invite') replaceAuthRoute('invite');
   }, [initialLocation.mode]);
 
   const changeMode = (nextMode: AuthMode) => {
@@ -371,7 +390,7 @@ export const AuthScreen = () => {
     setClaimLegacyWorkspace(false);
     setForgotComplete(false);
     setResetComplete(false);
-    if (nextMode !== 'reset') setResetToken('');
+    if (nextMode !== 'reset' && nextMode !== 'invite') setResetToken('');
     replaceAuthRoute(nextMode);
   };
 
@@ -379,11 +398,14 @@ export const AuthScreen = () => {
     const errors: FieldErrors = {};
     const normalizedEmail = email.trim();
 
-    if (mode === 'register' && displayName.trim().length < 2) {
+    if (
+      (mode === 'register' && displayName.trim().length < 2) ||
+      (mode === 'invite' && displayName.trim().length === 1)
+    ) {
       errors.displayName = '請輸入至少 2 個字的顯示名稱。';
     }
 
-    if (mode !== 'reset' && !EMAIL_PATTERN.test(normalizedEmail)) {
+    if (mode !== 'reset' && mode !== 'invite' && !EMAIL_PATTERN.test(normalizedEmail)) {
       errors.email = '請輸入有效的電子信箱。';
     }
 
@@ -391,7 +413,7 @@ export const AuthScreen = () => {
       errors.password = '請輸入密碼。';
     }
 
-    if (mode === 'register' || mode === 'reset') {
+    if (mode === 'register' || mode === 'reset' || mode === 'invite') {
       if (password.length < PASSWORD_MIN_LENGTH) {
         errors.password = `密碼至少需要 ${PASSWORD_MIN_LENGTH} 個字元。`;
       } else if (password.length > PASSWORD_MAX_LENGTH) {
@@ -428,8 +450,10 @@ export const AuthScreen = () => {
       return;
     }
     if (!validate()) return;
-    if (mode === 'reset' && !resetToken) {
-      setSubmitError('重設連結不完整，請重新申請。');
+    if ((mode === 'reset' || mode === 'invite') && !resetToken) {
+      setSubmitError(mode === 'reset'
+        ? '重設連結不完整，請重新申請。'
+        : '邀請連結不完整，請聯絡工作區管理員。');
       return;
     }
 
@@ -442,11 +466,14 @@ export const AuthScreen = () => {
       } else if (mode === 'forgot') {
         await forgotPassword(email);
         setForgotComplete(true);
-      } else {
+      } else if (mode === 'reset') {
         await resetPassword(resetToken, password);
         setResetComplete(true);
         setResetToken('');
         replaceAuthRoute('login');
+      } else {
+        await acceptInvitation(resetToken, displayName, password);
+        setResetToken('');
       }
     } catch (error) {
       setSubmitError(authErrorMessage(error, mode));
@@ -468,6 +495,7 @@ export const AuthScreen = () => {
 
   const completed = forgotComplete || resetComplete;
   const isRegister = mode === 'register';
+  const isInvite = mode === 'invite';
   const isLogin = mode === 'login';
 
   return (
@@ -508,7 +536,7 @@ export const AuthScreen = () => {
         </aside>
 
         <section className="flex min-h-screen items-center justify-center px-4 py-6 sm:px-8 sm:py-10 lg:px-12 xl:px-20" aria-labelledby="auth-heading">
-          <div className={`auth-reveal w-full ${isRegister ? 'max-w-3xl' : 'max-w-xl'}`}>
+          <div className={`auth-reveal w-full ${isRegister || isInvite ? 'max-w-3xl' : 'max-w-xl'}`}>
             <div className="mb-8 flex items-center justify-between lg:hidden">
               <BrandMark />
               <span className="hidden items-center gap-2 rounded-full bg-white/80 px-3 py-2 text-xs font-bold text-slate-600 shadow-sm sm:flex">
@@ -538,7 +566,7 @@ export const AuthScreen = () => {
                   id="auth-heading"
                   ref={headingRef}
                   tabIndex={-1}
-                  className={`mt-3 font-black leading-[1.12] tracking-[-0.045em] text-slate-950 outline-none ${isRegister ? 'text-3xl sm:text-4xl' : 'text-3xl sm:text-[2.65rem]'}`}
+                  className={`mt-3 font-black leading-[1.12] tracking-[-0.045em] text-slate-950 outline-none ${isRegister || isInvite ? 'text-3xl sm:text-4xl' : 'text-3xl sm:text-[2.65rem]'}`}
                 >
                   {forgotComplete
                     ? '請查看你的信箱'
@@ -594,10 +622,12 @@ export const AuthScreen = () => {
                     </div>
                   )}
 
-                  <div className={isRegister ? 'grid gap-x-4 gap-y-5 sm:grid-cols-2' : 'space-y-5'}>
-                    {isRegister && (
+                  <div className={isRegister || isInvite ? 'grid gap-x-4 gap-y-5 sm:grid-cols-2' : 'space-y-5'}>
+                    {(isRegister || isInvite) && (
                       <div>
-                        <label htmlFor="auth-display-name" className="block text-sm font-black tracking-wide text-slate-800">姓名</label>
+                        <label htmlFor="auth-display-name" className="block text-sm font-black tracking-wide text-slate-800">
+                          {isInvite ? '姓名（已有帳號可留白）' : '姓名'}
+                        </label>
                         <div className="relative">
                           <UserRound aria-hidden="true" className="pointer-events-none absolute left-4 top-1/2 h-[1.125rem] w-[1.125rem] -translate-y-1/2 text-slate-400" />
                           <input
@@ -609,7 +639,7 @@ export const AuthScreen = () => {
                             placeholder="請輸入你的姓名"
                             minLength={2}
                             maxLength={80}
-                            required
+                            required={isRegister}
                             aria-invalid={Boolean(fieldErrors.displayName)}
                             aria-describedby={fieldErrors.displayName ? 'auth-display-name-error' : undefined}
                             className={`${fieldClassName(Boolean(fieldErrors.displayName))} pl-11`}
@@ -619,7 +649,7 @@ export const AuthScreen = () => {
                       </div>
                     )}
 
-                    {mode !== 'reset' && (
+                    {mode !== 'reset' && mode !== 'invite' && (
                       <div>
                         <label htmlFor="auth-email" className="block text-sm font-black tracking-wide text-slate-800">Email</label>
                         <div className="relative">
@@ -645,7 +675,7 @@ export const AuthScreen = () => {
                       </div>
                     )}
 
-                    {(isLogin || isRegister || mode === 'reset') && (
+                    {(isLogin || isRegister || mode === 'reset' || isInvite) && (
                       <PasswordField
                         id="auth-password"
                         label="密碼"
@@ -654,11 +684,11 @@ export const AuthScreen = () => {
                         autoComplete={isLogin ? 'current-password' : 'new-password'}
                         placeholder={isLogin ? '輸入你的密碼' : `至少 ${PASSWORD_MIN_LENGTH} 個字元`}
                         error={fieldErrors.password}
-                        hint={isRegister || mode === 'reset' ? `請使用至少 ${PASSWORD_MIN_LENGTH} 個字元；可以使用容易記住的長句。` : undefined}
+                        hint={isRegister || mode === 'reset' || isInvite ? `請使用至少 ${PASSWORD_MIN_LENGTH} 個字元；可以使用容易記住的長句。` : undefined}
                       />
                     )}
 
-                    {(isRegister || mode === 'reset') && (
+                    {(isRegister || mode === 'reset' || isInvite) && (
                       <PasswordField
                         id="auth-password-confirmation"
                         label="確認密碼"

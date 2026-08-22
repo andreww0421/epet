@@ -8,7 +8,10 @@ import {
   type ApiOptions,
 } from '../server/api';
 import { createEpetServer } from '../server/app';
-import type { PasswordResetDelivery } from '../server/auth';
+import type {
+  PasswordResetDelivery,
+  WorkspaceInvitationDelivery,
+} from '../server/auth';
 import type { WorkspaceRole } from '../server/contracts';
 import { JsonWorkspaceRepository } from '../server/repository';
 import { normalizeAppData } from '../src/store/utils';
@@ -373,6 +376,7 @@ test('authenticated API preserves owner workflows and enforces tenant isolation'
       service: 'epet-api',
       version: 1,
       registrationEnabled: true,
+      invitationEnabled: false,
     });
 
     const preflightResponse = await request('/api/v1/state', {
@@ -1099,6 +1103,7 @@ test('health reports when public registration is disabled', async () => {
       service: 'epet-api',
       version: 1,
       registrationEnabled: false,
+      invitationEnabled: false,
     });
 
     const registrationResponse = await request('/api/v1/auth/register', {
@@ -1114,6 +1119,248 @@ test('health reports when public registration is disabled', async () => {
     assert.deepEqual(await registrationResponse.json(), {
       error: 'REGISTRATION_DISABLED',
     });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('workspace invitations and destructive lifecycle operations enforce ownership', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'epet-lifecycle-test-'));
+  const dataFile = join(directory, 'workspaces.json');
+  const backgroundTasks: Promise<void>[] = [];
+  const invitationDeliveries: WorkspaceInvitationDelivery[] = [];
+  const repository = new JsonWorkspaceRepository(dataFile);
+  const request = createRequester(createApiHandler(repository, {
+    ...createHandlerOptions([], backgroundTasks),
+    workspaceInvitationMailer: async (delivery) => {
+      invitationDeliveries.push(delivery);
+    },
+  }));
+
+  try {
+    const registration = await request('/api/v1/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        displayName: 'Lifecycle Owner',
+        email: 'lifecycle-owner@example.test',
+        password: OWNER_PASSWORD,
+        workspaceName: 'Lifecycle Workspace',
+        initialWorkspaceData: createTwoClassState(),
+      }),
+    });
+    assert.equal(registration.status, 201);
+    const owner = await registration.json() as AuthEnvelope;
+    const workspaceId = owner.session.activeWorkspaceId;
+    assert.ok(workspaceId);
+
+    const inviteResponse = await request('/api/v1/invitations', {
+      method: 'POST',
+      sessionToken: owner.sessionToken,
+      workspaceId,
+      body: JSON.stringify({
+        email: 'invited-teacher@example.test',
+        role: 'teacher',
+        classIds: ['class-a'],
+      }),
+    });
+    assert.equal(inviteResponse.status, 202);
+
+    const revokedInviteResponse = await request('/api/v1/invitations', {
+      method: 'POST',
+      sessionToken: owner.sessionToken,
+      workspaceId,
+      body: JSON.stringify({
+        email: 'revoked-viewer@example.test',
+        role: 'viewer',
+        classIds: ['class-b'],
+      }),
+    });
+    assert.equal(revokedInviteResponse.status, 202);
+    await Promise.all(backgroundTasks);
+    assert.equal(invitationDeliveries.length, 2);
+
+    const invitationsResponse = await request('/api/v1/invitations', {
+      sessionToken: owner.sessionToken,
+      workspaceId,
+    });
+    assert.equal(invitationsResponse.status, 200);
+    const invitationList = await invitationsResponse.json() as {
+      invitations: Array<{
+        id: string;
+        email: string;
+        tokenHash?: string;
+      }>;
+    };
+    assert.ok(invitationList.invitations.every(
+      (invitation) => invitation.tokenHash === undefined,
+    ));
+    const revokedInvitation = invitationList.invitations.find(
+      (invitation) => invitation.email === 'revoked-viewer@example.test',
+    );
+    assert.ok(revokedInvitation);
+    const revokeResponse = await request(
+      `/api/v1/invitations/${revokedInvitation.id}`,
+      {
+        method: 'DELETE',
+        sessionToken: owner.sessionToken,
+        workspaceId,
+      },
+    );
+    assert.equal(revokeResponse.status, 200);
+    const revokedDelivery = invitationDeliveries.find(
+      (delivery) => delivery.email === 'revoked-viewer@example.test',
+    );
+    assert.ok(revokedDelivery);
+    const revokedAcceptance = await request(
+      '/api/v1/auth/invitations/accept',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          token: revokedDelivery.token,
+          displayName: 'Revoked Viewer',
+          password: 'revoked viewer secure password',
+        }),
+      },
+    );
+    assert.equal(revokedAcceptance.status, 400);
+
+    const invitationDelivery = invitationDeliveries.find(
+      (delivery) => delivery.email === 'invited-teacher@example.test',
+    );
+    assert.ok(invitationDelivery);
+    const acceptance = await request('/api/v1/auth/invitations/accept', {
+      method: 'POST',
+      body: JSON.stringify({
+        token: invitationDelivery.token,
+        displayName: 'Invited Teacher',
+        password: 'invited teacher secure password',
+      }),
+    });
+    assert.equal(acceptance.status, 201);
+    const invited = await acceptance.json() as AuthEnvelope;
+    assert.equal(invited.session.user.role, 'teacher');
+    assert.equal(invited.session.activeWorkspaceId, workspaceId);
+
+    const reusedAcceptance = await request('/api/v1/auth/invitations/accept', {
+      method: 'POST',
+      body: JSON.stringify({
+        token: invitationDelivery.token,
+        displayName: 'Invited Teacher',
+        password: 'invited teacher secure password',
+      }),
+    });
+    assert.equal(reusedAcceptance.status, 400);
+
+    const membersResponse = await request('/api/v1/members', {
+      sessionToken: owner.sessionToken,
+      workspaceId,
+    });
+    assert.equal(membersResponse.status, 200);
+    const membersBody = await membersResponse.json() as {
+      members: Array<{ userId: string; email: string; role: string }>;
+    };
+    const invitedMember = membersBody.members.find(
+      (member) => member.email === 'invited-teacher@example.test',
+    );
+    assert.ok(invitedMember);
+
+    const emptyScope = await request(
+      `/api/v1/members/${invitedMember.userId}`,
+      {
+        method: 'PATCH',
+        sessionToken: owner.sessionToken,
+        workspaceId,
+        body: JSON.stringify({ role: 'viewer', classIds: [] }),
+      },
+    );
+    assert.equal(emptyScope.status, 400);
+    const updateMember = await request(
+      `/api/v1/members/${invitedMember.userId}`,
+      {
+        method: 'PATCH',
+        sessionToken: owner.sessionToken,
+        workspaceId,
+        body: JSON.stringify({ role: 'viewer', classIds: ['class-b'] }),
+      },
+    );
+    assert.equal(updateMember.status, 200);
+
+    const viewerMembers = await request('/api/v1/members', {
+      sessionToken: invited.sessionToken,
+      workspaceId,
+    });
+    assert.equal(viewerMembers.status, 403);
+
+    const transfer = await request(
+      `/api/v1/members/${invitedMember.userId}/transfer-ownership`,
+      {
+        method: 'POST',
+        sessionToken: owner.sessionToken,
+        workspaceId,
+      },
+    );
+    assert.equal(transfer.status, 200);
+
+    const removePreviousOwner = await request(
+      `/api/v1/members/${owner.session.user.id}`,
+      {
+        method: 'DELETE',
+        sessionToken: invited.sessionToken,
+        workspaceId,
+      },
+    );
+    assert.equal(removePreviousOwner.status, 200);
+    const deletePreviousOwner = await request('/api/v1/account', {
+      method: 'DELETE',
+      sessionToken: owner.sessionToken,
+      body: JSON.stringify({ password: OWNER_PASSWORD, confirmation: 'DELETE' }),
+    });
+    assert.equal(deletePreviousOwner.status, 204);
+    assert.equal((await request('/api/v1/auth/session', {
+      sessionToken: owner.sessionToken,
+    })).status, 401);
+
+    const wrongWorkspaceConfirmation = await request('/api/v1/workspace', {
+      method: 'DELETE',
+      sessionToken: invited.sessionToken,
+      workspaceId,
+      body: JSON.stringify({
+        password: 'invited teacher secure password',
+        confirmation: 'wrong name',
+      }),
+    });
+    assert.equal(wrongWorkspaceConfirmation.status, 400);
+    const deleteWorkspace = await request('/api/v1/workspace', {
+      method: 'DELETE',
+      sessionToken: invited.sessionToken,
+      workspaceId,
+      body: JSON.stringify({
+        password: 'invited teacher secure password',
+        confirmation: 'Lifecycle Workspace',
+      }),
+    });
+    assert.equal(deleteWorkspace.status, 200);
+    const deletedSession = await request('/api/v1/auth/session', {
+      sessionToken: invited.sessionToken,
+    });
+    assert.equal(deletedSession.status, 200);
+    assert.deepEqual(
+      (await deletedSession.json() as { session: AuthEnvelope['session'] })
+        .session.workspaces,
+      [],
+    );
+    const recreateWorkspace = await request('/api/v1/workspaces', {
+      method: 'POST',
+      sessionToken: invited.sessionToken,
+      body: JSON.stringify({ name: 'Recreated Workspace' }),
+    });
+    assert.equal(recreateWorkspace.status, 201);
+    const recreated = await recreateWorkspace.json() as {
+      session: AuthEnvelope['session'];
+    };
+    assert.equal(recreated.session.workspaces.length, 1);
+    assert.equal(recreated.session.workspaces[0].name, 'Recreated Workspace');
+    assert.equal(recreated.session.workspaces[0].role, 'owner');
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

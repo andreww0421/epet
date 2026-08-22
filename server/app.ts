@@ -63,6 +63,7 @@ export type EpetServerOptions = {
   auth?: ApiOptions['auth'];
   forgotResponseFloorMs?: number;
   passwordResetMailer?: ApiOptions['passwordResetMailer'];
+  workspaceInvitationMailer?: ApiOptions['workspaceInvitationMailer'];
   registrationEnabled?: boolean;
 };
 
@@ -76,6 +77,7 @@ export const createEpetServer = (options: EpetServerOptions) => {
       request.headers.get(TRUSTED_CLIENT_IDENTITY_HEADER),
     forgotResponseFloorMs: options.forgotResponseFloorMs,
     passwordResetMailer: options.passwordResetMailer,
+    workspaceInvitationMailer: options.workspaceInvitationMailer,
     registrationEnabled: options.registrationEnabled === true,
   });
 

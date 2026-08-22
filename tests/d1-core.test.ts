@@ -4,6 +4,7 @@ import { after, before, test } from 'node:test';
 import type { D1Database } from '@cloudflare/workers-types';
 import { Miniflare } from 'miniflare';
 import type { AppData } from '../src/store/types';
+import { AuthService } from '../server/auth';
 import {
   WorkspaceConflictError,
   WorkspaceDataTooLargeError,
@@ -15,6 +16,7 @@ const migrations = [
   'migrations/0002_auth_rbac.sql',
   'migrations/0003_core_entities.sql',
   'migrations/0004_workspace_class_assignments.sql',
+  'migrations/0005_workspace_invitations.sql',
 ];
 
 const splitMigrationStatements = (sql: string): string[] => {
@@ -244,6 +246,7 @@ before(async () => {
       .run();
   }
   await applyMigration(fixture.database, migrations[3]);
+  await applyMigration(fixture.database, migrations[4]);
 });
 
 after(async () => {
@@ -414,6 +417,85 @@ test('0004 backfills legacy class access and new memberships fail closed', async
       .run(),
     /invalid workspace class assignment/i,
   );
+});
+
+test('D1 invitation, member, ownership, account, and cleanup lifecycle is atomic', async () => {
+  const isolated = await createFixture();
+  try {
+    let now = 1_800_000_000_000;
+    const repository = new D1WorkspaceRepository(isolated.database);
+    const auth = new AuthService(repository, {
+      now: () => now,
+      passwordIterations: 10,
+    });
+    const owner = await auth.register({
+      email: 'd1-owner@example.test',
+      password: 'd1 owner secure password',
+      displayName: 'D1 Owner',
+      workspaceName: 'D1 Lifecycle',
+      initialWorkspaceData: createData('D1 Student', 10),
+    });
+    const workspaceId = owner.session.activeWorkspaceId;
+    assert.ok(workspaceId);
+    const delivery = await auth.createWorkspaceInvitation(
+      owner.sessionToken,
+      workspaceId,
+      'd1-invited@example.test',
+      'teacher',
+      ['class-shared-id'],
+    );
+    const invited = await auth.acceptWorkspaceInvitation(
+      delivery.token,
+      'D1 Invited',
+      'd1 invited secure password',
+    );
+    const invitedUserId = invited.session.user.id;
+    await auth.updateWorkspaceMember(
+      owner.sessionToken,
+      workspaceId,
+      invitedUserId,
+      'viewer',
+      ['class-shared-id'],
+    );
+    assert.equal(
+      (await repository.getWorkspaceMembership(workspaceId, invitedUserId))?.role,
+      'viewer',
+    );
+    await auth.transferWorkspaceOwnership(
+      owner.sessionToken,
+      workspaceId,
+      invitedUserId,
+    );
+    assert.equal(
+      (await repository.getWorkspaceMembership(workspaceId, invitedUserId))?.role,
+      'owner',
+    );
+    await auth.removeWorkspaceMember(
+      invited.sessionToken,
+      workspaceId,
+      owner.session.user.id,
+    );
+    await auth.deleteAccount(
+      owner.sessionToken,
+      'd1 owner secure password',
+      'DELETE',
+    );
+    assert.equal(await repository.getUserById(owner.session.user.id), null);
+
+    await auth.deleteWorkspace(
+      invited.sessionToken,
+      workspaceId,
+      'd1 invited secure password',
+      'D1 Lifecycle',
+    );
+    assert.equal((await repository.get(workspaceId)).data, null);
+
+    now += 100 * 24 * 60 * 60 * 1_000;
+    const cleanup = await repository.cleanupExpiredAuthData(now);
+    assert.ok(cleanup.sessions >= 1);
+  } finally {
+    await isolated.miniflare.dispose();
+  }
 });
 
 test('dual-write updates one tenant without changing matching entity IDs in another', async () => {
@@ -661,6 +743,42 @@ test('concurrent same-revision writes preserve one blob/projection/audit winner'
     )
     .all<{ event_id: string }>();
   assert.equal(audits.results.length, 1);
+});
+
+test('deleting a student purges that student from every retained D1 revision', async () => {
+  const repository = new D1WorkspaceRepository(fixture.database);
+  const current = await repository.get('tenant-b');
+  assert.equal(current.revision, 30);
+  assert.equal(current.data?.classes[0].students[0].id, 'student-shared-id');
+  assert.ok(current.data);
+  await repository.put('tenant-b', {
+    ...current.data,
+    classes: current.data.classes.map((classroom) => ({
+      ...classroom,
+      students: [],
+      learningEvidenceRecords: [],
+      examRecords: classroom.examRecords?.map((exam) => ({
+        ...exam,
+        results: [],
+      })),
+    })),
+  }, current.revision, {
+    action: 'workspace.student.delete',
+    requestId: 'tenant-b-delete-student',
+  });
+
+  const snapshots = await fixture.database
+    .prepare(
+      `SELECT data_json
+       FROM workspace_revisions
+       WHERE workspace_id = ?`,
+    )
+    .bind('tenant-b')
+    .all<{ data_json: string }>();
+  assert.equal(snapshots.results.length, 25);
+  assert.ok(snapshots.results.every(
+    (snapshot) => !snapshot.data_json.includes('student-shared-id'),
+  ));
 });
 
 test('a projection failure rolls back blob, revision, projection state, and audit', async () => {

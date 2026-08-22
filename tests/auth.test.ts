@@ -401,7 +401,7 @@ test('v2 JSON class access backfills once and explicit v3 empty access fails clo
       version: number;
       workspaceClassAssignments: Record<string, string[]>;
     };
-    assert.equal(migrated.version, 3);
+    assert.equal(migrated.version, 4);
     assert.deepEqual(
       migrated.workspaceClassAssignments[teacherKey],
       ['class-a', 'class-b'],

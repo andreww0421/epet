@@ -2,11 +2,20 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { AppData } from '../src/store/types';
 import {
+  findPermanentlyDeletedStudentIds,
+  purgeStudentsFromWorkspaceData,
+} from './studentPrivacy';
+import {
   EmailAlreadyExistsError,
+  InvalidWorkspaceInvitationError,
   WorkspaceAlreadyClaimedError,
   WorkspaceConflictError,
   WorkspaceNotFoundError,
+  WorkspaceMembershipNotFoundError,
+  WorkspaceOwnerTransferRequiredError,
+  type AuthCleanupResult,
   type AuditEventRecord,
+  type AcceptWorkspaceInvitationInput,
   type AuthRateLimitResult,
   type AuthRepository,
   type AuthSessionRecord,
@@ -16,10 +25,18 @@ import {
   type ConsumePasswordResetInput,
   type CreateUserWithWorkspaceInput,
   type CreateWorkspaceForUserInput,
+  type DeleteUserInput,
+  type DeleteWorkspaceInput,
   type PasswordResetTokenRecord,
   type StoredWorkspace,
   type UserWorkspaceAccess,
+  type WorkspaceMember,
+  type WorkspaceInvitationRecord,
+  type WorkspaceInvitationSummary,
   type WorkspaceMembershipRecord,
+  type RemoveWorkspaceMemberInput,
+  type TransferWorkspaceOwnershipInput,
+  type UpdateWorkspaceMemberInput,
   type WorkspaceRepository,
   type WorkspaceRevisionSnapshot,
   type WorkspaceRevisionRecord,
@@ -39,7 +56,7 @@ type AuthRateLimitState = {
 };
 
 type DatabaseFile = {
-  version: 3;
+  version: 4;
   workspaces: Record<string, StoredWorkspace>;
   workspaceMetadata: Record<string, WorkspaceMetadata>;
   workspaceRevisions: Record<string, WorkspaceRevisionSnapshot[]>;
@@ -51,10 +68,11 @@ type DatabaseFile = {
   passwordResetTokens: Record<string, PasswordResetTokenRecord>;
   authRateLimits: Record<string, AuthRateLimitState>;
   auditEvents: AuditEventRecord[];
+  workspaceInvitations: Record<string, WorkspaceInvitationRecord>;
 };
 
 const createEmptyDatabase = (): DatabaseFile => ({
-  version: 3,
+  version: 4,
   workspaces: {},
   workspaceMetadata: {},
   workspaceRevisions: {},
@@ -66,6 +84,7 @@ const createEmptyDatabase = (): DatabaseFile => ({
   passwordResetTokens: {},
   authRateLimits: {},
   auditEvents: [],
+  workspaceInvitations: {},
 });
 
 const membershipKey = (workspaceId: string, userId: string) =>
@@ -172,6 +191,11 @@ implements WorkspaceRepository, AuthRepository {
       database.auditEvents = Array.isArray(raw.auditEvents)
         ? raw.auditEvents as AuditEventRecord[]
         : [];
+      database.workspaceInvitations =
+        raw.workspaceInvitations &&
+        typeof raw.workspaceInvitations === 'object'
+          ? raw.workspaceInvitations as Record<string, WorkspaceInvitationRecord>
+          : {};
 
       for (const [workspaceId, workspace] of Object.entries(
         database.workspaces,
@@ -244,7 +268,7 @@ implements WorkspaceRepository, AuthRepository {
         }
       }
       this.database = database;
-      if (loadedVersion < 3) await this.persist(database);
+      if (loadedVersion < 4) await this.persist(database);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       this.database = createEmptyDatabase();
@@ -325,6 +349,35 @@ implements WorkspaceRepository, AuthRepository {
         name: 'Workspace',
         createdAt: next.updatedAt,
       };
+      const deletedStudentIds = findPermanentlyDeletedStudentIds(
+        current.data,
+        data,
+      );
+      if (deletedStudentIds.size > 0) {
+        database.workspaceRevisions[workspaceId] = (
+          database.workspaceRevisions[workspaceId] ?? []
+        ).map((snapshot) => {
+          const purgedData = purgeStudentsFromWorkspaceData(
+            snapshot.data,
+            deletedStudentIds,
+          );
+          return {
+            ...snapshot,
+            data: purgedData,
+            dataSizeBytes: dataSizeBytes(purgedData),
+          };
+        });
+        database.auditEvents.push({
+          id: `evt_privacy_student_${workspaceId}_${next.revision}`,
+          workspaceId,
+          actorUserId: context.actorUserId,
+          action: 'privacy.student.purge',
+          targetType: 'workspace',
+          targetId: workspaceId,
+          metadata: { deletedStudentCount: deletedStudentIds.size },
+          createdAt: next.updatedAt,
+        });
+      }
       const revision: WorkspaceRevisionSnapshot = {
         workspaceId,
         revision: next.revision,
@@ -473,6 +526,308 @@ implements WorkspaceRepository, AuthRepository {
       membershipKey(workspaceId, userId)
     ];
     return membership ? structuredClone(membership) : null;
+  }
+
+  async listWorkspaceMembers(workspaceId: string): Promise<WorkspaceMember[]> {
+    await this.mutationQueue;
+    const database = await this.load();
+    return Object.values(database.memberships)
+      .filter((membership) => membership.workspaceId === workspaceId)
+      .flatMap((membership) => {
+        const user = database.users[membership.userId];
+        if (!user) return [];
+        return [{
+          userId: user.id,
+          email: user.email,
+          displayName: user.displayName,
+          role: membership.role,
+          classIds: [...(
+            database.workspaceClassAssignments[
+              membershipKey(workspaceId, user.id)
+            ] ?? []
+          )],
+          createdAt: membership.createdAt,
+        }];
+      })
+      .sort((left, right) => left.createdAt - right.createdAt)
+      .map((member) => structuredClone(member));
+  }
+
+  async updateWorkspaceMember(
+    input: UpdateWorkspaceMemberInput,
+  ): Promise<void> {
+    await this.mutate((database) => {
+      const key = membershipKey(input.workspaceId, input.userId);
+      const membership = database.memberships[key];
+      if (!membership || membership.role === 'owner') {
+        throw new WorkspaceMembershipNotFoundError();
+      }
+      membership.role = input.role;
+      const validClassIds = new Set(
+        workspaceClassIds(database.workspaces[input.workspaceId]),
+      );
+      database.workspaceClassAssignments[key] =
+        input.role === 'teacher' || input.role === 'viewer'
+          ? normalizeClassIds(input.classIds).filter((classId) =>
+              validClassIds.has(classId))
+          : [];
+      database.auditEvents.push(structuredClone(input.auditEvent));
+    });
+  }
+
+  async removeWorkspaceMember(
+    input: RemoveWorkspaceMemberInput,
+  ): Promise<void> {
+    await this.mutate((database) => {
+      const key = membershipKey(input.workspaceId, input.userId);
+      const membership = database.memberships[key];
+      if (!membership || membership.role === 'owner') {
+        throw new WorkspaceMembershipNotFoundError();
+      }
+      delete database.memberships[key];
+      delete database.workspaceClassAssignments[key];
+      for (const session of Object.values(database.sessions)) {
+        if (
+          session.userId === input.userId &&
+          session.activeWorkspaceId === input.workspaceId
+        ) {
+          session.activeWorkspaceId = null;
+          session.lastSeenAt = input.removedAt;
+        }
+      }
+      database.auditEvents.push(structuredClone(input.auditEvent));
+    });
+  }
+
+  async transferWorkspaceOwnership(
+    input: TransferWorkspaceOwnershipInput,
+  ): Promise<void> {
+    await this.mutate((database) => {
+      const sourceKey = membershipKey(input.workspaceId, input.fromUserId);
+      const targetKey = membershipKey(input.workspaceId, input.toUserId);
+      const source = database.memberships[sourceKey];
+      const target = database.memberships[targetKey];
+      if (source?.role !== 'owner' || !target || target.role === 'owner') {
+        throw new WorkspaceMembershipNotFoundError();
+      }
+      source.role = 'admin';
+      target.role = 'owner';
+      delete database.workspaceClassAssignments[sourceKey];
+      delete database.workspaceClassAssignments[targetKey];
+      database.workspaceClaims[input.workspaceId] = {
+        workspaceId: input.workspaceId,
+        claimedByUserId: input.toUserId,
+        claimedAt: input.transferredAt,
+      };
+      database.auditEvents.push(structuredClone(input.auditEvent));
+    });
+  }
+
+  async deleteWorkspace(input: DeleteWorkspaceInput): Promise<void> {
+    await this.mutate((database) => {
+      if (!database.workspaces[input.workspaceId]) {
+        throw new WorkspaceNotFoundError();
+      }
+      delete database.workspaces[input.workspaceId];
+      delete database.workspaceMetadata[input.workspaceId];
+      delete database.workspaceRevisions[input.workspaceId];
+      delete database.workspaceClaims[input.workspaceId];
+      for (const [key, membership] of Object.entries(database.memberships)) {
+        if (membership.workspaceId !== input.workspaceId) continue;
+        delete database.memberships[key];
+        delete database.workspaceClassAssignments[key];
+      }
+      for (const session of Object.values(database.sessions)) {
+        if (session.activeWorkspaceId === input.workspaceId) {
+          session.activeWorkspaceId = null;
+          session.lastSeenAt = input.deletedAt;
+        }
+      }
+      for (const [id, invitation] of Object.entries(database.workspaceInvitations)) {
+        if (invitation.workspaceId === input.workspaceId) {
+          delete database.workspaceInvitations[id];
+        }
+      }
+      database.auditEvents = database.auditEvents.filter(
+        (event) => event.workspaceId !== input.workspaceId,
+      );
+      database.auditEvents.push(structuredClone(input.auditEvent));
+    });
+  }
+
+  async deleteUser(input: DeleteUserInput): Promise<void> {
+    await this.mutate((database) => {
+      if (!database.users[input.userId]) return;
+      if (Object.values(database.memberships).some(
+        (membership) =>
+          membership.userId === input.userId && membership.role === 'owner',
+      )) {
+        throw new WorkspaceOwnerTransferRequiredError();
+      }
+      if (Object.values(database.workspaceClaims).some(
+        (claim) => claim.claimedByUserId === input.userId,
+      )) {
+        throw new WorkspaceOwnerTransferRequiredError();
+      }
+      delete database.users[input.userId];
+      for (const [key, membership] of Object.entries(database.memberships)) {
+        if (membership.userId !== input.userId) continue;
+        delete database.memberships[key];
+        delete database.workspaceClassAssignments[key];
+      }
+      for (const [key, session] of Object.entries(database.sessions)) {
+        if (session.userId === input.userId) delete database.sessions[key];
+      }
+      for (const [key, token] of Object.entries(database.passwordResetTokens)) {
+        if (token.userId === input.userId) delete database.passwordResetTokens[key];
+      }
+      for (const [id, invitation] of Object.entries(database.workspaceInvitations)) {
+        if (invitation.createdByUserId === input.userId) {
+          delete database.workspaceInvitations[id];
+        } else if (invitation.acceptedByUserId === input.userId) {
+          invitation.acceptedByUserId = undefined;
+        }
+      }
+      database.auditEvents = database.auditEvents.map((event) =>
+        event.actorUserId === input.userId
+          ? { ...event, actorUserId: undefined }
+          : event,
+      );
+      database.auditEvents.push(structuredClone(input.auditEvent));
+    });
+  }
+
+  async cleanupExpiredAuthData(now: number): Promise<AuthCleanupResult> {
+    return this.mutate((database) => {
+      let sessions = 0;
+      let passwordResetTokens = 0;
+      let rateLimits = 0;
+      let invitations = 0;
+      for (const [key, session] of Object.entries(database.sessions)) {
+        if (session.expiresAt > now && session.revokedAt == null) continue;
+        delete database.sessions[key];
+        sessions += 1;
+      }
+      for (const [key, token] of Object.entries(database.passwordResetTokens)) {
+        if (token.expiresAt > now && token.usedAt == null) continue;
+        delete database.passwordResetTokens[key];
+        passwordResetTokens += 1;
+      }
+      for (const [key, limit] of Object.entries(database.authRateLimits)) {
+        if (limit.blockedUntil > now || limit.windowStartedAt + 86_400_000 > now) {
+          continue;
+        }
+        delete database.authRateLimits[key];
+        rateLimits += 1;
+      }
+      for (const [id, invitation] of Object.entries(database.workspaceInvitations)) {
+        if (
+          invitation.expiresAt > now &&
+          invitation.acceptedAt == null &&
+          invitation.revokedAt == null
+        ) continue;
+        delete database.workspaceInvitations[id];
+        invitations += 1;
+      }
+      return { sessions, passwordResetTokens, rateLimits, invitations };
+    });
+  }
+
+  async createWorkspaceInvitation(
+    invitation: WorkspaceInvitationRecord,
+  ): Promise<void> {
+    await this.mutate((database) => {
+      for (const existing of Object.values(database.workspaceInvitations)) {
+        if (
+          existing.workspaceId === invitation.workspaceId &&
+          existing.normalizedEmail === invitation.normalizedEmail &&
+          existing.acceptedAt == null &&
+          existing.revokedAt == null
+        ) {
+          existing.revokedAt = invitation.createdAt;
+        }
+      }
+      database.workspaceInvitations[invitation.id] = structuredClone(invitation);
+    });
+  }
+
+  async getWorkspaceInvitationByTokenHash(
+    tokenHash: string,
+  ): Promise<WorkspaceInvitationRecord | null> {
+    await this.mutationQueue;
+    const database = await this.load();
+    const invitation = Object.values(database.workspaceInvitations).find(
+      (candidate) => candidate.tokenHash === tokenHash,
+    );
+    return invitation ? structuredClone(invitation) : null;
+  }
+
+  async listWorkspaceInvitations(
+    workspaceId: string,
+  ): Promise<WorkspaceInvitationSummary[]> {
+    await this.mutationQueue;
+    const database = await this.load();
+    return Object.values(database.workspaceInvitations)
+      .filter((invitation) => invitation.workspaceId === workspaceId)
+      .sort((left, right) => right.createdAt - left.createdAt)
+      .map(({ tokenHash: _tokenHash, ...summary }) => structuredClone(summary));
+  }
+
+  async revokeWorkspaceInvitation(
+    workspaceId: string,
+    invitationId: string,
+    revokedAt: number,
+    auditEvent: AuditEventRecord,
+  ): Promise<void> {
+    await this.mutate((database) => {
+      const invitation = database.workspaceInvitations[invitationId];
+      if (
+        !invitation ||
+        invitation.workspaceId !== workspaceId ||
+        invitation.acceptedAt != null ||
+        invitation.revokedAt != null
+      ) throw new InvalidWorkspaceInvitationError();
+      invitation.revokedAt = revokedAt;
+      database.auditEvents.push(structuredClone(auditEvent));
+    });
+  }
+
+  async acceptWorkspaceInvitation(
+    input: AcceptWorkspaceInvitationInput,
+  ): Promise<void> {
+    await this.mutate((database) => {
+      const invitation = database.workspaceInvitations[input.invitation.id];
+      if (
+        !invitation ||
+        invitation.tokenHash !== input.tokenHash ||
+        invitation.acceptedAt != null ||
+        invitation.revokedAt != null ||
+        invitation.expiresAt <= input.acceptedAt
+      ) throw new InvalidWorkspaceInvitationError();
+      if (input.createUser) {
+        if (Object.values(database.users).some(
+          (user) => user.normalizedEmail === input.user.normalizedEmail,
+        )) throw new EmailAlreadyExistsError();
+        database.users[input.user.id] = structuredClone(input.user);
+      } else if (!database.users[input.user.id]) {
+        throw new InvalidWorkspaceInvitationError();
+      }
+      const key = membershipKey(input.membership.workspaceId, input.user.id);
+      if (database.memberships[key]) {
+        throw new InvalidWorkspaceInvitationError();
+      }
+      database.memberships[key] = structuredClone(input.membership);
+      const validClassIds = new Set(
+        workspaceClassIds(database.workspaces[input.membership.workspaceId]),
+      );
+      database.workspaceClassAssignments[key] =
+        input.membership.role === 'teacher' || input.membership.role === 'viewer'
+          ? invitation.classIds.filter((classId) => validClassIds.has(classId))
+          : [];
+      invitation.acceptedAt = input.acceptedAt;
+      invitation.acceptedByUserId = input.user.id;
+      database.auditEvents.push(structuredClone(input.auditEvent));
+    });
   }
 
   async listWorkspaceClassIds(

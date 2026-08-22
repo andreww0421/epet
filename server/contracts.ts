@@ -59,6 +59,92 @@ export type UserWorkspaceAccess = {
   role: WorkspaceRole;
 };
 
+export type WorkspaceMember = {
+  userId: string;
+  email: string;
+  displayName: string;
+  role: WorkspaceRole;
+  classIds: string[];
+  createdAt: number;
+};
+
+export type UpdateWorkspaceMemberInput = {
+  workspaceId: string;
+  userId: string;
+  role: Exclude<WorkspaceRole, 'owner'>;
+  classIds: string[];
+  actorUserId: string;
+  updatedAt: number;
+  auditEvent: AuditEventRecord;
+};
+
+export type RemoveWorkspaceMemberInput = {
+  workspaceId: string;
+  userId: string;
+  actorUserId: string;
+  removedAt: number;
+  auditEvent: AuditEventRecord;
+};
+
+export type TransferWorkspaceOwnershipInput = {
+  workspaceId: string;
+  fromUserId: string;
+  toUserId: string;
+  transferredAt: number;
+  auditEvent: AuditEventRecord;
+};
+
+export type DeleteWorkspaceInput = {
+  workspaceId: string;
+  actorUserId: string;
+  deletedAt: number;
+  auditEvent: AuditEventRecord;
+};
+
+export type DeleteUserInput = {
+  userId: string;
+  deletedAt: number;
+  auditEvent: AuditEventRecord;
+};
+
+export type AuthCleanupResult = {
+  sessions: number;
+  passwordResetTokens: number;
+  rateLimits: number;
+  invitations: number;
+};
+
+export type WorkspaceInvitationRecord = {
+  id: string;
+  tokenHash: string;
+  workspaceId: string;
+  email: string;
+  normalizedEmail: string;
+  role: Exclude<WorkspaceRole, 'owner'>;
+  classIds: string[];
+  createdByUserId: string;
+  createdAt: number;
+  expiresAt: number;
+  acceptedAt: number | null;
+  acceptedByUserId?: string;
+  revokedAt: number | null;
+};
+
+export type WorkspaceInvitationSummary = Omit<
+  WorkspaceInvitationRecord,
+  'tokenHash'
+>;
+
+export type AcceptWorkspaceInvitationInput = {
+  tokenHash: string;
+  invitation: WorkspaceInvitationRecord;
+  user: AuthUserRecord;
+  createUser: boolean;
+  membership: WorkspaceMembershipRecord;
+  acceptedAt: number;
+  auditEvent: AuditEventRecord;
+};
+
 export type AuthSessionRecord = {
   tokenHash: string;
   userId: string;
@@ -166,6 +252,31 @@ export interface AuthRepository {
     workspaceId: string,
     userId: string,
   ): Promise<WorkspaceMembershipRecord | null>;
+  listWorkspaceMembers(workspaceId: string): Promise<WorkspaceMember[]>;
+  updateWorkspaceMember(input: UpdateWorkspaceMemberInput): Promise<void>;
+  removeWorkspaceMember(input: RemoveWorkspaceMemberInput): Promise<void>;
+  transferWorkspaceOwnership(
+    input: TransferWorkspaceOwnershipInput,
+  ): Promise<void>;
+  deleteWorkspace(input: DeleteWorkspaceInput): Promise<void>;
+  deleteUser(input: DeleteUserInput): Promise<void>;
+  cleanupExpiredAuthData(now: number): Promise<AuthCleanupResult>;
+  createWorkspaceInvitation(invitation: WorkspaceInvitationRecord): Promise<void>;
+  getWorkspaceInvitationByTokenHash(
+    tokenHash: string,
+  ): Promise<WorkspaceInvitationRecord | null>;
+  listWorkspaceInvitations(
+    workspaceId: string,
+  ): Promise<WorkspaceInvitationSummary[]>;
+  revokeWorkspaceInvitation(
+    workspaceId: string,
+    invitationId: string,
+    revokedAt: number,
+    auditEvent: AuditEventRecord,
+  ): Promise<void>;
+  acceptWorkspaceInvitation(
+    input: AcceptWorkspaceInvitationInput,
+  ): Promise<void>;
   listWorkspaceClassIds(
     workspaceId: string,
     userId: string,
@@ -226,5 +337,23 @@ export class WorkspaceNotFoundError extends Error {
 export class WorkspaceAlreadyClaimedError extends Error {
   constructor() {
     super('Workspace already claimed');
+  }
+}
+
+export class WorkspaceMembershipNotFoundError extends Error {
+  constructor() {
+    super('Workspace membership not found');
+  }
+}
+
+export class WorkspaceOwnerTransferRequiredError extends Error {
+  constructor() {
+    super('Workspace ownership must be transferred or deleted first');
+  }
+}
+
+export class InvalidWorkspaceInvitationError extends Error {
+  constructor() {
+    super('Workspace invitation is invalid or expired');
   }
 }

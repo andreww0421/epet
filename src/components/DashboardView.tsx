@@ -31,6 +31,7 @@ import {
 import { BossRewardSettings } from './dashboard/BossRewardSettings';
 import { PointReasonSettings } from './dashboard/PointReasonSettings';
 import { RosterImportPanel } from './dashboard/RosterImportPanel';
+import { WorkspaceAccessPanel } from './dashboard/WorkspaceAccessPanel';
 import { runWorkspaceMutation } from '../auth/workspaceAccess';
 import { exportWorkspacePrivacyData } from '../services/backendApi';
 
@@ -2389,6 +2390,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <Settings className="h-5 w-5 mr-2 text-indigo-500" />
           {tLang.systemSettings}
         </h3>
+
+        {canAdministerWorkspace && (
+          <WorkspaceAccessPanel
+            classes={data.classes.map((classroom) => ({
+              id: classroom.id,
+              name: classroom.name,
+            }))}
+            language={lang}
+          />
+        )}
 
         <div className="mb-6 grid gap-5 border-y border-slate-200 py-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(300px,1fr)]">
           <div>

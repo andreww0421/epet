@@ -1,6 +1,6 @@
-import React, { lazy, Suspense, useCallback, useEffect } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import {
-  AlertCircle, CloudOff, Database, Dices, Dog, LogOut, RefreshCw, Settings, Smile, Users,
+  AlertCircle, CloudOff, Database, Dices, Dog, LogOut, RefreshCw, Settings, Smile, UserRound, Users,
 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { resetStoreForSession, useStore } from './store/useStore';
@@ -9,6 +9,7 @@ import { useBackendSync } from './hooks/useBackendSync';
 import { AuthProvider, useAuth } from './auth/AuthProvider';
 import { AuthScreen } from './components/AuthScreen';
 import { LegacyDataMigration } from './components/LegacyDataMigration';
+import { AccountDeletionDialog } from './components/AccountDeletionDialog';
 import {
   canAdministerWorkspace,
   canExportWorkspace,
@@ -40,7 +41,73 @@ const downloadUnsyncedWorkspace = (canExportFullData: boolean) => {
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 };
 
+const EmptyWorkspaceView = ({
+  language,
+  flushChanges,
+}: {
+  language: 'zh' | 'en';
+  flushChanges: () => Promise<boolean>;
+}) => {
+  const { createWorkspace, logout } = useAuth();
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [accountDialogOpen, setAccountDialogOpen] = useState(false);
+
+  const submit = async () => {
+    if (!name.trim()) return;
+    setBusy(true);
+    setError('');
+    try {
+      resetStoreForSession();
+      await createWorkspace(name.trim());
+    } catch {
+      setError(language === 'en'
+        ? 'The workspace could not be created. Please retry.'
+        : '無法建立工作區，請稍後再試。');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-slate-100 px-4 py-10">
+      <section className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:p-8">
+        <Dog className="h-10 w-10 text-indigo-700" aria-hidden="true" />
+        <h1 className="mt-4 text-2xl font-black text-slate-950">
+          {language === 'en' ? 'Create a workspace' : '建立新工作區'}
+        </h1>
+        <p className="mt-2 text-sm leading-6 text-slate-600">
+          {language === 'en'
+            ? 'This account has no workspace. Create one to continue, or use account settings to delete the account.'
+            : '這個帳號目前沒有工作區。你可建立新工作區繼續使用，或從帳號設定刪除帳號。'}
+        </p>
+        {error && <p role="alert" className="mt-4 border-l-4 border-rose-500 bg-rose-50 px-3 py-2 text-sm font-bold text-rose-900">{error}</p>}
+        <label className="mt-5 block text-sm font-bold text-slate-800">
+          {language === 'en' ? 'Workspace name' : '工作區名稱'}
+          <input value={name} onChange={(event) => setName(event.target.value)} maxLength={120} className="mt-2 block min-h-12 w-full rounded-lg border border-slate-300 px-3 py-2" />
+        </label>
+        <button type="button" onClick={() => void submit()} disabled={busy || !name.trim()} className="mt-4 min-h-12 w-full rounded-lg bg-indigo-700 px-4 py-3 font-black text-white disabled:bg-slate-300">
+          {language === 'en' ? 'Create workspace' : '建立工作區'}
+        </button>
+        <div className="mt-5 flex justify-center gap-3">
+          <button type="button" onClick={() => setAccountDialogOpen(true)} className="min-h-11 rounded-lg border border-slate-300 px-4 py-2 text-sm font-bold text-slate-700">
+            {language === 'en' ? 'Account settings' : '帳號設定'}
+          </button>
+          <button type="button" onClick={() => void logout()} className="min-h-11 rounded-lg px-4 py-2 text-sm font-bold text-slate-600">
+            {language === 'en' ? 'Log out' : '登出'}
+          </button>
+        </div>
+      </section>
+      {accountDialogOpen && (
+        <AccountDeletionDialog language={language} onClose={() => setAccountDialogOpen(false)} flushChanges={flushChanges} />
+      )}
+    </main>
+  );
+};
+
 function WorkspaceApp() {
+  const [accountDialogOpen, setAccountDialogOpen] = useState(false);
   const { session, logout, selectWorkspace, invalidateSession } = useAuth();
   const activeWorkspaceId = session?.activeWorkspaceId ?? null;
   const activeWorkspace = session?.workspaces.find(
@@ -54,7 +121,7 @@ function WorkspaceApp() {
     () => invalidateSession(),
     [invalidateSession],
   );
-  const backendStatus = useBackendSync(
+  const { status: backendStatus, flush: flushBackendChanges } = useBackendSync(
     true,
     activeWorkspaceId,
     handleAuthenticationInvalid,
@@ -71,6 +138,7 @@ function WorkspaceApp() {
     advanceUpgradeRewardProgress,
     setUpgradeReward,
     rerollPetFromUpgrade,
+    showToast,
   } = useStore(
     useShallow((state) => ({
       view: state.view,
@@ -81,6 +149,7 @@ function WorkspaceApp() {
       advanceUpgradeRewardProgress: state.advanceUpgradeRewardProgress,
       setUpgradeReward: state.setUpgradeReward,
       rerollPetFromUpgrade: state.rerollPetFromUpgrade,
+      showToast: state.showToast,
     })),
   );
   const tLang = translations[lang];
@@ -100,8 +169,40 @@ function WorkspaceApp() {
   }, [lang]);
 
   const handleLogout = useCallback(async () => {
+    if (!(await flushBackendChanges())) {
+      showToast(
+        lang === 'en'
+          ? 'Unsaved changes could not be synchronized. Download the local draft or retry before logging out.'
+          : '尚有變更無法同步；請先下載本機草稿或重試，再登出。',
+        'error',
+      );
+      return;
+    }
     await logout();
-  }, [logout]);
+  }, [flushBackendChanges, lang, logout, showToast]);
+
+  const handleWorkspaceChange = useCallback(async (workspaceId: string) => {
+    if (!(await flushBackendChanges())) {
+      showToast(
+        lang === 'en'
+          ? 'Finish synchronizing the current workspace before switching.'
+          : '目前工作區尚未同步完成，暫時無法切換。',
+        'error',
+      );
+      return;
+    }
+    resetStoreForSession();
+    await selectWorkspace(workspaceId);
+  }, [flushBackendChanges, lang, selectWorkspace, showToast]);
+
+  if (session && session.workspaces.length === 0) {
+    return (
+      <EmptyWorkspaceView
+        language={lang}
+        flushChanges={flushBackendChanges}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col font-sans">
@@ -122,8 +223,7 @@ function WorkspaceApp() {
                   <select
                     value={activeWorkspaceId ?? ''}
                     onChange={(event) => {
-                      resetStoreForSession();
-                      void selectWorkspace(event.target.value);
+                      void handleWorkspaceChange(event.target.value);
                     }}
                     className="min-h-10 max-w-48 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800"
                   >
@@ -212,6 +312,15 @@ function WorkspaceApp() {
                   </p>
                 </div>
               )}
+              <button
+                type="button"
+                onClick={() => setAccountDialogOpen(true)}
+                aria-label={lang === 'en' ? 'Account settings' : '帳號設定'}
+                title={lang === 'en' ? 'Account settings' : '帳號設定'}
+                className="flex h-10 w-10 items-center justify-center rounded-md text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900"
+              >
+                <UserRound className="h-4 w-4" aria-hidden="true" />
+              </button>
               <button
                 type="button"
                 onClick={() => void handleLogout()}
@@ -383,6 +492,14 @@ function WorkspaceApp() {
             <span className="font-medium">{toast.message}</span>
           </div>
         </div>
+      )}
+
+      {accountDialogOpen && (
+        <AccountDeletionDialog
+          language={lang}
+          onClose={() => setAccountDialogOpen(false)}
+          flushChanges={flushBackendChanges}
+        />
       )}
     </div>
   );

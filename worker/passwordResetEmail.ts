@@ -1,6 +1,7 @@
 import {
   hashOpaqueToken,
   type PasswordResetDelivery,
+  type WorkspaceInvitationDelivery,
 } from '../server/auth';
 
 export type PasswordResetEmailEnv = {
@@ -65,5 +66,53 @@ export const createPasswordResetMailer = (
     if (!response.ok) {
       throw new Error('PASSWORD_RESET_EMAIL_FAILED');
     }
+  };
+};
+
+export const createWorkspaceInvitationMailer = (
+  env: PasswordResetEmailEnv,
+) => {
+  const apiKey = env.RESEND_API_KEY?.trim();
+  const from = env.PASSWORD_RESET_FROM?.trim();
+  const publicAppUrl = env.PUBLIC_APP_URL?.trim().replace(/\/?$/, '/');
+  if (!apiKey || !from || !publicAppUrl) return undefined;
+
+  return async (delivery: WorkspaceInvitationDelivery) => {
+    const invitationUrl = `${publicAppUrl}#/accept-invitation?token=${encodeURIComponent(delivery.token)}`;
+    const safeWorkspaceName = escapeHtml(delivery.workspaceName);
+    const safeInvitationUrl = escapeHtml(invitationUrl);
+    const expiresInDays = Math.max(
+      1,
+      Math.ceil((delivery.expiresAt - Date.now()) / 86_400_000),
+    );
+    const tokenHash = await hashOpaqueToken(delivery.token);
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        'content-type': 'application/json',
+        'idempotency-key': `epet-invitation-${tokenHash}`,
+      },
+      body: JSON.stringify({
+        from,
+        to: [delivery.email],
+        subject: `你已受邀加入 ${delivery.workspaceName}`,
+        text: [
+          `你已受邀以 ${delivery.role} 身分加入「${delivery.workspaceName}」。`,
+          '',
+          `請在 ${expiresInDays} 天內開啟以下連結：`,
+          invitationUrl,
+          '',
+          '若你不認識此工作區，請忽略這封信。',
+        ].join('\n'),
+        html: [
+          `<p>你已受邀以 <strong>${escapeHtml(delivery.role)}</strong> 身分加入「${safeWorkspaceName}」。</p>`,
+          `<p>請在 ${expiresInDays} 天內完成加入。</p>`,
+          `<p><a href="${safeInvitationUrl}">接受 ePet 工作區邀請</a></p>`,
+          '<p>若你不認識此工作區，請忽略這封信。</p>',
+        ].join(''),
+      }),
+    });
+    if (!response.ok) throw new Error('WORKSPACE_INVITATION_EMAIL_FAILED');
   };
 };

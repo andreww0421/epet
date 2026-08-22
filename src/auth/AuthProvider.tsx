@@ -9,6 +9,8 @@ import {
 } from 'react';
 import {
   hasClaimableLegacyWorkspace,
+  acceptWorkspaceInvitation,
+  createWorkspace as createWorkspaceAccount,
   loadBackendPublicConfig,
   loadAuthSession,
   loginAccount,
@@ -35,6 +37,7 @@ export type RegisterInput = LoginInput & {
 type AuthContextValue = {
   claimableLegacyWorkspace: boolean;
   registrationEnabled: boolean;
+  invitationEnabled: boolean;
   status: AuthStatus;
   session: AuthSession | null;
   refreshSession: () => Promise<AuthSession | null>;
@@ -43,6 +46,12 @@ type AuthContextValue = {
   logout: () => Promise<void>;
   forgotPassword: (email: string) => Promise<void>;
   resetPassword: (token: string, password: string) => Promise<void>;
+  acceptInvitation: (
+    token: string,
+    displayName: string,
+    password: string,
+  ) => Promise<AuthSession>;
+  createWorkspace: (name: string) => Promise<AuthSession>;
   selectWorkspace: (workspaceId: string) => Promise<void>;
   invalidateSession: () => void;
 };
@@ -61,6 +70,7 @@ export const AuthProvider = ({
   const [status, setStatus] = useState<AuthStatus>('checking');
   const [session, setSession] = useState<AuthSession | null>(null);
   const [registrationEnabled, setRegistrationEnabled] = useState(false);
+  const [invitationEnabled, setInvitationEnabled] = useState(false);
 
   const invalidateSession = useCallback(() => {
     onSessionCleared?.();
@@ -101,6 +111,11 @@ export const AuthProvider = ({
       setRegistrationEnabled(
         configResult.status === 'fulfilled'
           ? configResult.value.registrationEnabled === true
+          : false,
+      );
+      setInvitationEnabled(
+        configResult.status === 'fulfilled'
+          ? configResult.value.invitationEnabled === true
           : false,
       );
       applySession(
@@ -152,6 +167,26 @@ export const AuthProvider = ({
     invalidateSession();
   }, [invalidateSession]);
 
+  const acceptInvitation = useCallback(async (
+    token: string,
+    displayName: string,
+    password: string,
+  ) => {
+    const nextSession = await acceptWorkspaceInvitation({
+      token,
+      displayName: displayName.trim(),
+      password,
+    });
+    applySession(nextSession);
+    return nextSession;
+  }, [applySession]);
+
+  const createWorkspace = useCallback(async (name: string) => {
+    const nextSession = await createWorkspaceAccount(name.trim());
+    applySession(nextSession);
+    return nextSession;
+  }, [applySession]);
+
   const selectWorkspace = useCallback(async (workspaceId: string) => {
     const selectedWorkspace = session?.workspaces.find(
       (workspace) => workspace.id === workspaceId,
@@ -177,6 +212,7 @@ export const AuthProvider = ({
   const value = useMemo<AuthContextValue>(() => ({
     claimableLegacyWorkspace: hasClaimableLegacyWorkspace,
     registrationEnabled,
+    invitationEnabled,
     status,
     session,
     refreshSession,
@@ -185,11 +221,14 @@ export const AuthProvider = ({
     logout,
     forgotPassword,
     resetPassword,
+    acceptInvitation,
+    createWorkspace,
     selectWorkspace,
     invalidateSession,
   }), [
     status,
     registrationEnabled,
+    invitationEnabled,
     session,
     refreshSession,
     login,
@@ -197,6 +236,8 @@ export const AuthProvider = ({
     logout,
     forgotPassword,
     resetPassword,
+    acceptInvitation,
+    createWorkspace,
     selectWorkspace,
     invalidateSession,
   ]);

@@ -39,6 +39,15 @@ export const hasClaimableLegacyWorkspace =
 
 export type WorkspaceRole = 'owner' | 'admin' | 'teacher' | 'viewer';
 
+export type WorkspaceMember = {
+  userId: string;
+  email: string;
+  displayName: string;
+  role: WorkspaceRole;
+  classIds: string[];
+  createdAt: number;
+};
+
 export type AuthSession = {
   user: {
     id: string;
@@ -78,6 +87,22 @@ export type BackendStateSnapshot = {
 
 export type BackendPublicConfig = {
   registrationEnabled: boolean;
+  invitationEnabled?: boolean;
+};
+
+export type WorkspaceInvitation = {
+  id: string;
+  workspaceId: string;
+  email: string;
+  normalizedEmail: string;
+  role: Exclude<WorkspaceRole, 'owner'>;
+  classIds: string[];
+  createdByUserId: string;
+  createdAt: number;
+  expiresAt: number;
+  acceptedAt: number | null;
+  acceptedByUserId?: string;
+  revokedAt: number | null;
 };
 
 export type WorkspacePrivacyExport = {
@@ -278,6 +303,22 @@ export const registerAccount = async (input: {
   return applyAuthResponse(response);
 };
 
+export const acceptWorkspaceInvitation = async (input: {
+  token: string;
+  displayName: string;
+  password: string;
+}) => {
+  const response = await request<AuthResponse>(
+    '/api/v1/auth/invitations/accept',
+    {
+      method: 'POST',
+      body: JSON.stringify(input),
+    },
+    { auth: false, workspace: false },
+  );
+  return applyAuthResponse(response);
+};
+
 export const logoutAccount = async () => {
   const sessionTokenToRevoke = authToken;
   // Clear local authority first. This prevents a slow logout response from
@@ -335,6 +376,19 @@ export const setActiveWorkspaceId = (workspaceId: string) => {
   activeWorkspaceId = workspaceId;
 };
 
+export const createWorkspace = async (name: string) => {
+  const response = await request<{ session: AuthSession }>(
+    '/api/v1/workspaces',
+    {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    },
+    { workspace: false },
+  );
+  activeWorkspaceId = response.session.activeWorkspaceId;
+  return response.session;
+};
+
 export const clearAuthentication = () => {
   rememberAuthToken(null);
   activeWorkspaceId = null;
@@ -347,12 +401,82 @@ export const loadBackendState = () =>
 export const exportWorkspacePrivacyData = () =>
   request<WorkspacePrivacyExport>('/api/v1/privacy/export');
 
+export const loadWorkspaceMembers = () =>
+  request<{ members: WorkspaceMember[] }>('/api/v1/members');
+
+export const loadWorkspaceInvitations = () =>
+  request<{ invitations: WorkspaceInvitation[] }>('/api/v1/invitations');
+
+export const createWorkspaceInvitation = (input: {
+  email: string;
+  role: Exclude<WorkspaceRole, 'owner'>;
+  classIds: string[];
+}) => request<{ accepted: true }>('/api/v1/invitations', {
+  method: 'POST',
+  body: JSON.stringify(input),
+});
+
+export const revokeWorkspaceInvitation = (invitationId: string) =>
+  request<{ invitations: WorkspaceInvitation[] }>(
+    `/api/v1/invitations/${encodeURIComponent(invitationId)}`,
+    { method: 'DELETE' },
+  );
+
+export const updateWorkspaceMember = (
+  userId: string,
+  input: {
+    role: Exclude<WorkspaceRole, 'owner'>;
+    classIds: string[];
+  },
+) => request<{ members: WorkspaceMember[] }>(
+  `/api/v1/members/${encodeURIComponent(userId)}`,
+  {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  },
+);
+
+export const removeWorkspaceMember = (userId: string) =>
+  request<{ members: WorkspaceMember[] }>(
+    `/api/v1/members/${encodeURIComponent(userId)}`,
+    { method: 'DELETE' },
+  );
+
+export const transferWorkspaceOwnership = (userId: string) =>
+  request<{ session: AuthSession }>(
+    `/api/v1/members/${encodeURIComponent(userId)}/transfer-ownership`,
+    { method: 'POST' },
+  );
+
+export const deleteActiveWorkspace = (input: {
+  password: string;
+  confirmation: string;
+}) => request<{ session: AuthSession }>('/api/v1/workspace', {
+  method: 'DELETE',
+  body: JSON.stringify(input),
+});
+
+export const deleteCurrentAccount = async (input: {
+  password: string;
+  confirmation: string;
+}) => {
+  await request('/api/v1/account', {
+    method: 'DELETE',
+    body: JSON.stringify(input),
+  }, { workspace: false });
+  clearAuthentication();
+};
+
 export const saveBackendState = (
   data: AppData,
   baseRevision: number,
+  requestId?: string,
 ) =>
   request<BackendStateSnapshot>('/api/v1/state', {
     method: 'PUT',
+    headers: requestId
+      ? { 'x-request-id': requestId }
+      : undefined,
     body: JSON.stringify({ data, baseRevision }),
   });
 

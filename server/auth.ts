@@ -1,6 +1,7 @@
 import type { AppData } from '../src/store/types';
 import {
   EmailAlreadyExistsError,
+  InvalidWorkspaceInvitationError,
   type AuditEventRecord,
   type AuthRateLimitResult,
   type AuthRateLimitScope,
@@ -9,6 +10,8 @@ import {
   type AuthUserRecord,
   type PasswordCredential,
   type UserWorkspaceAccess,
+  type WorkspaceMember,
+  type WorkspaceInvitationSummary,
   type WorkspaceMembershipRecord,
   type WorkspaceRepository,
   type WorkspaceRole,
@@ -17,6 +20,7 @@ import {
 export const DEFAULT_PASSWORD_ITERATIONS = 600_000;
 export const DEFAULT_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const DEFAULT_PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
+export const DEFAULT_WORKSPACE_INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const CLOUD_WORKSPACE_ID_PATTERN = /^ws_[a-zA-Z0-9_-]{24,61}$/;
 export const PASSWORD_RESET_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
@@ -64,6 +68,15 @@ export type LoginInput = {
 export type PasswordResetDelivery = {
   email: string;
   displayName: string;
+  token: string;
+  expiresAt: number;
+};
+
+export type WorkspaceInvitationDelivery = {
+  invitationId: string;
+  email: string;
+  workspaceName: string;
+  role: Exclude<WorkspaceRole, 'owner'>;
   token: string;
   expiresAt: number;
 };
@@ -298,6 +311,11 @@ const validateLabel = (
   }
   return normalized;
 };
+
+const normalizeClassIds = (classIds: string[]) =>
+  [...new Set(classIds.filter((classId) =>
+    typeof classId === 'string' && classId.trim().length > 0,
+  ).map((classId) => classId.trim()))].slice(0, 200);
 
 export class AuthService {
   private readonly crypto: Crypto;
@@ -656,6 +674,423 @@ export class AuthService {
         activeWorkspaceId: workspaceId,
       },
     };
+  }
+
+  async listWorkspaceMembers(
+    rawToken: string,
+    workspaceId: string,
+  ): Promise<WorkspaceMember[]> {
+    await this.authorizeWorkspace(rawToken, workspaceId, 'admin');
+    return this.repository.listWorkspaceMembers(workspaceId);
+  }
+
+  async createWorkspaceInvitation(
+    rawToken: string,
+    workspaceId: string,
+    email: string,
+    role: Exclude<WorkspaceRole, 'owner'>,
+    classIds: string[],
+  ): Promise<WorkspaceInvitationDelivery> {
+    const authorized = await this.authorizeWorkspace(
+      rawToken,
+      workspaceId,
+      'admin',
+    );
+    if (!['admin', 'teacher', 'viewer'].includes(role)) {
+      throw new AuthValidationError('INVALID_ROLE');
+    }
+    if (authorized.membership.role !== 'owner' && role === 'admin') {
+      throw new AuthForbiddenError();
+    }
+    const normalizedEmail = validateEmail(email);
+    const existingUser = await this.repository.findUserByNormalizedEmail(
+      normalizedEmail,
+    );
+    if (
+      existingUser &&
+      await this.repository.getWorkspaceMembership(workspaceId, existingUser.id)
+    ) {
+      throw new AuthValidationError('MEMBER_ALREADY_EXISTS');
+    }
+    const workspace = await this.repository.get(workspaceId);
+    const validClassIds = new Set(
+      workspace.data?.classes.map((classroom) => classroom.id) ?? [],
+    );
+    const scopedClassIds = normalizeClassIds(classIds);
+    if (
+      (role === 'teacher' || role === 'viewer') &&
+      (scopedClassIds.length === 0 ||
+        scopedClassIds.some((classId) => !validClassIds.has(classId)))
+    ) {
+      throw new AuthValidationError('INVALID_CLASS_SCOPE');
+    }
+    const rawInvitationToken = randomToken(this.crypto);
+    const now = this.now();
+    const invitationId = randomId(this.crypto, 'inv_', 18);
+    const invitation = {
+      id: invitationId,
+      tokenHash: await hashOpaqueToken(rawInvitationToken, this.crypto),
+      workspaceId,
+      email: email.trim(),
+      normalizedEmail,
+      role,
+      classIds: role === 'admin' ? [] : scopedClassIds,
+      createdByUserId: authorized.user.id,
+      createdAt: now,
+      expiresAt: now + DEFAULT_WORKSPACE_INVITATION_TTL_MS,
+      acceptedAt: null,
+      revokedAt: null,
+    };
+    await this.repository.createWorkspaceInvitation(invitation);
+    await this.repository.appendAuditEvent(this.createAuditEvent(
+      'workspace.invitation.create',
+      authorized.user.id,
+      workspaceId,
+      'invitation',
+      invitationId,
+      { email: normalizedEmail, role, classIds: invitation.classIds },
+    ));
+    const workspaceName = authorized.session.workspaces.find(
+      (candidate) => candidate.id === workspaceId,
+    )?.name ?? 'ePet';
+    return {
+      invitationId,
+      email: invitation.email,
+      workspaceName,
+      role,
+      token: rawInvitationToken,
+      expiresAt: invitation.expiresAt,
+    };
+  }
+
+  async listWorkspaceInvitations(
+    rawToken: string,
+    workspaceId: string,
+  ): Promise<WorkspaceInvitationSummary[]> {
+    await this.authorizeWorkspace(rawToken, workspaceId, 'admin');
+    return this.repository.listWorkspaceInvitations(workspaceId);
+  }
+
+  async revokeWorkspaceInvitation(
+    rawToken: string,
+    workspaceId: string,
+    invitationId: string,
+  ): Promise<WorkspaceInvitationSummary[]> {
+    const authorized = await this.authorizeWorkspace(
+      rawToken,
+      workspaceId,
+      'admin',
+    );
+    const invitation = (await this.repository.listWorkspaceInvitations(
+      workspaceId,
+    )).find((candidate) => candidate.id === invitationId);
+    if (!invitation || invitation.acceptedAt != null || invitation.revokedAt != null) {
+      throw new InvalidWorkspaceInvitationError();
+    }
+    if (authorized.membership.role !== 'owner' && invitation.role === 'admin') {
+      throw new AuthForbiddenError();
+    }
+    const now = this.now();
+    await this.repository.revokeWorkspaceInvitation(
+      workspaceId,
+      invitationId,
+      now,
+      this.createAuditEvent(
+        'workspace.invitation.revoke',
+        authorized.user.id,
+        workspaceId,
+        'invitation',
+        invitationId,
+      ),
+    );
+    return this.repository.listWorkspaceInvitations(workspaceId);
+  }
+
+  async acceptWorkspaceInvitation(
+    rawToken: string,
+    displayName: string,
+    password: string,
+  ): Promise<AuthSessionEnvelope> {
+    if (!isPasswordResetToken(rawToken)) {
+      throw new InvalidWorkspaceInvitationError();
+    }
+    const tokenHash = await hashOpaqueToken(rawToken, this.crypto);
+    const invitation = await this.repository.getWorkspaceInvitationByTokenHash(
+      tokenHash,
+    );
+    const now = this.now();
+    if (
+      !invitation ||
+      invitation.acceptedAt != null ||
+      invitation.revokedAt != null ||
+      invitation.expiresAt <= now
+    ) {
+      throw new InvalidWorkspaceInvitationError();
+    }
+    validatePassword(password);
+    const existingUser = await this.repository.findUserByNormalizedEmail(
+      invitation.normalizedEmail,
+    );
+    let user: AuthUserRecord;
+    if (existingUser) {
+      if (
+        existingUser.status !== 'active' ||
+        !(await verifyPassword(password, existingUser.password, this.crypto))
+      ) {
+        throw new InvalidCredentialsError();
+      }
+      if (
+        await this.repository.getWorkspaceMembership(
+          invitation.workspaceId,
+          existingUser.id,
+        )
+      ) throw new InvalidWorkspaceInvitationError();
+      user = existingUser;
+    } else {
+      const normalizedDisplayName = validateLabel(
+        displayName,
+        80,
+        'INVALID_DISPLAY_NAME',
+      );
+      user = {
+        id: randomId(this.crypto, 'usr_', 18),
+        email: invitation.email,
+        normalizedEmail: invitation.normalizedEmail,
+        displayName: normalizedDisplayName,
+        status: 'active',
+        password: await createPasswordCredential(
+          password,
+          this.passwordIterations,
+          this.crypto,
+        ),
+        createdAt: now,
+        updatedAt: now,
+        passwordChangedAt: now,
+      };
+    }
+    await this.repository.acceptWorkspaceInvitation({
+      tokenHash,
+      invitation,
+      user,
+      createUser: !existingUser,
+      membership: {
+        workspaceId: invitation.workspaceId,
+        userId: user.id,
+        role: invitation.role,
+        createdAt: now,
+        createdByUserId: invitation.createdByUserId,
+      },
+      acceptedAt: now,
+      auditEvent: this.createAuditEvent(
+        'workspace.invitation.accept',
+        user.id,
+        invitation.workspaceId,
+        'invitation',
+        invitation.id,
+      ),
+    });
+    return this.issueSession(user.id, invitation.workspaceId);
+  }
+
+  async updateWorkspaceMember(
+    rawToken: string,
+    workspaceId: string,
+    targetUserId: string,
+    role: Exclude<WorkspaceRole, 'owner'>,
+    classIds: string[],
+  ): Promise<WorkspaceMember[]> {
+    const authorized = await this.authorizeWorkspace(
+      rawToken,
+      workspaceId,
+      'admin',
+    );
+    if (!['admin', 'teacher', 'viewer'].includes(role)) {
+      throw new AuthValidationError('INVALID_ROLE');
+    }
+    const target = await this.repository.getWorkspaceMembership(
+      workspaceId,
+      targetUserId,
+    );
+    if (!target || target.role === 'owner') throw new AuthForbiddenError();
+    if (
+      authorized.membership.role !== 'owner' &&
+      (target.role === 'admin' || role === 'admin')
+    ) {
+      throw new AuthForbiddenError();
+    }
+    const workspace = await this.repository.get(workspaceId);
+    const validClassIds = new Set(
+      workspace.data?.classes.map((classroom) => classroom.id) ?? [],
+    );
+    const scopedClassIds = normalizeClassIds(classIds);
+    if (
+      ((role === 'teacher' || role === 'viewer') && scopedClassIds.length === 0) ||
+      scopedClassIds.some((classId) => !validClassIds.has(classId))
+    ) {
+      throw new AuthValidationError('INVALID_CLASS_SCOPE');
+    }
+    const now = this.now();
+    await this.repository.updateWorkspaceMember({
+      workspaceId,
+      userId: targetUserId,
+      role,
+      classIds: scopedClassIds,
+      actorUserId: authorized.user.id,
+      updatedAt: now,
+      auditEvent: this.createAuditEvent(
+        'workspace.member.update',
+        authorized.user.id,
+        workspaceId,
+        'user',
+        targetUserId,
+        { role, classIds: scopedClassIds },
+      ),
+    });
+    return this.repository.listWorkspaceMembers(workspaceId);
+  }
+
+  async removeWorkspaceMember(
+    rawToken: string,
+    workspaceId: string,
+    targetUserId: string,
+  ): Promise<WorkspaceMember[]> {
+    const authorized = await this.authorizeWorkspace(
+      rawToken,
+      workspaceId,
+      'admin',
+    );
+    if (targetUserId === authorized.user.id) throw new AuthForbiddenError();
+    const target = await this.repository.getWorkspaceMembership(
+      workspaceId,
+      targetUserId,
+    );
+    if (!target || target.role === 'owner') throw new AuthForbiddenError();
+    if (
+      authorized.membership.role !== 'owner' && target.role === 'admin'
+    ) {
+      throw new AuthForbiddenError();
+    }
+    const now = this.now();
+    await this.repository.removeWorkspaceMember({
+      workspaceId,
+      userId: targetUserId,
+      actorUserId: authorized.user.id,
+      removedAt: now,
+      auditEvent: this.createAuditEvent(
+        'workspace.member.remove',
+        authorized.user.id,
+        workspaceId,
+        'user',
+        targetUserId,
+        { previousRole: target.role },
+      ),
+    });
+    return this.repository.listWorkspaceMembers(workspaceId);
+  }
+
+  async transferWorkspaceOwnership(
+    rawToken: string,
+    workspaceId: string,
+    targetUserId: string,
+  ): Promise<AuthSessionView> {
+    const authorized = await this.authorizeWorkspace(
+      rawToken,
+      workspaceId,
+      'owner',
+    );
+    if (targetUserId === authorized.user.id) {
+      throw new AuthValidationError('OWNER_ALREADY_SELECTED');
+    }
+    const target = await this.repository.getWorkspaceMembership(
+      workspaceId,
+      targetUserId,
+    );
+    if (!target || target.role === 'owner') throw new AuthForbiddenError();
+    const now = this.now();
+    await this.repository.transferWorkspaceOwnership({
+      workspaceId,
+      fromUserId: authorized.user.id,
+      toUserId: targetUserId,
+      transferredAt: now,
+      auditEvent: this.createAuditEvent(
+        'workspace.owner.transfer',
+        authorized.user.id,
+        workspaceId,
+        'user',
+        targetUserId,
+      ),
+    });
+    return this.getSession(rawToken);
+  }
+
+  private async verifyDestructivePassword(
+    user: AuthUserRecord,
+    password: string,
+  ) {
+    if (!(await verifyPassword(password, user.password, this.crypto))) {
+      throw new InvalidCredentialsError();
+    }
+  }
+
+  async deleteWorkspace(
+    rawToken: string,
+    workspaceId: string,
+    password: string,
+    confirmation: string,
+  ): Promise<AuthSessionView> {
+    const resolved = await this.resolveSession(rawToken);
+    const authorized = await this.authorizeWorkspace(
+      rawToken,
+      workspaceId,
+      'owner',
+    );
+    const workspace = resolved.view.workspaces.find(
+      (candidate) => candidate.id === workspaceId,
+    );
+    if (!workspace || confirmation.trim() !== workspace.name) {
+      throw new AuthValidationError('WORKSPACE_CONFIRMATION_MISMATCH');
+    }
+    await this.verifyDestructivePassword(resolved.user, password);
+    const now = this.now();
+    await this.repository.deleteWorkspace({
+      workspaceId,
+      actorUserId: authorized.user.id,
+      deletedAt: now,
+      auditEvent: this.createAuditEvent(
+        'workspace.delete',
+        authorized.user.id,
+        workspaceId,
+        'workspace',
+        workspaceId,
+      ),
+    });
+    return this.getSession(rawToken);
+  }
+
+  async deleteAccount(
+    rawToken: string,
+    password: string,
+    confirmation: string,
+  ): Promise<void> {
+    const resolved = await this.resolveSession(rawToken);
+    if (confirmation.trim().toLocaleLowerCase('en-US') !== 'delete') {
+      throw new AuthValidationError('ACCOUNT_CONFIRMATION_MISMATCH');
+    }
+    await this.verifyDestructivePassword(resolved.user, password);
+    if (resolved.view.workspaces.some((workspace) => workspace.role === 'owner')) {
+      throw new AuthValidationError('OWNER_TRANSFER_REQUIRED');
+    }
+    const now = this.now();
+    await this.repository.deleteUser({
+      userId: resolved.user.id,
+      deletedAt: now,
+      auditEvent: this.createAuditEvent(
+        'account.delete',
+        undefined,
+        undefined,
+        'account',
+      ),
+    });
   }
 
   async consumeRateLimit(

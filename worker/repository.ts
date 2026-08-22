@@ -4,12 +4,21 @@ import type {
 } from '@cloudflare/workers-types';
 import type { AppData } from '../src/store/types';
 import {
+  findPermanentlyDeletedStudentIds,
+  purgeStudentsFromWorkspaceData,
+} from '../server/studentPrivacy';
+import {
   EmailAlreadyExistsError,
+  InvalidWorkspaceInvitationError,
   WorkspaceAlreadyClaimedError,
   WorkspaceConflictError,
   WorkspaceDataTooLargeError,
+  WorkspaceMembershipNotFoundError,
   WorkspaceNotFoundError,
+  WorkspaceOwnerTransferRequiredError,
   type AuditEventRecord,
+  type AcceptWorkspaceInvitationInput,
+  type AuthCleanupResult,
   type AuthRateLimitResult,
   type AuthRepository,
   type AuthSessionRecord,
@@ -19,10 +28,18 @@ import {
   type ConsumePasswordResetInput,
   type CreateUserWithWorkspaceInput,
   type CreateWorkspaceForUserInput,
+  type DeleteUserInput,
+  type DeleteWorkspaceInput,
   type PasswordResetTokenRecord,
   type StoredWorkspace,
   type UserWorkspaceAccess,
+  type WorkspaceMember,
+  type WorkspaceInvitationRecord,
+  type WorkspaceInvitationSummary,
   type WorkspaceMembershipRecord,
+  type RemoveWorkspaceMemberInput,
+  type TransferWorkspaceOwnershipInput,
+  type UpdateWorkspaceMemberInput,
   type WorkspaceRepository,
   type WorkspaceRevisionRecord,
   type WorkspaceRevisionSnapshot,
@@ -101,6 +118,22 @@ type RevisionSnapshotRow = RevisionRow & {
   data_json: string;
 };
 
+type InvitationRow = {
+  invitation_id: string;
+  token_hash: string;
+  workspace_id: string;
+  email: string;
+  email_normalized: string;
+  role: Exclude<WorkspaceMembershipRecord['role'], 'owner'>;
+  class_ids_json: string;
+  created_by_user_id: string;
+  created_at: number;
+  expires_at: number;
+  accepted_at: number | null;
+  accepted_by_user_id: string | null;
+  revoked_at: number | null;
+};
+
 const emptyWorkspace = (): StoredWorkspace => ({
   revision: 0,
   updatedAt: 0,
@@ -170,6 +203,22 @@ const decodeRevision = (row: RevisionRow): WorkspaceRevisionRecord => ({
   dataSizeBytes: row.data_size_bytes,
 });
 
+const decodeInvitation = (row: InvitationRow): WorkspaceInvitationRecord => ({
+  id: row.invitation_id,
+  tokenHash: row.token_hash,
+  workspaceId: row.workspace_id,
+  email: row.email,
+  normalizedEmail: row.email_normalized,
+  role: row.role,
+  classIds: JSON.parse(row.class_ids_json) as string[],
+  createdByUserId: row.created_by_user_id,
+  createdAt: row.created_at,
+  expiresAt: row.expires_at,
+  acceptedAt: row.accepted_at,
+  acceptedByUserId: row.accepted_by_user_id ?? undefined,
+  revokedAt: row.revoked_at,
+});
+
 const serializeWorkspace = (data: AppData) => {
   const dataJson = JSON.stringify(data);
   const dataSizeBytes = new TextEncoder().encode(dataJson).byteLength;
@@ -219,6 +268,50 @@ implements WorkspaceRepository, AuthRepository {
     const updatedAt = Date.now();
     const nextRevision = current.revision + 1;
     const writeToken = createProjectionWriteToken();
+    const deletedStudentIds = findPermanentlyDeletedStudentIds(
+      current.data,
+      data,
+    );
+    const revisionPurgeStatements: D1PreparedStatement[] = [];
+    if (deletedStudentIds.size > 0) {
+      const snapshots = await this.database
+        .prepare(
+          `SELECT workspace_id, revision, updated_at, actor_user_id,
+                  data_size_bytes, data_json
+           FROM workspace_revisions
+           WHERE workspace_id = ?`,
+        )
+        .bind(workspaceId)
+        .all<RevisionSnapshotRow>();
+      for (const snapshot of snapshots.results) {
+        const purged = serializeWorkspace(purgeStudentsFromWorkspaceData(
+          JSON.parse(snapshot.data_json) as AppData,
+          deletedStudentIds,
+        ));
+        revisionPurgeStatements.push(
+          this.database
+            .prepare(
+              `UPDATE workspace_revisions
+               SET data_json = ?, data_size_bytes = ?
+               WHERE workspace_id = ? AND revision = ?
+                 AND EXISTS (
+                   SELECT 1 FROM workspace_projection_state
+                   WHERE workspace_id = ? AND source_revision = ?
+                     AND write_token = ?
+                 )`,
+            )
+            .bind(
+              purged.dataJson,
+              purged.dataSizeBytes,
+              workspaceId,
+              snapshot.revision,
+              workspaceId,
+              nextRevision,
+              writeToken,
+            ),
+        );
+      }
+    }
     const writeStatement = current.revision === 0
       ? this.database
           .prepare(
@@ -244,6 +337,7 @@ implements WorkspaceRepository, AuthRepository {
         updatedAt,
         true,
       ),
+      ...revisionPurgeStatements,
       this.database
         .prepare(
           `UPDATE workspace_revisions
@@ -276,6 +370,19 @@ implements WorkspaceRepository, AuthRepository {
         context,
         writeToken,
       ),
+      ...(deletedStudentIds.size > 0
+        ? [this.workspaceAuditStatement(
+            workspaceId,
+            nextRevision,
+            updatedAt,
+            {
+              actorUserId: context.actorUserId,
+              action: 'privacy.student.purge',
+              requestId: `evt_privacy_student_${workspaceId}_${nextRevision}`,
+            },
+            writeToken,
+          )]
+        : []),
     ];
 
     const [writeResult] = await this.database.batch(statements);
@@ -584,6 +691,498 @@ implements WorkspaceRepository, AuthRepository {
       .bind(workspaceId, userId)
       .first<MembershipRow>();
     return decodeMembership(row);
+  }
+
+  async listWorkspaceMembers(workspaceId: string): Promise<WorkspaceMember[]> {
+    const result = await this.database
+      .prepare(
+        `SELECT
+           memberships.user_id,
+           users.email,
+           users.display_name,
+           memberships.role,
+           memberships.created_at
+         FROM workspace_memberships AS memberships
+         INNER JOIN users ON users.user_id = memberships.user_id
+         WHERE memberships.workspace_id = ?
+         ORDER BY memberships.created_at ASC, memberships.user_id ASC`,
+      )
+      .bind(workspaceId)
+      .all<{
+        user_id: string;
+        email: string;
+        display_name: string;
+        role: WorkspaceMembershipRecord['role'];
+        created_at: number;
+      }>();
+    return Promise.all(result.results.map(async (row) => ({
+      userId: row.user_id,
+      email: row.email,
+      displayName: row.display_name,
+      role: row.role,
+      classIds: await this.listWorkspaceClassIds(workspaceId, row.user_id),
+      createdAt: row.created_at,
+    })));
+  }
+
+  async updateWorkspaceMember(
+    input: UpdateWorkspaceMemberInput,
+  ): Promise<void> {
+    const current = await this.getWorkspaceMembership(
+      input.workspaceId,
+      input.userId,
+    );
+    if (!current || current.role === 'owner') {
+      throw new WorkspaceMembershipNotFoundError();
+    }
+    const classIds = [...new Set(input.classIds)].filter(Boolean);
+    const statements: D1PreparedStatement[] = [
+      this.database
+        .prepare(
+          `UPDATE workspace_memberships
+           SET role = ?, created_by_user_id = ?
+           WHERE workspace_id = ? AND user_id = ? AND role <> 'owner'`,
+        )
+        .bind(
+          input.role,
+          input.actorUserId,
+          input.workspaceId,
+          input.userId,
+        ),
+      this.database
+        .prepare(
+          `DELETE FROM workspace_class_assignments
+           WHERE workspace_id = ? AND user_id = ?`,
+        )
+        .bind(input.workspaceId, input.userId),
+    ];
+    if (input.role === 'teacher' || input.role === 'viewer') {
+      statements.push(...classIds.map((classId) => this.database
+        .prepare(
+          `INSERT INTO workspace_class_assignments (
+             workspace_id, user_id, class_id, created_at, created_by_user_id
+           )
+           VALUES (?, ?, ?, ?, ?)`,
+        )
+        .bind(
+          input.workspaceId,
+          input.userId,
+          classId,
+          input.updatedAt,
+          input.actorUserId,
+        )));
+    }
+    statements.push(this.auditStatement(input.auditEvent));
+    await this.database.batch(statements);
+  }
+
+  async removeWorkspaceMember(
+    input: RemoveWorkspaceMemberInput,
+  ): Promise<void> {
+    const current = await this.getWorkspaceMembership(
+      input.workspaceId,
+      input.userId,
+    );
+    if (!current || current.role === 'owner') {
+      throw new WorkspaceMembershipNotFoundError();
+    }
+    await this.database.batch([
+      this.database
+        .prepare(
+          `UPDATE auth_sessions
+           SET active_workspace_id = NULL, last_seen_at = ?
+           WHERE user_id = ? AND active_workspace_id = ?`,
+        )
+        .bind(input.removedAt, input.userId, input.workspaceId),
+      this.database
+        .prepare(
+          `DELETE FROM workspace_memberships
+           WHERE workspace_id = ? AND user_id = ? AND role <> 'owner'`,
+        )
+        .bind(input.workspaceId, input.userId),
+      this.auditStatement(input.auditEvent),
+    ]);
+  }
+
+  async transferWorkspaceOwnership(
+    input: TransferWorkspaceOwnershipInput,
+  ): Promise<void> {
+    const [source, target] = await Promise.all([
+      this.getWorkspaceMembership(input.workspaceId, input.fromUserId),
+      this.getWorkspaceMembership(input.workspaceId, input.toUserId),
+    ]);
+    if (source?.role !== 'owner' || !target || target.role === 'owner') {
+      throw new WorkspaceMembershipNotFoundError();
+    }
+    await this.database.batch([
+      this.database
+        .prepare(
+          `DELETE FROM workspace_class_assignments
+           WHERE workspace_id = ? AND user_id IN (?, ?)`,
+        )
+        .bind(input.workspaceId, input.fromUserId, input.toUserId),
+      this.database
+        .prepare(
+          `UPDATE workspace_memberships
+           SET role = 'admin'
+           WHERE workspace_id = ? AND user_id = ? AND role = 'owner'`,
+        )
+        .bind(input.workspaceId, input.fromUserId),
+      this.database
+        .prepare(
+          `UPDATE workspace_memberships
+           SET role = 'owner', created_by_user_id = ?
+           WHERE workspace_id = ? AND user_id = ?`,
+        )
+        .bind(input.fromUserId, input.workspaceId, input.toUserId),
+      this.database
+        .prepare(
+          `UPDATE workspace_claims
+           SET claimed_by_user_id = ?, claimed_at = ?
+           WHERE workspace_id = ?`,
+        )
+        .bind(input.toUserId, input.transferredAt, input.workspaceId),
+      this.auditStatement(input.auditEvent),
+    ]);
+  }
+
+  async deleteWorkspace(input: DeleteWorkspaceInput): Promise<void> {
+    const existing = await this.get(input.workspaceId);
+    if (!existing.data) throw new WorkspaceNotFoundError();
+    await this.database.batch([
+      this.database
+        .prepare('DELETE FROM audit_events WHERE workspace_id = ?')
+        .bind(input.workspaceId),
+      this.database
+        .prepare('DELETE FROM workspaces WHERE workspace_id = ?')
+        .bind(input.workspaceId),
+      this.auditStatement(input.auditEvent),
+    ]);
+  }
+
+  async deleteUser(input: DeleteUserInput): Promise<void> {
+    const owned = await this.database
+      .prepare(
+        `SELECT workspace_id
+         FROM workspace_memberships
+         WHERE user_id = ? AND role = 'owner'
+         LIMIT 1`,
+      )
+      .bind(input.userId)
+      .first<{ workspace_id: string }>();
+    const claimed = await this.database
+      .prepare(
+        `SELECT workspace_id
+         FROM workspace_claims
+         WHERE claimed_by_user_id = ?
+         LIMIT 1`,
+      )
+      .bind(input.userId)
+      .first<{ workspace_id: string }>();
+    if (owned || claimed) throw new WorkspaceOwnerTransferRequiredError();
+    await this.database.batch([
+      this.database
+        .prepare(
+          `UPDATE audit_events
+           SET actor_user_id = NULL
+           WHERE actor_user_id = ?`,
+        )
+        .bind(input.userId),
+      this.database
+        .prepare('DELETE FROM users WHERE user_id = ?')
+        .bind(input.userId),
+      this.auditStatement(input.auditEvent),
+    ]);
+  }
+
+  async cleanupExpiredAuthData(now: number): Promise<AuthCleanupResult> {
+    const results = await this.database.batch([
+      this.database
+        .prepare(
+          `DELETE FROM auth_sessions
+           WHERE expires_at <= ? OR revoked_at IS NOT NULL`,
+        )
+        .bind(now),
+      this.database
+        .prepare(
+          `DELETE FROM password_reset_tokens
+           WHERE expires_at <= ? OR used_at IS NOT NULL`,
+        )
+        .bind(now),
+      this.database
+        .prepare(
+          `DELETE FROM auth_rate_limits
+           WHERE blocked_until <= ? AND window_started_at <= ?`,
+        )
+        .bind(now, now - 86_400_000),
+      this.database
+        .prepare(
+          `DELETE FROM workspace_invitations
+           WHERE expires_at <= ? OR accepted_at IS NOT NULL OR revoked_at IS NOT NULL`,
+        )
+        .bind(now),
+    ]);
+    return {
+      sessions: results[0].meta.changes ?? 0,
+      passwordResetTokens: results[1].meta.changes ?? 0,
+      rateLimits: results[2].meta.changes ?? 0,
+      invitations: results[3].meta.changes ?? 0,
+    };
+  }
+
+  async createWorkspaceInvitation(
+    invitation: WorkspaceInvitationRecord,
+  ): Promise<void> {
+    await this.database.batch([
+      this.database
+        .prepare(
+          `UPDATE workspace_invitations
+           SET revoked_at = ?
+           WHERE workspace_id = ? AND email_normalized = ?
+             AND accepted_at IS NULL AND revoked_at IS NULL`,
+        )
+        .bind(
+          invitation.createdAt,
+          invitation.workspaceId,
+          invitation.normalizedEmail,
+        ),
+      this.database
+        .prepare(
+          `INSERT INTO workspace_invitations (
+             invitation_id, token_hash, workspace_id, email, email_normalized,
+             role, class_ids_json, created_by_user_id, created_at, expires_at,
+             accepted_at, accepted_by_user_id, revoked_at
+           )
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)`,
+        )
+        .bind(
+          invitation.id,
+          invitation.tokenHash,
+          invitation.workspaceId,
+          invitation.email,
+          invitation.normalizedEmail,
+          invitation.role,
+          JSON.stringify(invitation.classIds),
+          invitation.createdByUserId,
+          invitation.createdAt,
+          invitation.expiresAt,
+        ),
+    ]);
+  }
+
+  async getWorkspaceInvitationByTokenHash(
+    tokenHash: string,
+  ): Promise<WorkspaceInvitationRecord | null> {
+    const row = await this.database
+      .prepare(
+        `SELECT invitation_id, token_hash, workspace_id, email,
+                email_normalized, role, class_ids_json, created_by_user_id,
+                created_at, expires_at, accepted_at, accepted_by_user_id,
+                revoked_at
+         FROM workspace_invitations
+         WHERE token_hash = ?`,
+      )
+      .bind(tokenHash)
+      .first<InvitationRow>();
+    return row ? decodeInvitation(row) : null;
+  }
+
+  async listWorkspaceInvitations(
+    workspaceId: string,
+  ): Promise<WorkspaceInvitationSummary[]> {
+    const result = await this.database
+      .prepare(
+        `SELECT invitation_id, token_hash, workspace_id, email,
+                email_normalized, role, class_ids_json, created_by_user_id,
+                created_at, expires_at, accepted_at, accepted_by_user_id,
+                revoked_at
+         FROM workspace_invitations
+         WHERE workspace_id = ?
+         ORDER BY created_at DESC`,
+      )
+      .bind(workspaceId)
+      .all<InvitationRow>();
+    return result.results.map((row) => {
+      const { tokenHash: _tokenHash, ...summary } = decodeInvitation(row);
+      return summary;
+    });
+  }
+
+  async revokeWorkspaceInvitation(
+    workspaceId: string,
+    invitationId: string,
+    revokedAt: number,
+    auditEvent: AuditEventRecord,
+  ): Promise<void> {
+    const result = await this.database.batch([
+      this.database
+        .prepare(
+          `UPDATE workspace_invitations
+           SET revoked_at = ?
+           WHERE invitation_id = ? AND workspace_id = ?
+             AND accepted_at IS NULL AND revoked_at IS NULL`,
+        )
+        .bind(revokedAt, invitationId, workspaceId),
+      this.database
+        .prepare(
+          `INSERT INTO audit_events (
+             event_id, workspace_id, actor_user_id, action, target_type,
+             target_id, metadata_json, created_at
+           )
+           SELECT ?, ?, ?, ?, ?, ?, ?, ?
+           FROM workspace_invitations
+           WHERE invitation_id = ? AND workspace_id = ? AND revoked_at = ?`,
+        )
+        .bind(
+          auditEvent.id,
+          auditEvent.workspaceId ?? null,
+          auditEvent.actorUserId ?? null,
+          auditEvent.action,
+          auditEvent.targetType ?? null,
+          auditEvent.targetId ?? null,
+          auditMetadataJson(auditEvent),
+          auditEvent.createdAt,
+          invitationId,
+          workspaceId,
+          revokedAt,
+        ),
+    ]);
+    if ((result[0].meta.changes ?? 0) !== 1) {
+      throw new InvalidWorkspaceInvitationError();
+    }
+  }
+
+  async acceptWorkspaceInvitation(
+    input: AcceptWorkspaceInvitationInput,
+  ): Promise<void> {
+    const statements: D1PreparedStatement[] = [];
+    if (input.createUser) {
+      statements.push(this.database
+        .prepare(
+          `INSERT INTO users (
+             user_id, email, email_normalized, display_name, status,
+             password_algorithm, password_salt, password_hash,
+             password_iterations, created_at, updated_at, password_changed_at
+           )
+           SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+           FROM workspace_invitations
+           WHERE invitation_id = ? AND token_hash = ?
+             AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?`,
+        )
+        .bind(
+          input.user.id,
+          input.user.email,
+          input.user.normalizedEmail,
+          input.user.displayName,
+          input.user.status,
+          input.user.password.algorithm,
+          input.user.password.salt,
+          input.user.password.hash,
+          input.user.password.iterations,
+          input.user.createdAt,
+          input.user.updatedAt,
+          input.user.passwordChangedAt,
+          input.invitation.id,
+          input.tokenHash,
+          input.acceptedAt,
+        ));
+    }
+    const invitationUpdateIndex = statements.length;
+    statements.push(
+      this.database
+        .prepare(
+          `UPDATE workspace_invitations
+           SET accepted_at = ?, accepted_by_user_id = ?
+           WHERE token_hash = ? AND invitation_id = ?
+             AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?`,
+        )
+        .bind(
+          input.acceptedAt,
+          input.user.id,
+          input.tokenHash,
+          input.invitation.id,
+          input.acceptedAt,
+        ),
+      this.database
+        .prepare(
+          `INSERT OR IGNORE INTO workspace_memberships (
+             workspace_id, user_id, role, created_at, created_by_user_id
+           )
+           SELECT workspace_id, ?, role, ?, created_by_user_id
+           FROM workspace_invitations
+           WHERE invitation_id = ? AND accepted_at = ? AND accepted_by_user_id = ?`,
+        )
+        .bind(
+          input.user.id,
+          input.acceptedAt,
+          input.invitation.id,
+          input.acceptedAt,
+          input.user.id,
+        ),
+    );
+    if (
+      input.membership.role === 'teacher' ||
+      input.membership.role === 'viewer'
+    ) {
+      statements.push(...input.invitation.classIds.map((classId) =>
+        this.database
+          .prepare(
+            `INSERT OR IGNORE INTO workspace_class_assignments (
+               workspace_id, user_id, class_id, created_at, created_by_user_id
+             )
+             SELECT ?, ?, classes.class_id, ?, ?
+             FROM classes
+             INNER JOIN workspace_invitations AS invitations
+               ON invitations.invitation_id = ?
+               AND invitations.accepted_at = ?
+               AND invitations.accepted_by_user_id = ?
+             WHERE classes.workspace_id = ? AND classes.class_id = ?`,
+          )
+          .bind(
+            input.invitation.workspaceId,
+            input.user.id,
+            input.acceptedAt,
+            input.invitation.createdByUserId,
+            input.invitation.id,
+            input.acceptedAt,
+            input.user.id,
+            input.invitation.workspaceId,
+            classId,
+          ),
+      ));
+    }
+    statements.push(this.database
+      .prepare(
+        `INSERT INTO audit_events (
+           event_id, workspace_id, actor_user_id, action, target_type,
+           target_id, metadata_json, created_at
+         )
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?
+         FROM workspace_invitations
+         WHERE invitation_id = ? AND accepted_at = ?
+           AND accepted_by_user_id = ?`,
+      )
+      .bind(
+        input.auditEvent.id,
+        input.auditEvent.workspaceId ?? null,
+        input.auditEvent.actorUserId ?? null,
+        input.auditEvent.action,
+        input.auditEvent.targetType ?? null,
+        input.auditEvent.targetId ?? null,
+        auditMetadataJson(input.auditEvent),
+        input.auditEvent.createdAt,
+        input.invitation.id,
+        input.acceptedAt,
+        input.user.id,
+      ));
+    const results = await this.database.batch(statements);
+    if ((results[invitationUpdateIndex].meta.changes ?? 0) !== 1) {
+      const membership = await this.getWorkspaceMembership(
+        input.invitation.workspaceId,
+        input.user.id,
+      );
+      if (!membership) throw new InvalidWorkspaceInvitationError();
+    }
   }
 
   async listWorkspaceClassIds(
