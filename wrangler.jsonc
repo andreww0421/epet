@@ -21,9 +21,9 @@
   },
   "vars": {
     "BOT_PROTECTION_REQUIRED": "false",
-    "EMAIL_VERIFICATION_REQUIRED": "true",
+    "EMAIL_VERIFICATION_REQUIRED": "false",
     "PUBLIC_APP_URL": "https://epet-api.jtwen12345us.workers.dev/",
-    "REGISTRATION_ENABLED": "false"
+    "REGISTRATION_ENABLED": "true"
   },
   "d1_databases": [
     {
