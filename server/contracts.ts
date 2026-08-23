@@ -37,6 +37,7 @@ export type AuthUserRecord = {
   id: string;
   email: string;
   normalizedEmail: string;
+  emailVerifiedAt: number | null;
   displayName: string;
   status: AuthUserStatus;
   password: PasswordCredential;
@@ -110,6 +111,7 @@ export type DeleteUserInput = {
 export type AuthCleanupResult = {
   sessions: number;
   passwordResetTokens: number;
+  emailVerificationTokens: number;
   rateLimits: number;
   invitations: number;
 };
@@ -163,13 +165,26 @@ export type PasswordResetTokenRecord = {
   usedAt: number | null;
 };
 
+export type EmailVerificationTokenRecord = {
+  tokenHash: string;
+  userId: string;
+  createdAt: number;
+  expiresAt: number;
+  usedAt: number | null;
+};
+
 export type WorkspaceClaimRecord = {
   workspaceId: string;
   claimedByUserId: string;
   claimedAt: number;
 };
 
-export type AuthRateLimitScope = 'login' | 'register' | 'forgot' | 'reset';
+export type AuthRateLimitScope =
+  | 'login'
+  | 'register'
+  | 'forgot'
+  | 'reset'
+  | 'verify';
 
 export type ConsumeAuthRateLimitInput = {
   scope: AuthRateLimitScope;
@@ -209,6 +224,21 @@ export type AuditEventRecord = {
   createdAt: number;
 };
 
+export type AuditEventCursor = {
+  createdAt: number;
+  id: string;
+};
+
+export type WorkspaceAuditQuery = {
+  limit?: number;
+  cursor?: AuditEventCursor;
+  action?: string;
+  actorUserId?: string;
+  targetType?: string;
+  fromCreatedAt?: number;
+  toCreatedAt?: number;
+};
+
 export type WorkspaceSeed = {
   id: string;
   name: string;
@@ -218,6 +248,7 @@ export type WorkspaceSeed = {
 
 export type CreateUserWithWorkspaceInput = {
   user: AuthUserRecord;
+  emailVerificationToken?: EmailVerificationTokenRecord;
   workspace: WorkspaceSeed;
   membership: WorkspaceMembershipRecord;
   auditEvent: AuditEventRecord;
@@ -240,6 +271,11 @@ export type ConsumePasswordResetInput = {
   tokenHash: string;
   password: PasswordCredential;
   usedAt: number;
+};
+
+export type ConsumeEmailVerificationInput = {
+  tokenHash: string;
+  verifiedAt: number;
 };
 
 export interface AuthRepository {
@@ -296,10 +332,20 @@ export interface AuthRepository {
   consumePasswordResetToken(
     input: ConsumePasswordResetInput,
   ): Promise<AuthUserRecord | null>;
+  createEmailVerificationToken(
+    token: EmailVerificationTokenRecord,
+  ): Promise<void>;
+  consumeEmailVerificationToken(
+    input: ConsumeEmailVerificationInput,
+  ): Promise<AuthUserRecord | null>;
   consumeAuthRateLimit(
     input: ConsumeAuthRateLimitInput,
   ): Promise<AuthRateLimitResult>;
   appendAuditEvent(event: AuditEventRecord): Promise<void>;
+  listWorkspaceAuditEvents(
+    workspaceId: string,
+    query?: WorkspaceAuditQuery,
+  ): Promise<AuditEventRecord[]>;
   listWorkspaceRevisions(
     workspaceId: string,
     limit?: number,

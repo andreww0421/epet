@@ -1,10 +1,12 @@
 import type {
   ClassEffectivenessMetrics,
+  LearningEvidenceRecord,
   StudentLearningAnalytics,
 } from '../../shared/education';
 import type {
   AppData,
   BossVictoryResult,
+  ExamRecord,
   Student,
   WorldBoss,
 } from '../store/types';
@@ -14,16 +16,13 @@ const runtimeEnv = (
     env?: Record<string, string | undefined>;
   }
 ).env ?? {};
-const API_BASE = (runtimeEnv.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
 const CONFIGURED_WORKSPACE_ID = runtimeEnv.VITE_EPET_WORKSPACE?.trim();
 const WORKSPACE_STORAGE_KEY = 'epet-cloud-workspace-v1';
-const AUTH_TOKEN_STORAGE_KEY = 'epet-auth-session-v1';
 const CLOUD_WORKSPACE_PATTERN = /^ws_[a-zA-Z0-9_-]{24,61}$/;
 const REQUEST_TIMEOUT_MS = 6000;
 
 const getLegacyWorkspaceId = () => {
   if (CONFIGURED_WORKSPACE_ID) return CONFIGURED_WORKSPACE_ID;
-  if (!API_BASE) return null;
   try {
     const saved = globalThis.localStorage?.getItem(WORKSPACE_STORAGE_KEY);
     if (saved && CLOUD_WORKSPACE_PATTERN.test(saved)) return saved;
@@ -54,6 +53,7 @@ export type AuthSession = {
     email: string;
     displayName: string;
     role: WorkspaceRole;
+    emailVerified: boolean;
   };
   workspaces: Array<{
     id: string;
@@ -64,17 +64,11 @@ export type AuthSession = {
 };
 
 type AuthResponse = {
-  sessionToken: string;
   session: AuthSession;
+  csrfToken: string;
 };
 
-let authToken = (() => {
-  try {
-    return globalThis.sessionStorage?.getItem(AUTH_TOKEN_STORAGE_KEY) ?? null;
-  } catch {
-    return null;
-  }
-})();
+let csrfToken: string | null = null;
 let activeWorkspaceId: string | null = null;
 
 let backendAvailable = false;
@@ -86,8 +80,13 @@ export type BackendStateSnapshot = {
 };
 
 export type BackendPublicConfig = {
+  authenticationEnabled?: boolean;
   registrationEnabled: boolean;
   invitationEnabled?: boolean;
+  emailVerificationEnabled?: boolean;
+  lifecycleNotificationsEnabled?: boolean;
+  botProtectionEnabled?: boolean;
+  turnstileSiteKey?: string;
 };
 
 export type WorkspaceInvitation = {
@@ -126,6 +125,66 @@ export type WorkspacePrivacyExport = {
   exportedAt: string;
 };
 
+export type WorkspaceRevision = {
+  workspaceId: string;
+  revision: number;
+  updatedAt: number;
+  actorUserId?: string;
+  dataSizeBytes: number;
+};
+
+export type WorkspaceRevisionSnapshot = WorkspaceRevision & {
+  data: AppData;
+};
+
+export type StudentPrivacyExport = {
+  workspace: {
+    id: string;
+    revision: number;
+    updatedAt: number;
+  };
+  class: { id: string; name: string };
+  student: Partial<Student> & Pick<Student, 'id' | 'name' | 'points' | 'pet'>;
+  learningEvidenceRecords: LearningEvidenceRecord[];
+  examRecords: ExamRecord[];
+  activeBossParticipation: {
+    id: string;
+    name: string;
+    maxHp: number;
+    currentHp: number;
+    isActive: boolean;
+    contribution: number;
+    attackCount: number;
+  } | null;
+  exportedAt: string;
+};
+
+export type WorkspaceAuditEvent = {
+  id: string;
+  workspaceId?: string;
+  actorUserId?: string;
+  action: string;
+  targetType?: string;
+  targetId?: string;
+  metadata?: Record<string, unknown>;
+  createdAt: number;
+};
+
+export type WorkspaceAuditQuery = {
+  limit?: number;
+  cursor?: string;
+  action?: string;
+  actorUserId?: string;
+  targetType?: string;
+  from?: number;
+  to?: number;
+};
+
+export type WorkspaceAuditPage = {
+  events: WorkspaceAuditEvent[];
+  nextCursor?: string;
+};
+
 export class BackendRevisionConflict extends Error {
   constructor(readonly current: BackendStateSnapshot) {
     super('Backend revision conflict');
@@ -158,16 +217,6 @@ type RequestOptions = {
   workspace?: boolean;
 };
 
-const rememberAuthToken = (token: string | null) => {
-  authToken = token;
-  try {
-    if (token) globalThis.sessionStorage?.setItem(AUTH_TOKEN_STORAGE_KEY, token);
-    else globalThis.sessionStorage?.removeItem(AUTH_TOKEN_STORAGE_KEY);
-  } catch {
-    // The in-memory session still works when storage is unavailable.
-  }
-};
-
 const request = async <T>(
   path: string,
   init: RequestInit = {},
@@ -180,15 +229,17 @@ const request = async <T>(
     if (init.body != null && !headers.has('content-type')) {
       headers.set('content-type', 'application/json');
     }
-    if (options.auth !== false && authToken) {
-      headers.set('authorization', `Bearer ${authToken}`);
+    const method = (init.method ?? 'GET').toUpperCase();
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && csrfToken) {
+      headers.set('x-csrf-token', csrfToken);
     }
     if (options.workspace !== false) {
       if (!activeWorkspaceId) throw new BackendAuthRequired();
       headers.set('x-epet-workspace', activeWorkspaceId);
     }
-    const response = await fetch(`${API_BASE}${path}`, {
+    const response = await fetch(path, {
       ...init,
+      credentials: 'same-origin',
       headers,
       signal: controller.signal,
     });
@@ -197,10 +248,12 @@ const request = async <T>(
       throw new BackendRevisionConflict(body.current as BackendStateSnapshot);
     }
     if (response.status === 401) {
-      if (options.auth !== false) rememberAuthToken(null);
+      if (options.auth !== false) csrfToken = null;
       throw new BackendAuthRequired();
     }
-    if (response.status === 403) throw new BackendForbidden();
+    if (response.status === 403 && options.auth !== false) {
+      throw new BackendForbidden();
+    }
     if (!response.ok) {
       throw new BackendApiError(
         response.status,
@@ -235,7 +288,7 @@ export const probeBackend = async () => {
 };
 
 const applyAuthResponse = (response: AuthResponse) => {
-  rememberAuthToken(response.sessionToken);
+  csrfToken = response.csrfToken;
   activeWorkspaceId = response.session.activeWorkspaceId
     ?? response.session.workspaces[0]?.id
     ?? null;
@@ -246,13 +299,16 @@ const applyAuthResponse = (response: AuthResponse) => {
 };
 
 export const loadAuthSession = async (): Promise<AuthSession | null> => {
-  if (!authToken) return null;
   try {
-    const response = await request<{ session: AuthSession }>(
+    const response = await request<{
+      session: AuthSession;
+      csrfToken: string;
+    }>(
       '/api/v1/auth/session',
       {},
       { workspace: false },
     );
+    csrfToken = response.csrfToken;
     const availableIds = new Set(response.session.workspaces.map((workspace) => workspace.id));
     activeWorkspaceId = activeWorkspaceId && availableIds.has(activeWorkspaceId)
       ? activeWorkspaceId
@@ -267,6 +323,7 @@ export const loadAuthSession = async (): Promise<AuthSession | null> => {
 export const loginAccount = async (input: {
   email: string;
   password: string;
+  turnstileToken?: string;
 }) => {
   const response = await request<AuthResponse>(
     '/api/v1/auth/login',
@@ -284,6 +341,7 @@ export const registerAccount = async (input: {
   email: string;
   password: string;
   claimLegacyWorkspace?: boolean;
+  turnstileToken?: string;
 }) => {
   const response = await request<AuthResponse>(
     '/api/v1/auth/register',
@@ -293,6 +351,7 @@ export const registerAccount = async (input: {
         displayName: input.displayName,
         email: input.email,
         password: input.password,
+        turnstileToken: input.turnstileToken,
         legacyWorkspaceId: input.claimLegacyWorkspace && LEGACY_WORKSPACE_ID
           ? LEGACY_WORKSPACE_ID
           : undefined,
@@ -320,32 +379,23 @@ export const acceptWorkspaceInvitation = async (input: {
 };
 
 export const logoutAccount = async () => {
-  const sessionTokenToRevoke = authToken;
-  // Clear local authority first. This prevents a slow logout response from
-  // erasing a newer login token or letting account-scoped autosave resume.
-  rememberAuthToken(null);
-  activeWorkspaceId = null;
-  backendAvailable = false;
   try {
-    if (sessionTokenToRevoke) {
-      await request(
-        '/api/v1/auth/logout',
-        {
-          method: 'POST',
-          headers: {
-            authorization: `Bearer ${sessionTokenToRevoke}`,
-          },
-        },
-        { auth: false, workspace: false },
-      );
-    }
-  } catch {
-    // The local session is already gone. Expiry and server-side cleanup are
-    // the fallback if revocation cannot be delivered while offline.
+    await request(
+      '/api/v1/auth/logout',
+      { method: 'POST' },
+      { workspace: false },
+    );
+  } finally {
+    csrfToken = null;
+    activeWorkspaceId = null;
+    backendAvailable = false;
   }
 };
 
-export const requestPasswordReset = async (input: { email: string }) => {
+export const requestPasswordReset = async (input: {
+  email: string;
+  turnstileToken?: string;
+}) => {
   await request(
     '/api/v1/auth/password/forgot',
     {
@@ -353,6 +403,25 @@ export const requestPasswordReset = async (input: { email: string }) => {
       body: JSON.stringify(input),
     },
     { auth: false, workspace: false },
+  );
+};
+
+export const verifyEmail = async (token: string) => {
+  await request<{ verified: true }>(
+    '/api/v1/auth/email/verify',
+    {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+    },
+    { auth: false, workspace: false },
+  );
+};
+
+export const resendEmailVerification = async () => {
+  await request<{ accepted: true }>(
+    '/api/v1/auth/email/resend',
+    { method: 'POST' },
+    { workspace: false },
   );
 };
 
@@ -368,7 +437,7 @@ export const resetPassword = async (input: {
     },
     { auth: false, workspace: false },
   );
-  rememberAuthToken(null);
+  csrfToken = null;
   activeWorkspaceId = null;
 };
 
@@ -390,7 +459,7 @@ export const createWorkspace = async (name: string) => {
 };
 
 export const clearAuthentication = () => {
-  rememberAuthToken(null);
+  csrfToken = null;
   activeWorkspaceId = null;
   backendAvailable = false;
 };
@@ -400,6 +469,52 @@ export const loadBackendState = () =>
 
 export const exportWorkspacePrivacyData = () =>
   request<WorkspacePrivacyExport>('/api/v1/privacy/export');
+
+export const loadWorkspaceRevisions = (limit = 25) =>
+  request<{ currentRevision: number; revisions: WorkspaceRevision[] }>(
+    `/api/v1/revisions?limit=${encodeURIComponent(String(limit))}`,
+  );
+
+export const loadWorkspaceRevision = (revision: number) =>
+  request<{ snapshot: WorkspaceRevisionSnapshot }>(
+    `/api/v1/revisions/${encodeURIComponent(String(revision))}`,
+  );
+
+export const restoreWorkspaceRevision = (revision: number) =>
+  request<{
+    restoredFromRevision: number;
+    revision: number;
+    updatedAt: number;
+    data: AppData;
+  }>(
+    `/api/v1/revisions/${encodeURIComponent(String(revision))}/restore`,
+    { method: 'POST' },
+  );
+
+export const exportStudentPrivacyData = (
+  classId: string,
+  studentId: string,
+) => request<StudentPrivacyExport>(
+  `/api/v1/classes/${encodeURIComponent(classId)}/students/` +
+    `${encodeURIComponent(studentId)}/privacy/export`,
+);
+
+export const loadWorkspaceAuditEvents = (
+  query: WorkspaceAuditQuery = {},
+) => {
+  const search = new URLSearchParams();
+  if (query.limit != null) search.set('limit', String(query.limit));
+  if (query.cursor) search.set('cursor', query.cursor);
+  if (query.action) search.set('action', query.action);
+  if (query.actorUserId) search.set('actorUserId', query.actorUserId);
+  if (query.targetType) search.set('targetType', query.targetType);
+  if (query.from != null) search.set('from', String(query.from));
+  if (query.to != null) search.set('to', String(query.to));
+  const queryString = search.toString();
+  return request<WorkspaceAuditPage>(
+    `/api/v1/audit${queryString ? `?${queryString}` : ''}`,
+  );
+};
 
 export const loadWorkspaceMembers = () =>
   request<{ members: WorkspaceMember[] }>('/api/v1/members');

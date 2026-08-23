@@ -22,11 +22,13 @@ import {
   type AuthUserRecord,
   type ClaimLegacyWorkspaceInput,
   type ConsumeAuthRateLimitInput,
+  type ConsumeEmailVerificationInput,
   type ConsumePasswordResetInput,
   type CreateUserWithWorkspaceInput,
   type CreateWorkspaceForUserInput,
   type DeleteUserInput,
   type DeleteWorkspaceInput,
+  type EmailVerificationTokenRecord,
   type PasswordResetTokenRecord,
   type StoredWorkspace,
   type UserWorkspaceAccess,
@@ -40,6 +42,7 @@ import {
   type WorkspaceRepository,
   type WorkspaceRevisionSnapshot,
   type WorkspaceRevisionRecord,
+  type WorkspaceAuditQuery,
   type WorkspaceClaimRecord,
   type WorkspaceWriteContext,
 } from './contracts';
@@ -56,7 +59,7 @@ type AuthRateLimitState = {
 };
 
 type DatabaseFile = {
-  version: 4;
+  version: 5;
   workspaces: Record<string, StoredWorkspace>;
   workspaceMetadata: Record<string, WorkspaceMetadata>;
   workspaceRevisions: Record<string, WorkspaceRevisionSnapshot[]>;
@@ -66,13 +69,14 @@ type DatabaseFile = {
   workspaceClassAssignments: Record<string, string[]>;
   sessions: Record<string, AuthSessionRecord>;
   passwordResetTokens: Record<string, PasswordResetTokenRecord>;
+  emailVerificationTokens: Record<string, EmailVerificationTokenRecord>;
   authRateLimits: Record<string, AuthRateLimitState>;
   auditEvents: AuditEventRecord[];
   workspaceInvitations: Record<string, WorkspaceInvitationRecord>;
 };
 
 const createEmptyDatabase = (): DatabaseFile => ({
-  version: 4,
+  version: 5,
   workspaces: {},
   workspaceMetadata: {},
   workspaceRevisions: {},
@@ -82,6 +86,7 @@ const createEmptyDatabase = (): DatabaseFile => ({
   workspaceClassAssignments: {},
   sessions: {},
   passwordResetTokens: {},
+  emailVerificationTokens: {},
   authRateLimits: {},
   auditEvents: [],
   workspaceInvitations: {},
@@ -184,6 +189,14 @@ implements WorkspaceRepository, AuthRepository {
         typeof raw.passwordResetTokens === 'object'
           ? raw.passwordResetTokens as Record<string, PasswordResetTokenRecord>
           : {};
+      database.emailVerificationTokens =
+        raw.emailVerificationTokens &&
+        typeof raw.emailVerificationTokens === 'object'
+          ? raw.emailVerificationTokens as Record<
+              string,
+              EmailVerificationTokenRecord
+            >
+          : {};
       database.authRateLimits =
         raw.authRateLimits && typeof raw.authRateLimits === 'object'
           ? raw.authRateLimits as Record<string, AuthRateLimitState>
@@ -196,6 +209,12 @@ implements WorkspaceRepository, AuthRepository {
         typeof raw.workspaceInvitations === 'object'
           ? raw.workspaceInvitations as Record<string, WorkspaceInvitationRecord>
           : {};
+
+      for (const user of Object.values(database.users)) {
+        if (!Object.prototype.hasOwnProperty.call(user, 'emailVerifiedAt')) {
+          user.emailVerifiedAt = user.createdAt;
+        }
+      }
 
       for (const [workspaceId, workspace] of Object.entries(
         database.workspaces,
@@ -268,7 +287,7 @@ implements WorkspaceRepository, AuthRepository {
         }
       }
       this.database = database;
-      if (loadedVersion < 4) await this.persist(database);
+      if (loadedVersion < 5) await this.persist(database);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       this.database = createEmptyDatabase();
@@ -444,6 +463,11 @@ implements WorkspaceRepository, AuthRepository {
         throw new Error('Workspace id already exists');
       }
       database.users[input.user.id] = structuredClone(input.user);
+      if (input.emailVerificationToken) {
+        database.emailVerificationTokens[
+          input.emailVerificationToken.tokenHash
+        ] = structuredClone(input.emailVerificationToken);
+      }
       this.insertWorkspace(database, input.workspace, input.membership);
       database.auditEvents.push(structuredClone(input.auditEvent));
     });
@@ -681,6 +705,11 @@ implements WorkspaceRepository, AuthRepository {
       for (const [key, token] of Object.entries(database.passwordResetTokens)) {
         if (token.userId === input.userId) delete database.passwordResetTokens[key];
       }
+      for (const [key, token] of Object.entries(database.emailVerificationTokens)) {
+        if (token.userId === input.userId) {
+          delete database.emailVerificationTokens[key];
+        }
+      }
       for (const [id, invitation] of Object.entries(database.workspaceInvitations)) {
         if (invitation.createdByUserId === input.userId) {
           delete database.workspaceInvitations[id];
@@ -701,6 +730,7 @@ implements WorkspaceRepository, AuthRepository {
     return this.mutate((database) => {
       let sessions = 0;
       let passwordResetTokens = 0;
+      let emailVerificationTokens = 0;
       let rateLimits = 0;
       let invitations = 0;
       for (const [key, session] of Object.entries(database.sessions)) {
@@ -712,6 +742,11 @@ implements WorkspaceRepository, AuthRepository {
         if (token.expiresAt > now && token.usedAt == null) continue;
         delete database.passwordResetTokens[key];
         passwordResetTokens += 1;
+      }
+      for (const [key, token] of Object.entries(database.emailVerificationTokens)) {
+        if (token.expiresAt > now && token.usedAt == null) continue;
+        delete database.emailVerificationTokens[key];
+        emailVerificationTokens += 1;
       }
       for (const [key, limit] of Object.entries(database.authRateLimits)) {
         if (limit.blockedUntil > now || limit.windowStartedAt + 86_400_000 > now) {
@@ -729,7 +764,13 @@ implements WorkspaceRepository, AuthRepository {
         delete database.workspaceInvitations[id];
         invitations += 1;
       }
-      return { sessions, passwordResetTokens, rateLimits, invitations };
+      return {
+        sessions,
+        passwordResetTokens,
+        emailVerificationTokens,
+        rateLimits,
+        invitations,
+      };
     });
   }
 
@@ -811,6 +852,9 @@ implements WorkspaceRepository, AuthRepository {
         database.users[input.user.id] = structuredClone(input.user);
       } else if (!database.users[input.user.id]) {
         throw new InvalidWorkspaceInvitationError();
+      } else if (database.users[input.user.id].emailVerifiedAt == null) {
+        database.users[input.user.id].emailVerifiedAt = input.acceptedAt;
+        database.users[input.user.id].updatedAt = input.acceptedAt;
       }
       const key = membershipKey(input.membership.workspaceId, input.user.id);
       if (database.memberships[key]) {
@@ -975,9 +1019,56 @@ implements WorkspaceRepository, AuthRepository {
       user.password = structuredClone(input.password);
       user.updatedAt = input.usedAt;
       user.passwordChangedAt = input.usedAt;
+      user.emailVerifiedAt ??= input.usedAt;
       for (const session of Object.values(database.sessions)) {
         if (session.userId === user.id && session.revokedAt == null) {
           session.revokedAt = input.usedAt;
+        }
+      }
+      return user;
+    });
+  }
+
+  async createEmailVerificationToken(
+    token: EmailVerificationTokenRecord,
+  ): Promise<void> {
+    await this.mutate((database) => {
+      const user = database.users[token.userId];
+      if (!user || user.status !== 'active' || user.emailVerifiedAt != null) {
+        return;
+      }
+      for (const existing of Object.values(database.emailVerificationTokens)) {
+        if (existing.userId === token.userId && existing.usedAt == null) {
+          existing.usedAt = token.createdAt;
+        }
+      }
+      database.emailVerificationTokens[token.tokenHash] =
+        structuredClone(token);
+    });
+  }
+
+  async consumeEmailVerificationToken(
+    input: ConsumeEmailVerificationInput,
+  ): Promise<AuthUserRecord | null> {
+    return this.mutate((database) => {
+      const token = database.emailVerificationTokens[input.tokenHash];
+      if (
+        !token ||
+        token.usedAt != null ||
+        token.expiresAt <= input.verifiedAt
+      ) return null;
+      const user = database.users[token.userId];
+      if (
+        !user ||
+        user.status !== 'active' ||
+        user.emailVerifiedAt != null
+      ) return null;
+      token.usedAt = input.verifiedAt;
+      user.emailVerifiedAt ??= input.verifiedAt;
+      user.updatedAt = input.verifiedAt;
+      for (const candidate of Object.values(database.emailVerificationTokens)) {
+        if (candidate.userId === user.id && candidate.usedAt == null) {
+          candidate.usedAt = input.verifiedAt;
         }
       }
       return user;
@@ -1025,6 +1116,45 @@ implements WorkspaceRepository, AuthRepository {
     await this.mutate((database) => {
       database.auditEvents.push(structuredClone(event));
     });
+  }
+
+  async listWorkspaceAuditEvents(
+    workspaceId: string,
+    query: WorkspaceAuditQuery = {},
+  ): Promise<AuditEventRecord[]> {
+    await this.mutationQueue;
+    const database = await this.load();
+    const safeLimit = Math.max(
+      1,
+      Math.min(201, Math.floor(query.limit ?? 50)),
+    );
+    return database.auditEvents
+      .filter((event) => event.workspaceId === workspaceId)
+      .filter((event) => !query.action || event.action === query.action)
+      .filter((event) =>
+        !query.actorUserId || event.actorUserId === query.actorUserId
+      )
+      .filter((event) =>
+        !query.targetType || event.targetType === query.targetType
+      )
+      .filter((event) =>
+        query.fromCreatedAt == null || event.createdAt >= query.fromCreatedAt
+      )
+      .filter((event) =>
+        query.toCreatedAt == null || event.createdAt <= query.toCreatedAt
+      )
+      .filter((event) => !query.cursor ||
+        event.createdAt < query.cursor.createdAt ||
+        (
+          event.createdAt === query.cursor.createdAt &&
+          event.id < query.cursor.id
+        ))
+      .slice()
+      .sort((left, right) =>
+        right.createdAt - left.createdAt || right.id.localeCompare(left.id)
+      )
+      .slice(0, safeLimit)
+      .map((event) => structuredClone(event));
   }
 
   async listWorkspaceRevisions(

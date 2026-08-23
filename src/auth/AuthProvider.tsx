@@ -16,10 +16,12 @@ import {
   loginAccount,
   logoutAccount,
   registerAccount,
+  resendEmailVerification,
   requestPasswordReset,
   resetPassword as resetPasswordAccount,
   setActiveWorkspaceId,
   type AuthSession,
+  verifyEmail as verifyEmailAccount,
 } from '../services/backendApi';
 
 export type AuthStatus = 'checking' | 'authenticated' | 'unauthenticated';
@@ -27,6 +29,7 @@ export type AuthStatus = 'checking' | 'authenticated' | 'unauthenticated';
 export type LoginInput = {
   email: string;
   password: string;
+  turnstileToken?: string;
 };
 
 export type RegisterInput = LoginInput & {
@@ -36,15 +39,21 @@ export type RegisterInput = LoginInput & {
 
 type AuthContextValue = {
   claimableLegacyWorkspace: boolean;
+  authenticationEnabled: boolean;
   registrationEnabled: boolean;
   invitationEnabled: boolean;
+  emailVerificationEnabled: boolean;
+  botProtectionEnabled: boolean;
+  turnstileSiteKey: string;
   status: AuthStatus;
   session: AuthSession | null;
   refreshSession: () => Promise<AuthSession | null>;
   login: (input: LoginInput) => Promise<AuthSession>;
   register: (input: RegisterInput) => Promise<AuthSession>;
   logout: () => Promise<void>;
-  forgotPassword: (email: string) => Promise<void>;
+  forgotPassword: (email: string, turnstileToken?: string) => Promise<void>;
+  verifyEmail: (token: string) => Promise<void>;
+  resendVerification: () => Promise<void>;
   resetPassword: (token: string, password: string) => Promise<void>;
   acceptInvitation: (
     token: string,
@@ -69,8 +78,13 @@ export const AuthProvider = ({
 }: AuthProviderProps) => {
   const [status, setStatus] = useState<AuthStatus>('checking');
   const [session, setSession] = useState<AuthSession | null>(null);
+  const [authenticationEnabled, setAuthenticationEnabled] = useState(false);
   const [registrationEnabled, setRegistrationEnabled] = useState(false);
   const [invitationEnabled, setInvitationEnabled] = useState(false);
+  const [emailVerificationEnabled, setEmailVerificationEnabled] =
+    useState(false);
+  const [botProtectionEnabled, setBotProtectionEnabled] = useState(false);
+  const [turnstileSiteKey, setTurnstileSiteKey] = useState('');
 
   const invalidateSession = useCallback(() => {
     onSessionCleared?.();
@@ -108,6 +122,11 @@ export const AuthProvider = ({
         loadBackendPublicConfig(),
       ]);
       if (disposed) return;
+      setAuthenticationEnabled(
+        configResult.status === 'fulfilled'
+          ? configResult.value.authenticationEnabled !== false
+          : false,
+      );
       setRegistrationEnabled(
         configResult.status === 'fulfilled'
           ? configResult.value.registrationEnabled === true
@@ -117,6 +136,22 @@ export const AuthProvider = ({
         configResult.status === 'fulfilled'
           ? configResult.value.invitationEnabled === true
           : false,
+      );
+      setEmailVerificationEnabled(
+        configResult.status === 'fulfilled'
+          ? configResult.value.emailVerificationEnabled === true
+          : false,
+      );
+      setBotProtectionEnabled(
+        configResult.status === 'fulfilled'
+          ? configResult.value.botProtectionEnabled === true
+          : false,
+      );
+      setTurnstileSiteKey(
+        configResult.status === 'fulfilled' &&
+        typeof configResult.value.turnstileSiteKey === 'string'
+          ? configResult.value.turnstileSiteKey
+          : '',
       );
       applySession(
         sessionResult.status === 'fulfilled' ? sessionResult.value : null,
@@ -133,6 +168,7 @@ export const AuthProvider = ({
     const nextSession = await loginAccount({
       email: input.email.trim().toLocaleLowerCase(),
       password: input.password,
+      turnstileToken: input.turnstileToken,
     });
     applySession(nextSession);
     return nextSession;
@@ -144,6 +180,7 @@ export const AuthProvider = ({
       email: input.email.trim().toLocaleLowerCase(),
       password: input.password,
       claimLegacyWorkspace: input.claimLegacyWorkspace,
+      turnstileToken: input.turnstileToken,
     });
     applySession(nextSession);
     return nextSession;
@@ -156,10 +193,24 @@ export const AuthProvider = ({
     await logoutAccount();
   }, [invalidateSession]);
 
-  const forgotPassword = useCallback(async (email: string) => {
+  const forgotPassword = useCallback(async (
+    email: string,
+    turnstileToken?: string,
+  ) => {
     await requestPasswordReset({
       email: email.trim().toLocaleLowerCase(),
+      turnstileToken,
     });
+  }, []);
+
+  const verifyEmail = useCallback(async (token: string) => {
+    await verifyEmailAccount(token);
+    const nextSession = await loadAuthSession();
+    applySession(nextSession);
+  }, [applySession]);
+
+  const resendVerification = useCallback(async () => {
+    await resendEmailVerification();
   }, []);
 
   const resetPassword = useCallback(async (token: string, password: string) => {
@@ -211,8 +262,12 @@ export const AuthProvider = ({
 
   const value = useMemo<AuthContextValue>(() => ({
     claimableLegacyWorkspace: hasClaimableLegacyWorkspace,
+    authenticationEnabled,
     registrationEnabled,
     invitationEnabled,
+    emailVerificationEnabled,
+    botProtectionEnabled,
+    turnstileSiteKey,
     status,
     session,
     refreshSession,
@@ -220,6 +275,8 @@ export const AuthProvider = ({
     register,
     logout,
     forgotPassword,
+    verifyEmail,
+    resendVerification,
     resetPassword,
     acceptInvitation,
     createWorkspace,
@@ -227,14 +284,20 @@ export const AuthProvider = ({
     invalidateSession,
   }), [
     status,
+    authenticationEnabled,
     registrationEnabled,
     invitationEnabled,
+    emailVerificationEnabled,
+    botProtectionEnabled,
+    turnstileSiteKey,
     session,
     refreshSession,
     login,
     register,
     logout,
     forgotPassword,
+    verifyEmail,
+    resendVerification,
     resetPassword,
     acceptInvitation,
     createWorkspace,

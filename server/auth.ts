@@ -8,6 +8,7 @@ import {
   type AuthRepository,
   type AuthSessionRecord,
   type AuthUserRecord,
+  type EmailVerificationTokenRecord,
   type PasswordCredential,
   type UserWorkspaceAccess,
   type WorkspaceMember,
@@ -20,9 +21,11 @@ import {
 export const DEFAULT_PASSWORD_ITERATIONS = 600_000;
 export const DEFAULT_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const DEFAULT_PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
+export const DEFAULT_EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_WORKSPACE_INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const CLOUD_WORKSPACE_ID_PATTERN = /^ws_[a-zA-Z0-9_-]{24,61}$/;
 export const PASSWORD_RESET_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+export const EMAIL_VERIFICATION_TOKEN_PATTERN = PASSWORD_RESET_TOKEN_PATTERN;
 
 const ROLE_LEVEL: Record<WorkspaceRole, number> = {
   viewer: 1,
@@ -39,6 +42,7 @@ export type AuthSessionUser = {
   email: string;
   displayName: string;
   role: WorkspaceRole;
+  emailVerified: boolean;
 };
 
 export type AuthSessionView = {
@@ -50,6 +54,39 @@ export type AuthSessionView = {
 export type AuthSessionEnvelope = {
   sessionToken: string;
   session: AuthSessionView;
+};
+
+export type EmailVerificationDelivery = {
+  email: string;
+  displayName: string;
+  token: string;
+  expiresAt: number;
+};
+
+export type AuthRegistrationEnvelope = AuthSessionEnvelope & {
+  emailVerification?: EmailVerificationDelivery;
+};
+
+export type AccountLifecycleEventKind =
+  | 'email_verified'
+  | 'password_changed'
+  | 'workspace_joined'
+  | 'workspace_role_changed'
+  | 'workspace_removed'
+  | 'ownership_transferred'
+  | 'ownership_received'
+  | 'workspace_deleted'
+  | 'account_deleted';
+
+export type AccountLifecycleDelivery = {
+  eventId: string;
+  kind: AccountLifecycleEventKind;
+  email: string;
+  displayName: string;
+  occurredAt: number;
+  workspaceName?: string;
+  previousRole?: WorkspaceRole;
+  role?: WorkspaceRole;
 };
 
 export type RegisterInput = {
@@ -93,6 +130,9 @@ export type AuthServiceOptions = {
   passwordIterations?: number;
   sessionTtlMs?: number;
   passwordResetTtlMs?: number;
+  emailVerificationRequired?: boolean;
+  emailVerificationTtlMs?: number;
+  lifecycleNotifier?: (delivery: AccountLifecycleDelivery) => void;
 };
 
 export type AuthRateLimitPolicy = {
@@ -128,6 +168,18 @@ export class AuthForbiddenError extends Error {
 export class InvalidPasswordResetTokenError extends Error {
   constructor() {
     super('INVALID_PASSWORD_RESET_TOKEN');
+  }
+}
+
+export class InvalidEmailVerificationTokenError extends Error {
+  constructor() {
+    super('INVALID_EMAIL_VERIFICATION_TOKEN');
+  }
+}
+
+export class EmailVerificationRequiredError extends Error {
+  constructor() {
+    super('EMAIL_VERIFICATION_REQUIRED');
   }
 }
 
@@ -210,14 +262,11 @@ export const isRoleAtLeast = (
   required: WorkspaceRole,
 ) => ROLE_LEVEL[actual] >= ROLE_LEVEL[required];
 
-export const parseBearerToken = (authorizationHeader: string | null) => {
-  if (!authorizationHeader) return null;
-  const match = authorizationHeader.match(/^Bearer ([A-Za-z0-9_-]{20,256})$/);
-  return match?.[1] ?? null;
-};
-
 export const isPasswordResetToken = (value: string) =>
   PASSWORD_RESET_TOKEN_PATTERN.test(value);
+
+export const isEmailVerificationToken = (value: string) =>
+  EMAIL_VERIFICATION_TOKEN_PATTERN.test(value);
 
 export const hashOpaqueToken = async (
   token: string,
@@ -323,6 +372,9 @@ export class AuthService {
   private readonly passwordIterations: number;
   private readonly sessionTtlMs: number;
   private readonly passwordResetTtlMs: number;
+  private readonly emailVerificationRequired: boolean;
+  private readonly emailVerificationTtlMs: number;
+  private readonly lifecycleNotifier?: (delivery: AccountLifecycleDelivery) => void;
 
   constructor(
     private readonly repository: AuthRepository & WorkspaceRepository,
@@ -335,12 +387,26 @@ export class AuthService {
     this.sessionTtlMs = options.sessionTtlMs ?? DEFAULT_SESSION_TTL_MS;
     this.passwordResetTtlMs =
       options.passwordResetTtlMs ?? DEFAULT_PASSWORD_RESET_TTL_MS;
+    this.emailVerificationRequired = options.emailVerificationRequired === true;
+    this.emailVerificationTtlMs =
+      options.emailVerificationTtlMs ?? DEFAULT_EMAIL_VERIFICATION_TTL_MS;
+    this.lifecycleNotifier = options.lifecycleNotifier;
     if (
       !Number.isInteger(this.passwordIterations) ||
       this.passwordIterations < 1
     ) {
       throw new Error('Password iterations must be a positive integer');
     }
+  }
+
+  private notifyLifecycle(
+    delivery: Omit<AccountLifecycleDelivery, 'eventId'>,
+  ) {
+    if (!this.lifecycleNotifier) return;
+    this.lifecycleNotifier({
+      ...delivery,
+      eventId: randomId(this.crypto, 'mail_', 18),
+    });
   }
 
   private createAuditEvent(
@@ -360,6 +426,32 @@ export class AuthService {
       targetId,
       metadata,
       createdAt: this.now(),
+    };
+  }
+
+  private async createEmailVerificationMaterial(
+    user: Pick<AuthUserRecord, 'id' | 'email' | 'displayName'>,
+  ): Promise<{
+    record: EmailVerificationTokenRecord;
+    delivery: EmailVerificationDelivery;
+  }> {
+    const token = randomToken(this.crypto);
+    const createdAt = this.now();
+    const expiresAt = createdAt + this.emailVerificationTtlMs;
+    return {
+      record: {
+        tokenHash: await hashOpaqueToken(token, this.crypto),
+        userId: user.id,
+        createdAt,
+        expiresAt,
+        usedAt: null,
+      },
+      delivery: {
+        email: user.email,
+        displayName: user.displayName,
+        token,
+        expiresAt,
+      },
     };
   }
 
@@ -418,6 +510,7 @@ export class AuthService {
         email: user.email,
         displayName: user.displayName,
         role: activeWorkspace?.role ?? 'viewer',
+        emailVerified: user.emailVerifiedAt != null,
       },
       workspaces,
       activeWorkspaceId: activeWorkspace?.id ?? null,
@@ -445,7 +538,7 @@ export class AuthService {
     };
   }
 
-  async register(input: RegisterInput): Promise<AuthSessionEnvelope> {
+  async register(input: RegisterInput): Promise<AuthRegistrationEnvelope> {
     const normalizedEmail = validateEmail(input.email);
     validatePassword(input.password);
     const displayName = validateLabel(
@@ -468,6 +561,7 @@ export class AuthService {
       id: userId,
       email: input.email.trim(),
       normalizedEmail,
+      emailVerifiedAt: this.emailVerificationRequired ? null : now,
       displayName,
       status: 'active',
       password: await createPasswordCredential(
@@ -486,8 +580,12 @@ export class AuthService {
       createdAt: now,
       createdByUserId: userId,
     };
+    const emailVerification = this.emailVerificationRequired
+      ? await this.createEmailVerificationMaterial(user)
+      : undefined;
     await this.repository.createUserWithWorkspace({
       user,
+      emailVerificationToken: emailVerification?.record,
       workspace: {
         id: workspaceId,
         name: workspaceName,
@@ -503,7 +601,12 @@ export class AuthService {
         workspaceId,
       ),
     });
-    return this.issueSession(userId, workspaceId);
+    return {
+      ...await this.issueSession(userId, workspaceId),
+      ...(emailVerification
+        ? { emailVerification: emailVerification.delivery }
+        : {}),
+    };
   }
 
   async login(input: LoginInput): Promise<AuthSessionEnvelope> {
@@ -552,6 +655,50 @@ export class AuthService {
 
   async getSession(rawToken: string): Promise<AuthSessionView> {
     return (await this.resolveSession(rawToken)).view;
+  }
+
+  async requestEmailVerification(
+    rawToken: string,
+  ): Promise<EmailVerificationDelivery | null> {
+    const resolved = await this.resolveSession(rawToken);
+    if (resolved.user.emailVerifiedAt != null) return null;
+    const verification = await this.createEmailVerificationMaterial(
+      resolved.user,
+    );
+    await this.repository.createEmailVerificationToken(verification.record);
+    await this.repository.appendAuditEvent(this.createAuditEvent(
+      'auth.email_verification.request',
+      resolved.user.id,
+      resolved.view.activeWorkspaceId ?? undefined,
+      'user',
+      resolved.user.id,
+    ));
+    return verification.delivery;
+  }
+
+  async verifyEmail(rawToken: string): Promise<void> {
+    if (!isEmailVerificationToken(rawToken)) {
+      throw new InvalidEmailVerificationTokenError();
+    }
+    const verifiedAt = this.now();
+    const user = await this.repository.consumeEmailVerificationToken({
+      tokenHash: await hashOpaqueToken(rawToken, this.crypto),
+      verifiedAt,
+    });
+    if (!user) throw new InvalidEmailVerificationTokenError();
+    await this.repository.appendAuditEvent(this.createAuditEvent(
+      'auth.email_verified',
+      user.id,
+      undefined,
+      'user',
+      user.id,
+    ));
+    this.notifyLifecycle({
+      kind: 'email_verified',
+      email: user.email,
+      displayName: user.displayName,
+      occurredAt: verifiedAt,
+    });
   }
 
   async logout(rawToken: string): Promise<void> {
@@ -633,6 +780,12 @@ export class AuthService {
         user.id,
       ),
     );
+    this.notifyLifecycle({
+      kind: 'password_changed',
+      email: user.email,
+      displayName: user.displayName,
+      occurredAt: now,
+    });
   }
 
   async authorizeWorkspace(
@@ -641,6 +794,9 @@ export class AuthService {
     minimumRole: WorkspaceRole = 'viewer',
   ): Promise<AuthorizedWorkspace> {
     const resolved = await this.resolveSession(rawToken);
+    if (resolved.user.emailVerifiedAt == null) {
+      throw new EmailVerificationRequiredError();
+    }
     const membership = await this.repository.getWorkspaceMembership(
       workspaceId,
       resolved.user.id,
@@ -663,6 +819,7 @@ export class AuthService {
         email: resolved.user.email,
         displayName: resolved.user.displayName,
         role: activeWorkspace?.role ?? membership.role,
+        emailVerified: resolved.user.emailVerifiedAt != null,
       },
       membership,
       session: {
@@ -845,7 +1002,10 @@ export class AuthService {
           existingUser.id,
         )
       ) throw new InvalidWorkspaceInvitationError();
-      user = existingUser;
+      user = {
+        ...existingUser,
+        emailVerifiedAt: existingUser.emailVerifiedAt ?? now,
+      };
     } else {
       const normalizedDisplayName = validateLabel(
         displayName,
@@ -856,6 +1016,7 @@ export class AuthService {
         id: randomId(this.crypto, 'usr_', 18),
         email: invitation.email,
         normalizedEmail: invitation.normalizedEmail,
+        emailVerifiedAt: now,
         displayName: normalizedDisplayName,
         status: 'active',
         password: await createPasswordCredential(
@@ -889,6 +1050,17 @@ export class AuthService {
         invitation.id,
       ),
     });
+    const workspaceName = (await this.repository.listUserWorkspaces(user.id))
+      .find((workspace) => workspace.id === invitation.workspaceId)
+      ?.name;
+    this.notifyLifecycle({
+      kind: 'workspace_joined',
+      email: user.email,
+      displayName: user.displayName,
+      occurredAt: now,
+      workspaceName,
+      role: invitation.role,
+    });
     return this.issueSession(user.id, invitation.workspaceId);
   }
 
@@ -911,7 +1083,9 @@ export class AuthService {
       workspaceId,
       targetUserId,
     );
+    const targetUser = await this.repository.getUserById(targetUserId);
     if (!target || target.role === 'owner') throw new AuthForbiddenError();
+    if (!targetUser) throw new AuthForbiddenError();
     if (
       authorized.membership.role !== 'owner' &&
       (target.role === 'admin' || role === 'admin')
@@ -946,6 +1120,17 @@ export class AuthService {
         { role, classIds: scopedClassIds },
       ),
     });
+    this.notifyLifecycle({
+      kind: 'workspace_role_changed',
+      email: targetUser.email,
+      displayName: targetUser.displayName,
+      occurredAt: now,
+      workspaceName: authorized.session.workspaces.find(
+        (workspace) => workspace.id === workspaceId,
+      )?.name,
+      previousRole: target.role,
+      role,
+    });
     return this.repository.listWorkspaceMembers(workspaceId);
   }
 
@@ -964,7 +1149,9 @@ export class AuthService {
       workspaceId,
       targetUserId,
     );
+    const targetUser = await this.repository.getUserById(targetUserId);
     if (!target || target.role === 'owner') throw new AuthForbiddenError();
+    if (!targetUser) throw new AuthForbiddenError();
     if (
       authorized.membership.role !== 'owner' && target.role === 'admin'
     ) {
@@ -984,6 +1171,16 @@ export class AuthService {
         targetUserId,
         { previousRole: target.role },
       ),
+    });
+    this.notifyLifecycle({
+      kind: 'workspace_removed',
+      email: targetUser.email,
+      displayName: targetUser.displayName,
+      occurredAt: now,
+      workspaceName: authorized.session.workspaces.find(
+        (workspace) => workspace.id === workspaceId,
+      )?.name,
+      previousRole: target.role,
     });
     return this.repository.listWorkspaceMembers(workspaceId);
   }
@@ -1005,7 +1202,9 @@ export class AuthService {
       workspaceId,
       targetUserId,
     );
+    const targetUser = await this.repository.getUserById(targetUserId);
     if (!target || target.role === 'owner') throw new AuthForbiddenError();
+    if (!targetUser) throw new AuthForbiddenError();
     const now = this.now();
     await this.repository.transferWorkspaceOwnership({
       workspaceId,
@@ -1019,6 +1218,27 @@ export class AuthService {
         'user',
         targetUserId,
       ),
+    });
+    const workspaceName = authorized.session.workspaces.find(
+      (workspace) => workspace.id === workspaceId,
+    )?.name;
+    this.notifyLifecycle({
+      kind: 'ownership_transferred',
+      email: authorized.user.email,
+      displayName: authorized.user.displayName,
+      occurredAt: now,
+      workspaceName,
+      previousRole: 'owner',
+      role: 'admin',
+    });
+    this.notifyLifecycle({
+      kind: 'ownership_received',
+      email: targetUser.email,
+      displayName: targetUser.displayName,
+      occurredAt: now,
+      workspaceName,
+      previousRole: target.role,
+      role: 'owner',
     });
     return this.getSession(rawToken);
   }
@@ -1052,6 +1272,9 @@ export class AuthService {
     }
     await this.verifyDestructivePassword(resolved.user, password);
     const now = this.now();
+    const affectedMembers = await this.repository.listWorkspaceMembers(
+      workspaceId,
+    );
     await this.repository.deleteWorkspace({
       workspaceId,
       actorUserId: authorized.user.id,
@@ -1064,6 +1287,16 @@ export class AuthService {
         workspaceId,
       ),
     });
+    for (const member of affectedMembers) {
+      this.notifyLifecycle({
+        kind: 'workspace_deleted',
+        email: member.email,
+        displayName: member.displayName,
+        occurredAt: now,
+        workspaceName: workspace.name,
+        previousRole: member.role,
+      });
+    }
     return this.getSession(rawToken);
   }
 
@@ -1090,6 +1323,12 @@ export class AuthService {
         undefined,
         'account',
       ),
+    });
+    this.notifyLifecycle({
+      kind: 'account_deleted',
+      email: resolved.user.email,
+      displayName: resolved.user.displayName,
+      occurredAt: now,
     });
   }
 
@@ -1157,6 +1396,9 @@ export class AuthService {
       'INVALID_WORKSPACE_NAME',
     );
     const resolved = await this.resolveSession(rawToken);
+    if (resolved.user.emailVerifiedAt == null) {
+      throw new EmailVerificationRequiredError();
+    }
     const now = this.now();
     const workspaceId = randomId(this.crypto, 'ws_', 24);
     await this.repository.createWorkspaceForUser({

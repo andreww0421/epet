@@ -4,8 +4,13 @@ import { after, before, test } from 'node:test';
 import type { D1Database } from '@cloudflare/workers-types';
 import { Miniflare } from 'miniflare';
 import type { AppData } from '../src/store/types';
-import { AuthService } from '../server/auth';
 import {
+  AuthService,
+  EmailVerificationRequiredError,
+  InvalidEmailVerificationTokenError,
+} from '../server/auth';
+import {
+  InvalidWorkspaceInvitationError,
   WorkspaceConflictError,
   WorkspaceDataTooLargeError,
 } from '../server/contracts';
@@ -17,6 +22,8 @@ const migrations = [
   'migrations/0003_core_entities.sql',
   'migrations/0004_workspace_class_assignments.sql',
   'migrations/0005_workspace_invitations.sql',
+  'migrations/0006_projection_read_model.sql',
+  'migrations/0007_email_verification.sql',
 ];
 
 const splitMigrationStatements = (sql: string): string[] => {
@@ -247,6 +254,8 @@ before(async () => {
   }
   await applyMigration(fixture.database, migrations[3]);
   await applyMigration(fixture.database, migrations[4]);
+  await applyMigration(fixture.database, migrations[5]);
+  await applyMigration(fixture.database, migrations[6]);
 });
 
 after(async () => {
@@ -330,6 +339,34 @@ test('0003 backfills every core entity with tenant keys and source revision', as
     action_kind: null,
     reverses_record_id: 'discipline-1',
   });
+});
+
+test('0007 verifies existing accounts and adds the verification rate-limit scope', async () => {
+  const user = await fixture.database
+    .prepare(
+      `SELECT created_at, email_verified_at
+       FROM users
+       WHERE user_id = ?`,
+    )
+    .bind('teacher-a')
+    .first<{ created_at: number; email_verified_at: number | null }>();
+  assert.ok(user);
+  assert.equal(user.email_verified_at, user.created_at);
+
+  await fixture.database
+    .prepare(
+      `INSERT INTO auth_rate_limits (
+         scope, subject_hash, window_started_at, attempt_count, blocked_until
+       ) VALUES ('verify', 'verification-subject', 1, 1, 0)`,
+    )
+    .run();
+  const rateLimit = await fixture.database
+    .prepare(
+      `SELECT scope FROM auth_rate_limits WHERE subject_hash = ?`,
+    )
+    .bind('verification-subject')
+    .first<{ scope: string }>();
+  assert.equal(rateLimit?.scope, 'verify');
 });
 
 test('0004 backfills legacy class access and new memberships fail closed', async () => {
@@ -417,6 +454,233 @@ test('0004 backfills legacy class access and new memberships fail closed', async
       .run(),
     /invalid workspace class assignment/i,
   );
+});
+
+test('0006 verifies normalized reads, falls back on drift, and repairs projections', async () => {
+  const isolated = await createFixture(2);
+  try {
+    const source = createData('Normalized source', 31);
+    source.classes.unshift({
+      id: 'class-first-by-position',
+      name: 'Position first',
+      students: [],
+      learningEvidenceRecords: [],
+      examRecords: [],
+    });
+    source.currentClassId = 'class-first-by-position';
+    await isolated.database
+      .prepare(
+        `INSERT INTO workspaces (
+           workspace_id, revision, updated_at, data_json, name, created_at
+         ) VALUES (?, 1, ?, ?, ?, ?)`,
+      )
+      .bind(
+        'normalized-tenant',
+        1_700_000_010_000,
+        JSON.stringify(source),
+        'Normalized tenant',
+        1_700_000_010_000,
+      )
+      .run();
+    for (const migration of migrations.slice(2)) {
+      await applyMigration(isolated.database, migration);
+    }
+
+    const repository = new D1WorkspaceRepository(isolated.database);
+    const firstRead = await repository.get('normalized-tenant');
+    assert.deepEqual(firstRead.data, source);
+    assert.deepEqual(
+      firstRead.data?.classes.map((classroom) => classroom.id),
+      ['class-first-by-position', 'class-shared-id'],
+    );
+    const verified = await isolated.database
+      .prepare(
+        `SELECT reconciliation_status, source_checksum, projection_checksum
+         FROM workspace_projection_documents
+         WHERE workspace_id = ?`,
+      )
+      .bind('normalized-tenant')
+      .first<{
+        reconciliation_status: string;
+        source_checksum: string;
+        projection_checksum: string;
+      }>();
+    assert.equal(verified?.reconciliation_status, 'verified');
+    assert.equal(verified?.source_checksum, verified?.projection_checksum);
+
+    const corruptedStudent = {
+      ...source.classes[1].students[0],
+      name: 'Projection corruption',
+    };
+    await isolated.database
+      .prepare(
+        `UPDATE students
+         SET record_json = ?
+         WHERE workspace_id = ? AND class_id = ? AND student_id = ?`,
+      )
+      .bind(
+        JSON.stringify(corruptedStudent),
+        'normalized-tenant',
+        'class-shared-id',
+        'student-shared-id',
+      )
+      .run();
+    const safeFallback = await repository.get('normalized-tenant');
+    assert.equal(
+      safeFallback.data?.classes[1].students[0].name,
+      'Normalized source',
+    );
+    const mismatched = await isolated.database
+      .prepare(
+        `SELECT reconciliation_status
+         FROM workspace_projection_documents
+         WHERE workspace_id = ?`,
+      )
+      .bind('normalized-tenant')
+      .first<{ reconciliation_status: string }>();
+    assert.equal(mismatched?.reconciliation_status, 'mismatch');
+
+    const repaired = await repository.reconcileWorkspaceProjection(
+      'normalized-tenant',
+      true,
+    );
+    assert.equal(repaired.status, 'verified');
+    assert.equal(repaired.repaired, true);
+    assert.deepEqual((await repository.get('normalized-tenant')).data, source);
+
+    const report = await repository.reconcileWorkspaceProjections({
+      repair: true,
+      batchSize: 10,
+      maxBatches: 1,
+    });
+    assert.deepEqual(report, {
+      checked: 1,
+      verified: 1,
+      mismatched: 0,
+      missing: 0,
+      repaired: 0,
+      truncated: false,
+    });
+  } finally {
+    await isolated.miniflare.dispose();
+  }
+});
+
+test('D1 email verification tokens are hashed, rotated, and single-use', async () => {
+  const isolated = await createFixture();
+  try {
+    let now = 1_800_000_000_000;
+    const lifecycleKinds: string[] = [];
+    const repository = new D1WorkspaceRepository(isolated.database);
+    const auth = new AuthService(repository, {
+      now: () => now,
+      passwordIterations: 10,
+      emailVerificationRequired: true,
+      lifecycleNotifier: (delivery) => lifecycleKinds.push(delivery.kind),
+    });
+    const registration = await auth.register({
+      email: 'd1-unverified@example.test',
+      password: 'd1 unverified secure password',
+      displayName: 'D1 Unverified',
+      workspaceName: 'D1 Verification',
+      initialWorkspaceData: createData('D1 Verification Student', 14),
+    });
+    assert.equal(registration.session.user.emailVerified, false);
+    assert.ok(registration.emailVerification);
+    const workspaceId = registration.session.activeWorkspaceId;
+    assert.ok(workspaceId);
+    await assert.rejects(
+      auth.authorizeWorkspace(registration.sessionToken, workspaceId),
+      EmailVerificationRequiredError,
+    );
+
+    const persisted = await isolated.database
+      .prepare(
+        `SELECT token_hash, used_at
+         FROM email_verification_tokens
+         ORDER BY created_at`,
+      )
+      .all<{ token_hash: string; used_at: number | null }>();
+    assert.equal(persisted.results.length, 1);
+    assert.notEqual(
+      persisted.results[0].token_hash,
+      registration.emailVerification.token,
+    );
+
+    const verifiedOwnerAuth = new AuthService(repository, {
+      now: () => now,
+      passwordIterations: 10,
+    });
+    const verifiedOwner = await verifiedOwnerAuth.register({
+      email: 'd1-inviter@example.test',
+      password: 'd1 inviter secure password',
+      displayName: 'D1 Inviter',
+      workspaceName: 'D1 Invitation Guard',
+      initialWorkspaceData: createData('D1 Invitation Student', 15),
+    });
+    assert.ok(verifiedOwner.session.activeWorkspaceId);
+    const invitation = await verifiedOwnerAuth.createWorkspaceInvitation(
+      verifiedOwner.sessionToken,
+      verifiedOwner.session.activeWorkspaceId,
+      'd1-unverified@example.test',
+      'teacher',
+      ['class-shared-id'],
+    );
+    const invitationSummary = (await verifiedOwnerAuth
+      .listWorkspaceInvitations(
+        verifiedOwner.sessionToken,
+        verifiedOwner.session.activeWorkspaceId,
+      )).find((candidate) => candidate.email === 'd1-unverified@example.test');
+    assert.ok(invitationSummary);
+    await verifiedOwnerAuth.revokeWorkspaceInvitation(
+      verifiedOwner.sessionToken,
+      verifiedOwner.session.activeWorkspaceId,
+      invitationSummary.id,
+    );
+    await assert.rejects(
+      auth.acceptWorkspaceInvitation(
+        invitation.token,
+        '',
+        'd1 unverified secure password',
+      ),
+      InvalidWorkspaceInvitationError,
+    );
+    assert.equal(
+      (await repository.getUserById(registration.session.user.id))
+        ?.emailVerifiedAt,
+      null,
+    );
+
+    now += 1;
+    const rotated = await auth.requestEmailVerification(
+      registration.sessionToken,
+    );
+    assert.ok(rotated);
+    await assert.rejects(
+      auth.verifyEmail(registration.emailVerification.token),
+      InvalidEmailVerificationTokenError,
+    );
+    await auth.verifyEmail(rotated.token);
+    await assert.rejects(
+      auth.verifyEmail(rotated.token),
+      InvalidEmailVerificationTokenError,
+    );
+    assert.equal(
+      (await repository.getUserById(registration.session.user.id))
+        ?.emailVerifiedAt,
+      now,
+    );
+    assert.equal(
+      (await auth.authorizeWorkspace(
+        registration.sessionToken,
+        workspaceId,
+      )).user.emailVerified,
+      true,
+    );
+    assert.deepEqual(lifecycleKinds, ['email_verified']);
+  } finally {
+    await isolated.miniflare.dispose();
+  }
 });
 
 test('D1 invitation, member, ownership, account, and cleanup lifecycle is atomic', async () => {
@@ -564,6 +828,80 @@ test('dual-write updates one tenant without changing matching entity IDs in anot
   assert.deepEqual(
     await repository.listWorkspaceClassIds('tenant-a', 'teacher-a'),
     ['class-shared-id'],
+  );
+});
+
+test('D1 audit queries isolate tenants, filter, and paginate deterministically', async () => {
+  const repository = new D1WorkspaceRepository(fixture.database);
+  await repository.appendAuditEvent({
+    id: 'audit-query-a-1',
+    workspaceId: 'tenant-a',
+    actorUserId: 'teacher-a',
+    action: 'audit.test',
+    targetType: 'student',
+    targetId: 'student-1',
+    metadata: { sequence: 1 },
+    createdAt: 1_700_000_010_100,
+  });
+  await repository.appendAuditEvent({
+    id: 'audit-query-a-2',
+    workspaceId: 'tenant-a',
+    actorUserId: 'teacher-a',
+    action: 'audit.test',
+    targetType: 'student',
+    targetId: 'student-2',
+    metadata: { sequence: 2 },
+    createdAt: 1_700_000_010_200,
+  });
+  await repository.appendAuditEvent({
+    id: 'audit-query-a-3',
+    workspaceId: 'tenant-a',
+    actorUserId: 'teacher-a',
+    action: 'audit.test',
+    targetType: 'student',
+    targetId: 'student-3',
+    metadata: { sequence: 3 },
+    createdAt: 1_700_000_010_300,
+  });
+  await repository.appendAuditEvent({
+    id: 'audit-query-b-1',
+    workspaceId: 'tenant-b',
+    actorUserId: 'teacher-b',
+    action: 'audit.test',
+    targetType: 'student',
+    targetId: 'student-b',
+    createdAt: 1_700_000_010_400,
+  });
+
+  const firstPage = await repository.listWorkspaceAuditEvents('tenant-a', {
+    action: 'audit.test',
+    actorUserId: 'teacher-a',
+    targetType: 'student',
+    fromCreatedAt: 1_700_000_010_000,
+    toCreatedAt: 1_700_000_011_000,
+    limit: 2,
+  });
+  assert.deepEqual(
+    firstPage.map((event) => event.id),
+    ['audit-query-a-3', 'audit-query-a-2'],
+  );
+  assert.deepEqual(firstPage[0].metadata, { sequence: 3 });
+
+  const secondPage = await repository.listWorkspaceAuditEvents('tenant-a', {
+    action: 'audit.test',
+    cursor: {
+      createdAt: firstPage[1].createdAt,
+      id: firstPage[1].id,
+    },
+    limit: 2,
+  });
+  assert.deepEqual(
+    secondPage.map((event) => event.id),
+    ['audit-query-a-1'],
+  );
+  assert.equal(
+    firstPage.some((event) => event.id === 'audit-query-b-1'),
+    false,
   );
 });
 

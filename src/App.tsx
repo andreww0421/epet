@@ -8,6 +8,10 @@ import { translations } from './i18n/translations';
 import { useBackendSync } from './hooks/useBackendSync';
 import { AuthProvider, useAuth } from './auth/AuthProvider';
 import { AuthScreen } from './components/AuthScreen';
+import {
+  EmailVerificationScreen,
+  readEmailVerificationRoute,
+} from './components/EmailVerificationScreen';
 import { LegacyDataMigration } from './components/LegacyDataMigration';
 import { AccountDeletionDialog } from './components/AccountDeletionDialog';
 import {
@@ -369,6 +373,7 @@ function WorkspaceApp() {
                     readOnly={!canManage}
                     canExportFullData={canExportFullData}
                     canAdministerWorkspace={canAdminister}
+                    flushChanges={flushBackendChanges}
                   />
                 )
               : <ClassroomView />}
@@ -506,7 +511,27 @@ function WorkspaceApp() {
 }
 
 const AuthenticatedApp = () => {
-  const { status } = useAuth();
+  const { status, session } = useAuth();
+  const [verificationRoute, setVerificationRoute] = useState(
+    readEmailVerificationRoute,
+  );
+  useEffect(() => {
+    const updateRoute = () => setVerificationRoute(
+      readEmailVerificationRoute(),
+    );
+    window.addEventListener('hashchange', updateRoute);
+    window.addEventListener('popstate', updateRoute);
+    return () => {
+      window.removeEventListener('hashchange', updateRoute);
+      window.removeEventListener('popstate', updateRoute);
+    };
+  }, []);
+  if (
+    verificationRoute.active ||
+    (status === 'authenticated' && session?.user.emailVerified === false)
+  ) {
+    return <EmailVerificationScreen token={verificationRoute.token} />;
+  }
   return status === 'authenticated' ? <WorkspaceApp /> : <AuthScreen />;
 };
 

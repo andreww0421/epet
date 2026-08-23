@@ -21,11 +21,11 @@
 
 | 類別 | 現行用途 | 不應收集 |
 | --- | --- | --- |
-| 教師帳號 | 登入、工作區授權、重設密碼、稽核 | 身分證號、生日 |
+| 教師帳號 | 登入、Email 驗證、工作區授權、重設密碼、生命週期通知、稽核 | 身分證號、生日 |
 | 學生顯示名稱 | 班級辨識、個人分析與報告 | 學生 Email、電話、住址、政府識別碼 |
 | 教學紀錄 | 成績、評語、能力證據、趨勢與弱項 | 醫療診斷、家庭財務、與教學無關的敏感備註 |
 | 遊戲化紀錄 | 積分、RP、心情、寵物、獎勵與活動 | 廣告識別碼、跨站追蹤資料 |
-| 安全事件 | 登入、登出、密碼重設、資料異動 actor | 明碼密碼、raw session/reset token |
+| 安全事件 | 登入、登出、Email 驗證、密碼重設、成員／帳號異動 actor | 明碼密碼、raw session/reset/verification/Turnstile token |
 
 遊戲積分不能直接換算正式成績；能力分析只使用明確的考試與學習證據。
 自由文字評語應提醒教師避免輸入醫療、家庭或其他非必要敏感個資。
@@ -34,9 +34,9 @@
 
 | 處理者 | 用途 | 主要資料 | 控制 |
 | --- | --- | --- | --- |
-| Cloudflare Workers / D1 | API、身分驗證、正式資料保存 | 帳號與工作區內容 | 租戶 membership、RBAC、revision、稽核事件 |
-| Resend | 忘記密碼郵件 | 教師 Email、顯示名稱、一次性重設連結 | 只在設定 secret 後啟用；不寄學生資料 |
-| GitHub Pages | 前端靜態檔案 | 原則上不應收到 API 資料 | API 跨站呼叫；`Referrer-Policy: no-referrer` |
+| Cloudflare Workers / Static Assets / D1 | 同站前端、API、身分驗證、正式資料保存 | 帳號與工作區內容 | HttpOnly cookie、Origin／CSRF、租戶 membership、RBAC、revision、稽核事件 |
+| Cloudflare Turnstile | 註冊、登入與忘記密碼的 bot 防護 | 瀏覽器／裝置訊號、IP、短效 challenge token | 僅在身分驗證畫面載入；後端驗 action、hostname 與 IP；token 不持久保存 |
+| Resend | 密碼重設、Email 驗證、工作區邀請與帳號生命週期通知 | 教師 Email、顯示名稱、一次性連結、角色／工作區安全事件 | 只在設定 secret 後啟用；不寄學生資料或密碼 |
 
 新增錯誤監控、產品分析、客服、付款或 AI 服務前，必須先更新此清單、資料流、
 保留期限與合約角色。不得把學生姓名、評語或成績送入未核准的分析事件。
@@ -49,10 +49,11 @@
 - 工作區只保留最近 25 份 revision 快照。
 - 刪除學生會同步移除現行學習證據、考試結果、魔王貢獻與攻擊次數。
 - 刪除學生會將該 student ID 與相關紀錄從所有保留的 D1／JSON revision 快照移除。
-- session 與 reset token 只在資料庫保存雜湊值。
-- 到期／撤銷 session、reset token、rate-limit 與邀請由 Worker cron 與 Node 排程每日清理。
+- session、reset、Email verification 與 invitation token 只在資料庫保存雜湊值；Turnstile token 不寫入應用程式資料庫。
+- 到期／撤銷 session、reset／verification token、rate-limit 與邀請由 Worker cron 與 Node 排程每日清理。
 - owner 可在密碼與工作區名雙重確認後刪除工作區；帳號刪除前必須先處理所有 owner 身分。
-- `admin` 可匯出完整工作區，也可透過單生 API 匯出只含該生、其學習證據、考試結果與魔王參與的限縮資料集。
+- owner／admin 可在資料治理控制台匯出只含單一學生、其學習證據、考試結果與魔王參與的限縮資料集；下載檔名只使用 student ID，不放學生姓名。
+- owner／admin 可依動作、操作人、對象與日期查詢 workspace audit；查詢本身會留下 audit event，回應端會遞迴排除 token、password、session、cookie 等敏感 metadata key。
 
 仍待完成或核定的公開上架閘門：
 
@@ -71,8 +72,8 @@
 5. 執行匯出、更正、限制或刪除後，保存操作證明與例外保留依據。
 6. 以驗證過的安全通道交付，不使用公開連結或未加密附件。
 
-單一學生匯出已有 admin-only API，但仍缺管理 UI、案件追蹤、安全交付與完整刪除流程，
-這些仍是公開上架 blocker。收到真實請求時應由工程與校方共同審核，不可把整班 JSON 直接寄出。
+單一學生匯出已有 admin-only API 與管理 UI；案件追蹤、安全交付、請求人驗證與完整刪除流程仍是公開上架 blocker。
+收到真實請求時應由工程與校方共同審核，不可把整班 JSON 直接寄出。
 
 ## 事件處理
 
@@ -89,5 +90,6 @@
 - 匿名、跨租戶、viewer 寫入與角色矩陣測試。
 - 存在／不存在帳號忘記密碼的一致回應；reset 一次性並撤銷舊 session。
 - 單一學生匯出不含其他學生；刪除覆蓋 live state、revision 與備份策略。
+- audit 查詢需驗證 admin-only、租戶隔離、伺服器端篩選／cursor 分頁、敏感 metadata 排除與查詢留痕。
 - D1 備份還原演練及明確 RPO／RTO。
 - 資料處理者、保留期限、正式隱私聲明與校方資料處理協議完成核准。

@@ -9,12 +9,19 @@ import {
 } from '../server/api';
 import { createEpetServer } from '../server/app';
 import type {
+  AccountLifecycleDelivery,
+  EmailVerificationDelivery,
   PasswordResetDelivery,
   WorkspaceInvitationDelivery,
 } from '../server/auth';
 import type { WorkspaceRole } from '../server/contracts';
 import { JsonWorkspaceRepository } from '../server/repository';
 import { normalizeAppData } from '../src/store/utils';
+import {
+  createAccountLifecycleMailer,
+  createEmailVerificationMailer,
+} from '../worker/passwordResetEmail';
+import { createTurnstileVerifier } from '../worker/turnstile';
 
 const LEGACY_WORKSPACE_ID = 'ws_legacy_workspace_0123456789abcdef';
 const OWNER_EMAIL = 'owner@example.test';
@@ -62,6 +69,7 @@ type AuthEnvelope = {
       id: string;
       email: string;
       role: string;
+      emailVerified: boolean;
     };
     workspaces: Array<{
       id: string;
@@ -82,33 +90,74 @@ type ApiRequestInit = RequestInit & {
   workspaceId?: string;
 };
 
+const testApiClients = new Map<
+  string,
+  { cookie: string; csrfToken: string }
+>();
+
 const createRequester = (
   handler: ReturnType<typeof createApiHandler>,
-) => (
-  path: string,
-  init: ApiRequestInit = {},
 ) => {
-  const {
-    sessionToken,
-    workspaceId,
-    headers: initialHeaders,
-    ...requestInit
-  } = init;
-  const headers = new Headers(initialHeaders);
-  headers.set('x-forwarded-for', '127.0.0.1');
-  if (requestInit.body != null && !headers.has('content-type')) {
-    headers.set('content-type', 'application/json');
-  }
-  if (sessionToken) {
-    headers.set('authorization', `Bearer ${sessionToken}`);
-  }
-  if (workspaceId) {
-    headers.set('x-epet-workspace', workspaceId);
-  }
-  return handler(new Request(`http://localhost${path}`, {
-    ...requestInit,
-    headers,
-  }));
+  const cookieValue = (header: string, name: string) =>
+    header.match(new RegExp(`${name}=([^;,\\s]+)`))?.[1] ?? '';
+
+  return async (
+    path: string,
+    init: ApiRequestInit = {},
+  ) => {
+    const {
+      sessionToken,
+      workspaceId,
+      headers: initialHeaders,
+      ...requestInit
+    } = init;
+    const headers = new Headers(initialHeaders);
+    headers.set('x-forwarded-for', '127.0.0.1');
+    const method = (requestInit.method ?? 'GET').toUpperCase();
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && !headers.has('origin')) {
+      headers.set('origin', 'http://localhost');
+    }
+    if (requestInit.body != null && !headers.has('content-type')) {
+      headers.set('content-type', 'application/json');
+    }
+    if (sessionToken) {
+      const client = testApiClients.get(sessionToken);
+      assert.ok(client, 'test client session context should exist');
+      headers.set('cookie', client.cookie);
+      if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+        headers.set('x-csrf-token', client.csrfToken);
+      }
+    }
+    if (workspaceId) {
+      headers.set('x-epet-workspace', workspaceId);
+    }
+    const response = await handler(new Request(`http://localhost${path}`, {
+      ...requestInit,
+      headers,
+    }));
+    const setCookie = response.headers.get('set-cookie') ?? '';
+    const sessionCookie = cookieValue(setCookie, '__Host-epet_session');
+    if (!sessionCookie) return response;
+    const body = await response.clone().json().catch(() => null) as
+      | Record<string, unknown>
+      | null;
+    const csrfToken = typeof body?.csrfToken === 'string'
+      ? body.csrfToken
+      : '';
+    const csrfCookie = cookieValue(setCookie, '__Host-epet_csrf');
+    if (!body?.session || !csrfToken || !csrfCookie) return response;
+    const clientId = `client_${csrfToken}`;
+    testApiClients.set(clientId, {
+      cookie:
+        `__Host-epet_session=${sessionCookie}; ` +
+        `__Host-epet_csrf=${csrfCookie}`,
+      csrfToken,
+    });
+    return Response.json(
+      { ...body, sessionToken: clientId },
+      { status: response.status, headers: response.headers },
+    );
+  };
 };
 
 const createHandlerOptions = (
@@ -350,6 +399,125 @@ const createPrivacyState = () => {
   };
 };
 
+test('same-origin HttpOnly sessions enforce Origin and double-submit CSRF', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'epet-cookie-test-'));
+  const repository = new JsonWorkspaceRepository(join(directory, 'data.json'));
+  const handler = createApiHandler(repository, {
+    allowLocalWorkspaceIds: true,
+    auth: { passwordIterations: 10 },
+    registrationEnabled: true,
+  });
+  const cookieValue = (header: string, name: string) =>
+    header.match(new RegExp(`${name}=([^;,\\s]+)`))?.[1] ?? '';
+  try {
+    const missingOrigin = await handler(new Request(
+      'http://localhost/api/v1/auth/login',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: OWNER_EMAIL, password: OWNER_PASSWORD }),
+      },
+    ));
+    assert.equal(missingOrigin.status, 403);
+    assert.deepEqual(await missingOrigin.json(), { error: 'ORIGIN_REQUIRED' });
+
+    const crossOrigin = await handler(new Request(
+      'http://localhost/api/v1/auth/login',
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          origin: 'https://attacker.example.test',
+        },
+        body: JSON.stringify({ email: OWNER_EMAIL, password: OWNER_PASSWORD }),
+      },
+    ));
+    assert.equal(crossOrigin.status, 403);
+    assert.deepEqual(await crossOrigin.json(), {
+      error: 'ORIGIN_NOT_ALLOWED',
+    });
+
+    const register = await handler(new Request(
+      'http://localhost/api/v1/auth/register',
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          origin: 'http://localhost',
+        },
+        body: JSON.stringify({
+          displayName: 'Cookie Owner',
+          email: OWNER_EMAIL,
+          password: OWNER_PASSWORD,
+          workspaceName: 'Cookie Workspace',
+          initialWorkspaceData: createState(),
+        }),
+      },
+    ));
+    assert.equal(register.status, 201);
+    const authBody = await register.json() as {
+      session: AuthEnvelope['session'];
+      csrfToken: string;
+      sessionToken?: string;
+    };
+    assert.equal(authBody.sessionToken, undefined);
+    assert.match(authBody.csrfToken, /^[A-Za-z0-9_-]{43}$/);
+    const setCookie = register.headers.get('set-cookie') ?? '';
+    assert.match(
+      setCookie,
+      /__Host-epet_session=[^;]+;[^,]*HttpOnly; Secure; SameSite=Lax/,
+    );
+    assert.match(setCookie, /__Host-epet_csrf=[^;]+/);
+    const sessionCookie = cookieValue(setCookie, '__Host-epet_session');
+    const csrfCookie = cookieValue(setCookie, '__Host-epet_csrf');
+    const cookie =
+      `__Host-epet_session=${sessionCookie}; ` +
+      `__Host-epet_csrf=${csrfCookie}`;
+    const workspaceId = authBody.session.activeWorkspaceId;
+    assert.ok(workspaceId);
+
+    const bearerOnly = await handler(new Request(
+      'http://localhost/api/v1/auth/session',
+      { headers: { authorization: `Bearer ${sessionCookie}` } },
+    ));
+    assert.equal(bearerOnly.status, 401);
+
+    const missingCsrf = await handler(new Request(
+      'http://localhost/api/v1/state',
+      {
+        method: 'PUT',
+        headers: {
+          'content-type': 'application/json',
+          cookie,
+          origin: 'http://localhost',
+          'x-epet-workspace': workspaceId,
+        },
+        body: JSON.stringify({ baseRevision: 1, data: createState() }),
+      },
+    ));
+    assert.equal(missingCsrf.status, 403);
+    assert.deepEqual(await missingCsrf.json(), { error: 'CSRF_INVALID' });
+
+    const validWrite = await handler(new Request(
+      'http://localhost/api/v1/state',
+      {
+        method: 'PUT',
+        headers: {
+          'content-type': 'application/json',
+          cookie,
+          origin: 'http://localhost',
+          'x-csrf-token': authBody.csrfToken,
+          'x-epet-workspace': workspaceId,
+        },
+        body: JSON.stringify({ baseRevision: 1, data: createState() }),
+      },
+    ));
+    assert.equal(validWrite.status, 200);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('authenticated API preserves owner workflows and enforces tenant isolation', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'epet-server-test-'));
   const dataFile = join(directory, 'workspaces.json');
@@ -375,8 +543,12 @@ test('authenticated API preserves owner workflows and enforces tenant isolation'
       ok: true,
       service: 'epet-api',
       version: 1,
+      authenticationEnabled: true,
       registrationEnabled: true,
       invitationEnabled: false,
+      emailVerificationEnabled: false,
+      lifecycleNotificationsEnabled: false,
+      botProtectionEnabled: false,
     });
 
     const preflightResponse = await request('/api/v1/state', {
@@ -388,7 +560,7 @@ test('authenticated API preserves owner workflows and enforces tenant isolation'
     assert.equal(preflightResponse.status, 204);
     assert.match(
       preflightResponse.headers.get('access-control-allow-headers') ?? '',
-      /authorization/,
+      /x-csrf-token/,
     );
 
     const anonymousRead = await request('/api/v1/state', {
@@ -1102,8 +1274,12 @@ test('health reports when public registration is disabled', async () => {
       ok: true,
       service: 'epet-api',
       version: 1,
+      authenticationEnabled: true,
       registrationEnabled: false,
       invitationEnabled: false,
+      emailVerificationEnabled: false,
+      lifecycleNotificationsEnabled: false,
+      botProtectionEnabled: false,
     });
 
     const registrationResponse = await request('/api/v1/auth/register', {
@@ -1124,14 +1300,343 @@ test('health reports when public registration is disabled', async () => {
   }
 });
 
+test('email verification and bot protection fail closed without exposing raw tokens', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'epet-verification-test-'));
+  const dataFile = join(directory, 'workspaces.json');
+  const passwordDeliveries: PasswordResetDelivery[] = [];
+  const verificationDeliveries: EmailVerificationDelivery[] = [];
+  const lifecycleDeliveries: AccountLifecycleDelivery[] = [];
+  const botChecks: Array<{
+    token: string;
+    action: string;
+    remoteIp?: string;
+    expectedHostname: string;
+  }> = [];
+  const backgroundTasks: Promise<void>[] = [];
+  const repository = new JsonWorkspaceRepository(dataFile);
+  const request = createRequester(createApiHandler(repository, {
+    ...createHandlerOptions(passwordDeliveries, backgroundTasks),
+    accountLifecycleMailer: async (delivery) => {
+      lifecycleDeliveries.push(delivery);
+    },
+    botChallengeVerifier: async (input) => {
+      botChecks.push(input);
+      return input.token === `${input.action}-ok`;
+    },
+    botProtectionRequired: true,
+    clientIp: () => '198.51.100.42',
+    emailVerificationMailer: async (delivery) => {
+      verificationDeliveries.push(delivery);
+    },
+    emailVerificationRequired: true,
+    turnstileSiteKey: 'test-site-key',
+  }));
+
+  try {
+    const health = await request('/api/v1/health');
+    assert.deepEqual(await health.json(), {
+      ok: true,
+      service: 'epet-api',
+      version: 1,
+      authenticationEnabled: true,
+      registrationEnabled: true,
+      invitationEnabled: false,
+      emailVerificationEnabled: true,
+      lifecycleNotificationsEnabled: true,
+      botProtectionEnabled: true,
+      turnstileSiteKey: 'test-site-key',
+    });
+
+    const missingChallenge = await request('/api/v1/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        displayName: 'Verified Owner',
+        email: 'verified-owner@example.test',
+        password: OWNER_PASSWORD,
+        workspaceName: 'Verified Workspace',
+      }),
+    });
+    assert.equal(missingChallenge.status, 403);
+    assert.deepEqual(await missingChallenge.json(), {
+      error: 'BOT_CHALLENGE_FAILED',
+    });
+
+    const registration = await request('/api/v1/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        displayName: 'Verified Owner',
+        email: 'verified-owner@example.test',
+        password: OWNER_PASSWORD,
+        workspaceName: 'Verified Workspace',
+        turnstileToken: 'register-ok',
+      }),
+    });
+    assert.equal(registration.status, 201);
+    const owner = await registration.json() as AuthEnvelope;
+    assert.equal(owner.session.user.emailVerified, false);
+    assert.equal('emailVerification' in owner, false);
+    assert.ok(owner.session.activeWorkspaceId);
+    await Promise.all(backgroundTasks);
+    assert.equal(verificationDeliveries.length, 1);
+    const firstToken = verificationDeliveries[0].token;
+    assert.equal((await readFile(dataFile, 'utf8')).includes(firstToken), false);
+
+    const blockedWorkspaceRead = await request('/api/v1/state', {
+      sessionToken: owner.sessionToken,
+      workspaceId: owner.session.activeWorkspaceId ?? undefined,
+    });
+    assert.equal(blockedWorkspaceRead.status, 403);
+    assert.deepEqual(await blockedWorkspaceRead.json(), {
+      error: 'EMAIL_VERIFICATION_REQUIRED',
+    });
+
+    const loginWithoutChallenge = await request('/api/v1/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: 'verified-owner@example.test',
+        password: OWNER_PASSWORD,
+      }),
+    });
+    assert.equal(loginWithoutChallenge.status, 403);
+
+    const login = await request('/api/v1/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: 'verified-owner@example.test',
+        password: OWNER_PASSWORD,
+        turnstileToken: 'login-ok',
+      }),
+    });
+    assert.equal(login.status, 200);
+
+    const forgotWithoutChallenge = await request(
+      '/api/v1/auth/password/forgot',
+      {
+        method: 'POST',
+        body: JSON.stringify({ email: 'verified-owner@example.test' }),
+      },
+    );
+    assert.equal(forgotWithoutChallenge.status, 403);
+
+    const forgot = await request('/api/v1/auth/password/forgot', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: 'verified-owner@example.test',
+        turnstileToken: 'forgot-ok',
+      }),
+    });
+    assert.equal(forgot.status, 202);
+
+    const resend = await request('/api/v1/auth/email/resend', {
+      method: 'POST',
+      sessionToken: owner.sessionToken,
+    });
+    assert.equal(resend.status, 202);
+    await Promise.all(backgroundTasks);
+    assert.equal(verificationDeliveries.length, 2);
+    const currentToken = verificationDeliveries[1].token;
+    assert.notEqual(currentToken, firstToken);
+
+    const invalidated = await request('/api/v1/auth/email/verify', {
+      method: 'POST',
+      body: JSON.stringify({ token: firstToken }),
+    });
+    assert.equal(invalidated.status, 400);
+
+    const verified = await request('/api/v1/auth/email/verify', {
+      method: 'POST',
+      body: JSON.stringify({ token: currentToken }),
+    });
+    assert.equal(verified.status, 200);
+    const replayed = await request('/api/v1/auth/email/verify', {
+      method: 'POST',
+      body: JSON.stringify({ token: currentToken }),
+    });
+    assert.equal(replayed.status, 400);
+
+    await Promise.all(backgroundTasks);
+    assert.ok(lifecycleDeliveries.some(
+      (delivery) => delivery.kind === 'email_verified' &&
+        delivery.email === 'verified-owner@example.test',
+    ));
+    const session = await request('/api/v1/auth/session', {
+      sessionToken: owner.sessionToken,
+    });
+    assert.equal(session.status, 200);
+    const sessionBody = await session.json() as { session: AuthEnvelope['session'] };
+    assert.equal(sessionBody.session.user.emailVerified, true);
+    const allowedWorkspaceRead = await request('/api/v1/state', {
+      sessionToken: owner.sessionToken,
+      workspaceId: owner.session.activeWorkspaceId ?? undefined,
+    });
+    assert.equal(allowedWorkspaceRead.status, 200);
+
+    assert.equal(passwordDeliveries.length, 1);
+    const passwordReset = await request('/api/v1/auth/password/reset', {
+      method: 'POST',
+      body: JSON.stringify({
+        token: passwordDeliveries[0].token,
+        password: 'replacement owner password',
+      }),
+    });
+    assert.equal(passwordReset.status, 200);
+    await Promise.all(backgroundTasks);
+    assert.ok(lifecycleDeliveries.some(
+      (delivery) => delivery.kind === 'password_changed',
+    ));
+
+    assert.deepEqual(
+      botChecks.map(({ action, remoteIp, expectedHostname }) => ({
+        action,
+        remoteIp,
+        expectedHostname,
+      })),
+      [
+        { action: 'register', remoteIp: '198.51.100.42', expectedHostname: 'localhost' },
+        { action: 'login', remoteIp: '198.51.100.42', expectedHostname: 'localhost' },
+        { action: 'forgot', remoteIp: '198.51.100.42', expectedHostname: 'localhost' },
+      ],
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('Turnstile Siteverify pins secret, action, hostname, and remote IP', async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+  let siteverifyResult: Record<string, unknown> = {
+    success: true,
+    action: 'register',
+    hostname: 'teacher.example.test',
+  };
+  globalThis.fetch = (async (input, init) => {
+    requests.push({
+      url: String(input),
+      body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+    });
+    return Response.json(siteverifyResult);
+  }) as typeof fetch;
+
+  try {
+    assert.equal(createTurnstileVerifier({}), undefined);
+    const verifier = createTurnstileVerifier({
+      TURNSTILE_SECRET_KEY: 'server-only-secret',
+    });
+    assert.ok(verifier);
+    assert.equal(await verifier({
+      token: 'browser-challenge-token',
+      action: 'register',
+      remoteIp: '198.51.100.45',
+      expectedHostname: 'teacher.example.test',
+    }), true);
+    assert.equal(
+      requests[0].url,
+      'https://challenges.cloudflare.com/turnstile/v0/siteverify',
+    );
+    assert.equal(requests[0].body.secret, 'server-only-secret');
+    assert.equal(requests[0].body.response, 'browser-challenge-token');
+    assert.equal(requests[0].body.remoteip, '198.51.100.45');
+    assert.match(String(requests[0].body.idempotency_key), /^[0-9a-f-]{36}$/i);
+
+    siteverifyResult = {
+      success: true,
+      action: 'login',
+      hostname: 'teacher.example.test',
+    };
+    assert.equal(await verifier({
+      token: 'wrong-action-token',
+      action: 'register',
+      expectedHostname: 'teacher.example.test',
+    }), false);
+    siteverifyResult = {
+      success: true,
+      action: 'register',
+      hostname: 'attacker.example.test',
+    };
+    assert.equal(await verifier({
+      token: 'wrong-hostname-token',
+      action: 'register',
+      expectedHostname: 'teacher.example.test',
+    }), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('verification and lifecycle mailers use fragment links and idempotency keys', async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: Array<{ headers: Headers; body: Record<string, unknown> }> = [];
+  globalThis.fetch = (async (_input, init) => {
+    requests.push({
+      headers: new Headers(init?.headers),
+      body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+    });
+    return new Response(null, { status: 202 });
+  }) as typeof fetch;
+
+  try {
+    const env = {
+      RESEND_API_KEY: 'resend-test-key',
+      PASSWORD_RESET_FROM: 'ePet <security@example.test>',
+      PUBLIC_APP_URL: 'https://teacher.example.test/',
+    };
+    const verificationMailer = createEmailVerificationMailer(env);
+    const lifecycleMailer = createAccountLifecycleMailer(env);
+    assert.ok(verificationMailer);
+    assert.ok(lifecycleMailer);
+    await verificationMailer({
+      email: 'owner@example.test',
+      displayName: 'Owner <Teacher>',
+      token: 'verification_token-_123',
+      expiresAt: Date.now() + 3_600_000,
+    });
+    await lifecycleMailer({
+      eventId: 'mail_event_123',
+      kind: 'ownership_received',
+      email: 'owner@example.test',
+      displayName: 'Owner <Teacher>',
+      occurredAt: 1_800_000_000_000,
+      workspaceName: '安全班級',
+      previousRole: 'teacher',
+      role: 'owner',
+    });
+
+    assert.match(
+      String(requests[0].body.text),
+      /https:\/\/teacher\.example\.test\/#\/verify-email\?token=/,
+    );
+    assert.doesNotMatch(
+      String(requests[0].body.text),
+      /teacher\.example\.test\/\?token=/,
+    );
+    assert.match(
+      requests[0].headers.get('idempotency-key') ?? '',
+      /^epet-email-verification-[A-Za-z0-9_-]{43}$/,
+    );
+    assert.equal(
+      requests[1].headers.get('idempotency-key'),
+      'epet-lifecycle-mail_event_123',
+    );
+    assert.match(String(requests[1].body.subject), /擁有者/);
+    assert.doesNotMatch(String(requests[1].body.text), /學生|成績|評語/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('workspace invitations and destructive lifecycle operations enforce ownership', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'epet-lifecycle-test-'));
   const dataFile = join(directory, 'workspaces.json');
   const backgroundTasks: Promise<void>[] = [];
   const invitationDeliveries: WorkspaceInvitationDelivery[] = [];
+  const lifecycleDeliveries: AccountLifecycleDelivery[] = [];
   const repository = new JsonWorkspaceRepository(dataFile);
   const request = createRequester(createApiHandler(repository, {
     ...createHandlerOptions([], backgroundTasks),
+    accountLifecycleMailer: async (delivery) => {
+      lifecycleDeliveries.push(delivery);
+    },
     workspaceInvitationMailer: async (delivery) => {
       invitationDeliveries.push(delivery);
     },
@@ -1361,6 +1866,19 @@ test('workspace invitations and destructive lifecycle operations enforce ownersh
     assert.equal(recreated.session.workspaces.length, 1);
     assert.equal(recreated.session.workspaces[0].name, 'Recreated Workspace');
     assert.equal(recreated.session.workspaces[0].role, 'owner');
+    await Promise.all(backgroundTasks);
+    assert.deepEqual(
+      lifecycleDeliveries.map((delivery) => delivery.kind),
+      [
+        'workspace_joined',
+        'workspace_role_changed',
+        'ownership_transferred',
+        'ownership_received',
+        'workspace_removed',
+        'account_deleted',
+        'workspace_deleted',
+      ],
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -1390,7 +1908,10 @@ test('Node server requires explicit registration opt-in and ignores spoofed clie
       `${disabledBaseUrl}/api/v1/auth/register`,
       {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          origin: disabledBaseUrl,
+        },
         body: JSON.stringify(registrationBody),
       },
     );
@@ -1412,7 +1933,10 @@ test('Node server requires explicit registration opt-in and ignores spoofed clie
       `${enabledBaseUrl}/api/v1/auth/register`,
       {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          origin: enabledBaseUrl,
+        },
         body: JSON.stringify(registrationBody),
       },
     );
@@ -1424,6 +1948,7 @@ test('Node server requires explicit registration opt-in and ignores spoofed clie
         headers: {
           'cf-connecting-ip': `198.51.100.${attempt + 1}`,
           'content-type': 'application/json',
+          origin: enabledBaseUrl,
           'x-epet-transport-client': `spoof-${attempt}`,
           'x-forwarded-for': `203.0.113.${attempt + 1}`,
           'x-real-ip': `192.0.2.${attempt + 1}`,
@@ -1442,6 +1967,7 @@ test('Node server requires explicit registration opt-in and ignores spoofed clie
         headers: {
           'cf-connecting-ip': '203.0.113.250',
           'content-type': 'application/json',
+          origin: enabledBaseUrl,
           'x-epet-transport-client': 'spoof-final',
           'x-forwarded-for': '203.0.113.251',
           'x-real-ip': '203.0.113.252',
@@ -1577,6 +2103,7 @@ test('revision recovery and student privacy exports enforce admin tenant boundar
       { path: '/api/v1/revisions/1/restore', method: 'POST' },
       { path: '/api/v1/privacy/export', method: 'GET' },
       { path: studentExportPath, method: 'GET' },
+      { path: '/api/v1/audit', method: 'GET' },
     ] as const;
 
     for (const protectedRequest of protectedRequests) {
@@ -1862,6 +2389,113 @@ test('revision recovery and student privacy exports enforce admin tenant boundar
         event.targetId === 'student-a' &&
         event.metadata?.classId === 'class-a' &&
         event.metadata?.revision === 3,
+    ));
+
+    await repository.appendAuditEvent({
+      id: 'evt_sensitive_audit_fixture',
+      workspaceId: LEGACY_WORKSPACE_ID,
+      actorUserId: owner.session.user.id,
+      action: 'security.test',
+      targetType: 'workspace',
+      targetId: LEGACY_WORKSPACE_ID,
+      metadata: {
+        safeField: 'visible',
+        password: 'must-not-leave-server',
+        nested: {
+          note: 'retained',
+          sessionToken: 'must-not-leave-server',
+        },
+      },
+      createdAt: Date.now(),
+    });
+
+    const invalidAuditQuery = await adminRequest('/api/v1/audit?limit=0', {
+      sessionToken: owner.sessionToken,
+      workspaceId: LEGACY_WORKSPACE_ID,
+    });
+    assert.equal(invalidAuditQuery.status, 400);
+    assert.deepEqual(await invalidAuditQuery.json(), {
+      error: 'INVALID_AUDIT_QUERY',
+    });
+
+    const filteredAuditResponse = await adminRequest(
+      '/api/v1/audit?action=security.test&limit=5',
+      {
+        sessionToken: owner.sessionToken,
+        workspaceId: LEGACY_WORKSPACE_ID,
+        headers: { 'x-request-id': 'audit-query-request' },
+      },
+    );
+    assert.equal(filteredAuditResponse.status, 200);
+    const filteredAudit = await filteredAuditResponse.json() as {
+      events: Array<{
+        action: string;
+        workspaceId?: string;
+        metadata?: Record<string, unknown>;
+      }>;
+      nextCursor?: string;
+    };
+    assert.equal(filteredAudit.events.length, 1);
+    assert.equal(filteredAudit.events[0].action, 'security.test');
+    assert.equal(filteredAudit.events[0].workspaceId, LEGACY_WORKSPACE_ID);
+    assert.equal(filteredAudit.events[0].metadata?.safeField, 'visible');
+    assert.equal(filteredAudit.events[0].metadata?.password, undefined);
+    assert.deepEqual(filteredAudit.events[0].metadata?.nested, {
+      note: 'retained',
+    });
+    assert.equal(filteredAudit.nextCursor, undefined);
+
+    const firstAuditPageResponse = await adminRequest(
+      '/api/v1/audit?limit=2',
+      {
+        sessionToken: owner.sessionToken,
+        workspaceId: LEGACY_WORKSPACE_ID,
+      },
+    );
+    assert.equal(firstAuditPageResponse.status, 200);
+    const firstAuditPage = await firstAuditPageResponse.json() as {
+      events: Array<{ id: string; workspaceId?: string }>;
+      nextCursor?: string;
+    };
+    assert.equal(firstAuditPage.events.length, 2);
+    assert.ok(firstAuditPage.nextCursor);
+    assert.ok(firstAuditPage.events.every(
+      (event) => event.workspaceId === LEGACY_WORKSPACE_ID,
+    ));
+
+    const secondAuditPageResponse = await adminRequest(
+      `/api/v1/audit?limit=2&cursor=${encodeURIComponent(
+        firstAuditPage.nextCursor ?? '',
+      )}`,
+      {
+        sessionToken: owner.sessionToken,
+        workspaceId: LEGACY_WORKSPACE_ID,
+      },
+    );
+    assert.equal(secondAuditPageResponse.status, 200);
+    const secondAuditPage = await secondAuditPageResponse.json() as {
+      events: Array<{ id: string }>;
+    };
+    assert.equal(
+      secondAuditPage.events.some((event) =>
+        firstAuditPage.events.some((first) => first.id === event.id)
+      ),
+      false,
+    );
+
+    const databaseAfterAuditQuery = JSON.parse(
+      await readFile(dataFile, 'utf8'),
+    ) as {
+      auditEvents: Array<{
+        action: string;
+        metadata?: Record<string, unknown>;
+      }>;
+    };
+    assert.ok(databaseAfterAuditQuery.auditEvents.some(
+      (event) =>
+        event.action === 'audit.query' &&
+        event.metadata?.requestId === 'audit-query-request' &&
+        event.metadata?.action === 'security.test',
     ));
   } finally {
     await rm(directory, { recursive: true, force: true });

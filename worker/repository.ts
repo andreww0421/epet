@@ -2,7 +2,12 @@ import type {
   D1Database,
   D1PreparedStatement,
 } from '@cloudflare/workers-types';
-import type { AppData } from '../src/store/types';
+import type {
+  AppData,
+  ClassData,
+  ExamRecord,
+  Student,
+} from '../src/store/types';
 import {
   findPermanentlyDeletedStudentIds,
   purgeStudentsFromWorkspaceData,
@@ -25,11 +30,13 @@ import {
   type AuthUserRecord,
   type ClaimLegacyWorkspaceInput,
   type ConsumeAuthRateLimitInput,
+  type ConsumeEmailVerificationInput,
   type ConsumePasswordResetInput,
   type CreateUserWithWorkspaceInput,
   type CreateWorkspaceForUserInput,
   type DeleteUserInput,
   type DeleteWorkspaceInput,
+  type EmailVerificationTokenRecord,
   type PasswordResetTokenRecord,
   type StoredWorkspace,
   type UserWorkspaceAccess,
@@ -43,6 +50,7 @@ import {
   type WorkspaceRepository,
   type WorkspaceRevisionRecord,
   type WorkspaceRevisionSnapshot,
+  type WorkspaceAuditQuery,
   type WorkspaceWriteContext,
 } from '../server/contracts';
 
@@ -55,10 +63,58 @@ type WorkspaceRow = {
   data_json: string;
 };
 
+type WorkspaceMetadataRow = Omit<WorkspaceRow, 'data_json'>;
+
+type ProjectionStatus = 'pending' | 'verified' | 'mismatch';
+
+type ProjectionDocumentRow = {
+  workspace_id: string;
+  source_revision: number;
+  root_json: string;
+  reconciliation_status: ProjectionStatus;
+  source_checksum: string | null;
+  projection_checksum: string | null;
+  reconciled_at: number | null;
+  details_json: string;
+};
+
+type ProjectionRecordRow = {
+  class_id: string;
+  student_id?: string;
+  exam_id?: string;
+  sort_index: number;
+  record_json: string;
+};
+
+export type WorkspaceReadMode = 'normalized' | 'verify' | 'blob';
+
+export type D1WorkspaceRepositoryOptions = {
+  readMode?: WorkspaceReadMode;
+};
+
+export type WorkspaceProjectionReconciliationResult = {
+  workspaceId: string;
+  revision: number;
+  status: 'verified' | 'mismatch' | 'missing';
+  repaired: boolean;
+  expectedCounts?: Record<string, number>;
+  actualCounts?: Record<string, number>;
+};
+
+export type WorkspaceProjectionReconciliationReport = {
+  checked: number;
+  verified: number;
+  mismatched: number;
+  missing: number;
+  repaired: number;
+  truncated: boolean;
+};
+
 type UserRow = {
   user_id: string;
   email: string;
   email_normalized: string;
+  email_verified_at: number | null;
   display_name: string;
   status: AuthUserRecord['status'];
   password_algorithm: AuthUserRecord['password']['algorithm'];
@@ -68,6 +124,17 @@ type UserRow = {
   created_at: number;
   updated_at: number;
   password_changed_at: number;
+};
+
+type AuditEventRow = {
+  event_id: string;
+  workspace_id: string | null;
+  actor_user_id: string | null;
+  action: string;
+  target_type: string | null;
+  target_id: string | null;
+  metadata_json: string;
+  created_at: number;
 };
 
 type MembershipRow = {
@@ -149,12 +216,88 @@ const decodeWorkspace = (row: WorkspaceRow | null): StoredWorkspace => {
   };
 };
 
+const canonicalJson = (value: unknown): string => {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value) ?? 'null';
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(',')}]`;
+  }
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+    .join(',')}}`;
+};
+
+const checksumData = async (value: unknown): Promise<string> => {
+  const bytes = new TextEncoder().encode(canonicalJson(value));
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+};
+
+const workspaceEntityCounts = (data: AppData): Record<string, number> => ({
+  classes: data.classes.length,
+  students: data.classes.reduce(
+    (count, classroom) => count + classroom.students.length,
+    0,
+  ),
+  examRecords: data.classes.reduce(
+    (count, classroom) => count + (classroom.examRecords?.length ?? 0),
+    0,
+  ),
+  examResults: data.classes.reduce(
+    (count, classroom) => count + (classroom.examRecords ?? []).reduce(
+      (examCount, exam) => examCount + exam.results.length,
+      0,
+    ),
+    0,
+  ),
+  learningEvidence: data.classes.reduce(
+    (count, classroom) =>
+      count + (classroom.learningEvidenceRecords?.length ?? 0),
+    0,
+  ),
+  pointAdjustments: data.classes.reduce(
+    (count, classroom) => count + classroom.students.reduce(
+      (studentCount, student) =>
+        studentCount + (student.pointAdjustmentRecords?.length ?? 0),
+      0,
+    ),
+    0,
+  ),
+  disciplineRecords: data.classes.reduce(
+    (count, classroom) => count + classroom.students.reduce(
+      (studentCount, student) =>
+        studentCount + (student.disciplineRecords?.length ?? 0),
+      0,
+    ),
+    0,
+  ),
+  bossRewards: data.classes.reduce(
+    (count, classroom) => count + classroom.students.reduce(
+      (studentCount, student) =>
+        studentCount + (student.bossRewardRecords?.length ?? 0),
+      0,
+    ),
+    0,
+  ),
+});
+
+type NormalizedProjection = {
+  document: ProjectionDocumentRow;
+  data: AppData;
+};
+
 const decodeUser = (row: UserRow | null): AuthUserRecord | null => {
   if (!row) return null;
   return {
     id: row.user_id,
     email: row.email,
     normalizedEmail: row.email_normalized,
+    emailVerifiedAt: row.email_verified_at,
     displayName: row.display_name,
     status: row.status,
     password: {
@@ -235,9 +378,70 @@ const createProjectionWriteToken = () => crypto.randomUUID();
 
 export class D1WorkspaceRepository
 implements WorkspaceRepository, AuthRepository {
-  constructor(private readonly database: D1Database) {}
+  constructor(
+    private readonly database: D1Database,
+    private readonly options: D1WorkspaceRepositoryOptions = {},
+  ) {}
 
   async get(workspaceId: string): Promise<StoredWorkspace> {
+    const metadata = await this.database
+      .prepare(
+        `SELECT revision, updated_at
+         FROM workspaces
+         WHERE workspace_id = ?`,
+      )
+      .bind(workspaceId)
+      .first<WorkspaceMetadataRow>();
+    if (!metadata) return emptyWorkspace();
+    if (this.options.readMode === 'blob') {
+      return this.getBlobWorkspace(workspaceId);
+    }
+
+    try {
+      const projection = await this.loadNormalizedProjection(
+        workspaceId,
+        metadata.revision,
+      );
+      if (projection) {
+        const projectionChecksum = await checksumData(projection.data);
+        if (
+          projection.document.reconciliation_status === 'verified' &&
+          projection.document.projection_checksum === projectionChecksum
+        ) {
+          if (this.options.readMode !== 'verify') {
+            return {
+              revision: metadata.revision,
+              updatedAt: metadata.updated_at,
+              data: projection.data,
+            };
+          }
+        } else {
+          const blob = await this.getBlobWorkspace(workspaceId);
+          const matched = await this.recordProjectionComparison(
+            blob,
+            projection,
+            projectionChecksum,
+          );
+          if (matched && this.options.readMode !== 'verify') {
+            return {
+              revision: blob.revision,
+              updatedAt: blob.updatedAt,
+              data: projection.data,
+            };
+          }
+          return blob;
+        }
+      }
+    } catch (error) {
+      console.error('Normalized workspace read failed; using blob fallback', {
+        workspaceId,
+        error: error instanceof Error ? error.message : 'unknown error',
+      });
+    }
+    return this.getBlobWorkspace(workspaceId);
+  }
+
+  private async getBlobWorkspace(workspaceId: string): Promise<StoredWorkspace> {
     const row = await this.database
       .prepare(
         `SELECT revision, updated_at, data_json
@@ -247,6 +451,356 @@ implements WorkspaceRepository, AuthRepository {
       .bind(workspaceId)
       .first<WorkspaceRow>();
     return decodeWorkspace(row);
+  }
+
+  private async loadNormalizedProjection(
+    workspaceId: string,
+    revision: number,
+  ): Promise<NormalizedProjection | null> {
+    const results = await this.database.batch([
+      this.database
+        .prepare(
+          `SELECT workspace_id, source_revision, root_json,
+                  reconciliation_status, source_checksum,
+                  projection_checksum, reconciled_at, details_json
+           FROM workspace_projection_documents
+           WHERE workspace_id = ? AND source_revision = ?`,
+        )
+        .bind(workspaceId, revision),
+      this.database
+        .prepare(
+          `SELECT class_id, sort_index, record_json
+           FROM classes
+           WHERE workspace_id = ? AND source_revision = ?
+           ORDER BY sort_index, class_id`,
+        )
+        .bind(workspaceId, revision),
+      this.database
+        .prepare(
+          `SELECT class_id, student_id, sort_index, record_json
+           FROM students
+           WHERE workspace_id = ? AND source_revision = ?
+           ORDER BY class_id, sort_index, student_id`,
+        )
+        .bind(workspaceId, revision),
+      this.database
+        .prepare(
+          `SELECT class_id, exam_id, sort_index, record_json
+           FROM exam_records
+           WHERE workspace_id = ? AND source_revision = ?
+           ORDER BY class_id, sort_index, exam_id`,
+        )
+        .bind(workspaceId, revision),
+      this.database
+        .prepare(
+          `SELECT class_id, exam_id, student_id, sort_index, record_json
+           FROM exam_results
+           WHERE workspace_id = ? AND source_revision = ?
+           ORDER BY class_id, exam_id, sort_index, student_id`,
+        )
+        .bind(workspaceId, revision),
+      this.database
+        .prepare(
+          `SELECT class_id, sort_index, record_json
+           FROM learning_evidence
+           WHERE workspace_id = ? AND source_revision = ?
+           ORDER BY class_id, sort_index, evidence_id`,
+        )
+        .bind(workspaceId, revision),
+      this.database
+        .prepare(
+          `SELECT class_id, student_id, sort_index, record_json
+           FROM point_adjustments
+           WHERE workspace_id = ? AND source_revision = ?
+           ORDER BY class_id, student_id, sort_index, adjustment_id`,
+        )
+        .bind(workspaceId, revision),
+      this.database
+        .prepare(
+          `SELECT class_id, student_id, sort_index, record_json
+           FROM discipline_records
+           WHERE workspace_id = ? AND source_revision = ?
+           ORDER BY class_id, student_id, sort_index, discipline_id`,
+        )
+        .bind(workspaceId, revision),
+      this.database
+        .prepare(
+          `SELECT class_id, student_id, sort_index, record_json
+           FROM boss_rewards
+           WHERE workspace_id = ? AND source_revision = ?
+           ORDER BY class_id, student_id, sort_index, reward_id`,
+        )
+        .bind(workspaceId, revision),
+    ]);
+    const rows = <T>(index: number) =>
+      (results[index]?.results ?? []) as unknown as T[];
+    const document = rows<ProjectionDocumentRow>(0)[0];
+    if (!document) return null;
+
+    const classRows = rows<ProjectionRecordRow>(1);
+    const studentRows = rows<ProjectionRecordRow>(2);
+    const examRows = rows<ProjectionRecordRow>(3);
+    const examResultRows = rows<ProjectionRecordRow>(4);
+    const evidenceRows = rows<ProjectionRecordRow>(5);
+    const adjustmentRows = rows<ProjectionRecordRow>(6);
+    const disciplineRows = rows<ProjectionRecordRow>(7);
+    const rewardRows = rows<ProjectionRecordRow>(8);
+    const classes = classRows.map((row) => {
+      const classroom = JSON.parse(row.record_json) as ClassData;
+      classroom.students = [];
+      if (Array.isArray(classroom.examRecords)) classroom.examRecords = [];
+      if (Array.isArray(classroom.learningEvidenceRecords)) {
+        classroom.learningEvidenceRecords = [];
+      }
+      return classroom;
+    });
+    const classesById = new Map(classes.map((classroom) => [
+      classroom.id,
+      classroom,
+    ]));
+    const studentsById = new Map<string, Student>();
+
+    for (const row of studentRows) {
+      const classroom = classesById.get(row.class_id);
+      if (!classroom) continue;
+      const student = JSON.parse(row.record_json) as Student;
+      if (Array.isArray(student.pointAdjustmentRecords)) {
+        student.pointAdjustmentRecords = [];
+      }
+      if (Array.isArray(student.disciplineRecords)) {
+        student.disciplineRecords = [];
+      }
+      if (Array.isArray(student.bossRewardRecords)) {
+        student.bossRewardRecords = [];
+      }
+      classroom.students.push(student);
+      studentsById.set(`${row.class_id}:${student.id}`, student);
+    }
+
+    const appendStudentRecord = (
+      row: ProjectionRecordRow,
+      key: 'pointAdjustmentRecords' | 'disciplineRecords' |
+        'bossRewardRecords',
+    ) => {
+      const student = studentsById.get(`${row.class_id}:${row.student_id}`);
+      if (!student) return;
+      const records = student[key] ?? [];
+      (records as unknown[]).push(JSON.parse(row.record_json));
+      (student as unknown as Record<string, unknown>)[key] = records;
+    };
+    adjustmentRows.forEach((row) =>
+      appendStudentRecord(row, 'pointAdjustmentRecords'));
+    disciplineRows.forEach((row) =>
+      appendStudentRecord(row, 'disciplineRecords'));
+    rewardRows.forEach((row) =>
+      appendStudentRecord(row, 'bossRewardRecords'));
+
+    const examsById = new Map<string, ExamRecord>();
+    for (const row of examRows) {
+      const classroom = classesById.get(row.class_id);
+      if (!classroom) continue;
+      const exam = JSON.parse(row.record_json) as ExamRecord;
+      exam.results = [];
+      classroom.examRecords ??= [];
+      classroom.examRecords.push(exam);
+      examsById.set(`${row.class_id}:${exam.id}`, exam);
+    }
+    for (const row of examResultRows) {
+      const exam = examsById.get(`${row.class_id}:${row.exam_id}`);
+      if (exam) exam.results.push(JSON.parse(row.record_json));
+    }
+    for (const row of evidenceRows) {
+      const classroom = classesById.get(row.class_id);
+      if (!classroom) continue;
+      classroom.learningEvidenceRecords ??= [];
+      classroom.learningEvidenceRecords.push(JSON.parse(row.record_json));
+    }
+
+    const root = JSON.parse(document.root_json) as Omit<AppData, 'classes'>;
+    return {
+      document,
+      data: { ...root, classes },
+    };
+  }
+
+  private async setProjectionStatus(
+    workspaceId: string,
+    revision: number,
+    status: ProjectionStatus,
+    sourceChecksum: string,
+    projectionChecksum: string,
+    expectedCounts: Record<string, number>,
+    actualCounts: Record<string, number>,
+  ): Promise<void> {
+    await this.database
+      .prepare(
+        `UPDATE workspace_projection_documents
+         SET reconciliation_status = ?, source_checksum = ?,
+             projection_checksum = ?, reconciled_at = ?, details_json = ?
+         WHERE workspace_id = ? AND source_revision = ?`,
+      )
+      .bind(
+        status,
+        sourceChecksum,
+        projectionChecksum,
+        Date.now(),
+        JSON.stringify({ expectedCounts, actualCounts }),
+        workspaceId,
+        revision,
+      )
+      .run();
+  }
+
+  private async recordProjectionComparison(
+    blob: StoredWorkspace,
+    projection: NormalizedProjection,
+    knownProjectionChecksum?: string,
+  ): Promise<boolean> {
+    if (!blob.data || blob.revision !== projection.document.source_revision) {
+      return false;
+    }
+    const [sourceChecksum, projectionChecksum] = await Promise.all([
+      checksumData(blob.data),
+      knownProjectionChecksum
+        ? Promise.resolve(knownProjectionChecksum)
+        : checksumData(projection.data),
+    ]);
+    const matched = sourceChecksum === projectionChecksum;
+    await this.setProjectionStatus(
+      projection.document.workspace_id,
+      blob.revision,
+      matched ? 'verified' : 'mismatch',
+      sourceChecksum,
+      projectionChecksum,
+      workspaceEntityCounts(blob.data),
+      workspaceEntityCounts(projection.data),
+    );
+    return matched;
+  }
+
+  private async rebuildProjection(
+    workspaceId: string,
+    revision: number,
+  ): Promise<void> {
+    const writeToken = createProjectionWriteToken();
+    await this.database.batch([
+      this.projectionRebuildGateStatement(
+        workspaceId,
+        revision,
+        writeToken,
+        Date.now(),
+      ),
+      ...this.projectionStatements(workspaceId, revision, writeToken),
+    ]);
+  }
+
+  async reconcileWorkspaceProjection(
+    workspaceId: string,
+    repair = true,
+  ): Promise<WorkspaceProjectionReconciliationResult> {
+    const blob = await this.getBlobWorkspace(workspaceId);
+    if (!blob.data) {
+      return {
+        workspaceId,
+        revision: 0,
+        status: 'missing',
+        repaired: false,
+      };
+    }
+    let projection = await this.loadNormalizedProjection(
+      workspaceId,
+      blob.revision,
+    );
+    let repaired = false;
+    if (projection && await this.recordProjectionComparison(blob, projection)) {
+      return {
+        workspaceId,
+        revision: blob.revision,
+        status: 'verified',
+        repaired,
+        expectedCounts: workspaceEntityCounts(blob.data),
+        actualCounts: workspaceEntityCounts(projection.data),
+      };
+    }
+    if (repair) {
+      await this.rebuildProjection(workspaceId, blob.revision);
+      repaired = true;
+      projection = await this.loadNormalizedProjection(
+        workspaceId,
+        blob.revision,
+      );
+      if (
+        projection &&
+        await this.recordProjectionComparison(blob, projection)
+      ) {
+        return {
+          workspaceId,
+          revision: blob.revision,
+          status: 'verified',
+          repaired,
+          expectedCounts: workspaceEntityCounts(blob.data),
+          actualCounts: workspaceEntityCounts(projection.data),
+        };
+      }
+    }
+    return {
+      workspaceId,
+      revision: blob.revision,
+      status: projection ? 'mismatch' : 'missing',
+      repaired,
+      expectedCounts: workspaceEntityCounts(blob.data),
+      actualCounts: projection
+        ? workspaceEntityCounts(projection.data)
+        : undefined,
+    };
+  }
+
+  async reconcileWorkspaceProjections(options: {
+    repair?: boolean;
+    batchSize?: number;
+    maxBatches?: number;
+  } = {}): Promise<WorkspaceProjectionReconciliationReport> {
+    const repair = options.repair ?? true;
+    const batchSize = Math.max(1, Math.min(100, options.batchSize ?? 50));
+    const maxBatches = Math.max(1, Math.min(100, options.maxBatches ?? 10));
+    const report: WorkspaceProjectionReconciliationReport = {
+      checked: 0,
+      verified: 0,
+      mismatched: 0,
+      missing: 0,
+      repaired: 0,
+      truncated: false,
+    };
+    let cursor = '';
+    for (let batchIndex = 0; batchIndex < maxBatches; batchIndex += 1) {
+      const result = await this.database
+        .prepare(
+          `SELECT workspace_id
+           FROM workspaces
+           WHERE workspace_id > ?
+           ORDER BY workspace_id
+           LIMIT ?`,
+        )
+        .bind(cursor, batchSize + 1)
+        .all<{ workspace_id: string }>();
+      const hasMore = result.results.length > batchSize;
+      const rows = result.results.slice(0, batchSize);
+      for (const row of rows) {
+        const reconciliation = await this.reconcileWorkspaceProjection(
+          row.workspace_id,
+          repair,
+        );
+        report.checked += 1;
+        if (reconciliation.status === 'verified') report.verified += 1;
+        if (reconciliation.status === 'mismatch') report.mismatched += 1;
+        if (reconciliation.status === 'missing') report.missing += 1;
+        if (reconciliation.repaired) report.repaired += 1;
+      }
+      if (!hasMore || rows.length === 0) return report;
+      cursor = rows.at(-1)?.workspace_id ?? cursor;
+    }
+    report.truncated = true;
+    return report;
   }
 
   async put(
@@ -409,6 +963,7 @@ implements WorkspaceRepository, AuthRepository {
            user_id,
            email,
            email_normalized,
+           email_verified_at,
            display_name,
            status,
            password_algorithm,
@@ -433,6 +988,7 @@ implements WorkspaceRepository, AuthRepository {
            user_id,
            email,
            email_normalized,
+           email_verified_at,
            display_name,
            status,
            password_algorithm,
@@ -459,7 +1015,13 @@ implements WorkspaceRepository, AuthRepository {
       throw new EmailAlreadyExistsError();
     }
     const { dataJson } = serializeWorkspace(input.workspace.data);
-    const { user, workspace, membership, auditEvent } = input;
+    const {
+      user,
+      emailVerificationToken,
+      workspace,
+      membership,
+      auditEvent,
+    } = input;
     const projectionWriteToken = createProjectionWriteToken();
 
     try {
@@ -470,6 +1032,7 @@ implements WorkspaceRepository, AuthRepository {
                user_id,
                email,
                email_normalized,
+               email_verified_at,
                display_name,
                status,
                password_algorithm,
@@ -480,12 +1043,13 @@ implements WorkspaceRepository, AuthRepository {
                updated_at,
                password_changed_at
              )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .bind(
             user.id,
             user.email,
             user.normalizedEmail,
+            user.emailVerifiedAt,
             user.displayName,
             user.status,
             user.password.algorithm,
@@ -496,6 +1060,21 @@ implements WorkspaceRepository, AuthRepository {
             user.updatedAt,
             user.passwordChangedAt,
           ),
+        ...(emailVerificationToken
+          ? [this.database
+              .prepare(
+                `INSERT INTO email_verification_tokens (
+                   token_hash, user_id, created_at, expires_at, used_at
+                 )
+                 VALUES (?, ?, ?, ?, NULL)`,
+              )
+              .bind(
+                emailVerificationToken.tokenHash,
+                emailVerificationToken.userId,
+                emailVerificationToken.createdAt,
+                emailVerificationToken.expiresAt,
+              )]
+          : []),
         this.database
           .prepare(
             `INSERT INTO workspaces (
@@ -911,6 +1490,12 @@ implements WorkspaceRepository, AuthRepository {
         .bind(now),
       this.database
         .prepare(
+          `DELETE FROM email_verification_tokens
+           WHERE expires_at <= ? OR used_at IS NOT NULL`,
+        )
+        .bind(now),
+      this.database
+        .prepare(
           `DELETE FROM auth_rate_limits
            WHERE blocked_until <= ? AND window_started_at <= ?`,
         )
@@ -925,8 +1510,9 @@ implements WorkspaceRepository, AuthRepository {
     return {
       sessions: results[0].meta.changes ?? 0,
       passwordResetTokens: results[1].meta.changes ?? 0,
-      rateLimits: results[2].meta.changes ?? 0,
-      invitations: results[3].meta.changes ?? 0,
+      emailVerificationTokens: results[2].meta.changes ?? 0,
+      rateLimits: results[3].meta.changes ?? 0,
+      invitations: results[4].meta.changes ?? 0,
     };
   }
 
@@ -1060,11 +1646,12 @@ implements WorkspaceRepository, AuthRepository {
       statements.push(this.database
         .prepare(
           `INSERT INTO users (
-             user_id, email, email_normalized, display_name, status,
+             user_id, email, email_normalized, email_verified_at,
+             display_name, status,
              password_algorithm, password_salt, password_hash,
              password_iterations, created_at, updated_at, password_changed_at
            )
-           SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+           SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
            FROM workspace_invitations
            WHERE invitation_id = ? AND token_hash = ?
              AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?`,
@@ -1073,6 +1660,7 @@ implements WorkspaceRepository, AuthRepository {
           input.user.id,
           input.user.email,
           input.user.normalizedEmail,
+          input.user.emailVerifiedAt,
           input.user.displayName,
           input.user.status,
           input.user.password.algorithm,
@@ -1082,6 +1670,33 @@ implements WorkspaceRepository, AuthRepository {
           input.user.createdAt,
           input.user.updatedAt,
           input.user.passwordChangedAt,
+          input.invitation.id,
+          input.tokenHash,
+          input.acceptedAt,
+        ));
+    } else {
+      statements.push(this.database
+        .prepare(
+          `UPDATE users
+           SET email_verified_at = COALESCE(email_verified_at, ?),
+               updated_at = CASE
+                 WHEN email_verified_at IS NULL THEN ?
+                 ELSE updated_at
+               END
+           WHERE user_id = ? AND status = 'active'
+             AND EXISTS (
+               SELECT 1
+               FROM workspace_invitations
+               WHERE invitation_id = ? AND token_hash = ?
+                 AND email_normalized = users.email_normalized
+                 AND accepted_at IS NULL AND revoked_at IS NULL
+                 AND expires_at > ?
+             )`,
+        )
+        .bind(
+          input.acceptedAt,
+          input.acceptedAt,
+          input.user.id,
           input.invitation.id,
           input.tokenHash,
           input.acceptedAt,
@@ -1474,7 +2089,8 @@ implements WorkspaceRepository, AuthRepository {
              password_hash = ?,
              password_iterations = ?,
              updated_at = ?,
-             password_changed_at = ?
+             password_changed_at = ?,
+             email_verified_at = COALESCE(email_verified_at, ?)
            WHERE
              user_id = (
                SELECT user_id
@@ -1489,6 +2105,7 @@ implements WorkspaceRepository, AuthRepository {
           input.password.salt,
           input.password.hash,
           input.password.iterations,
+          input.usedAt,
           input.usedAt,
           input.usedAt,
           input.tokenHash,
@@ -1517,6 +2134,7 @@ implements WorkspaceRepository, AuthRepository {
            users.user_id,
            users.email,
            users.email_normalized,
+           users.email_verified_at,
            users.display_name,
            users.status,
            users.password_algorithm,
@@ -1530,6 +2148,108 @@ implements WorkspaceRepository, AuthRepository {
          INNER JOIN password_reset_tokens
            ON password_reset_tokens.user_id = users.user_id
          WHERE password_reset_tokens.token_hash = ?`,
+      )
+      .bind(input.tokenHash)
+      .first<UserRow>();
+    return decodeUser(row);
+  }
+
+  async createEmailVerificationToken(
+    token: EmailVerificationTokenRecord,
+  ): Promise<void> {
+    await this.database.batch([
+      this.database
+        .prepare(
+          `UPDATE email_verification_tokens
+           SET used_at = ?
+           WHERE user_id = ? AND used_at IS NULL`,
+        )
+        .bind(token.createdAt, token.userId),
+      this.database
+        .prepare(
+          `INSERT INTO email_verification_tokens (
+             token_hash, user_id, created_at, expires_at, used_at
+           )
+           SELECT ?, ?, ?, ?, NULL
+           FROM users
+           WHERE user_id = ? AND status = 'active'
+             AND email_verified_at IS NULL`,
+        )
+        .bind(
+          token.tokenHash,
+          token.userId,
+          token.createdAt,
+          token.expiresAt,
+          token.userId,
+        ),
+    ]);
+  }
+
+  async consumeEmailVerificationToken(
+    input: ConsumeEmailVerificationInput,
+  ): Promise<AuthUserRecord | null> {
+    const results = await this.database.batch([
+      this.database
+        .prepare(
+          `UPDATE email_verification_tokens
+           SET used_at = ?
+           WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
+             AND EXISTS (
+               SELECT 1 FROM users
+               WHERE users.user_id = email_verification_tokens.user_id
+                 AND users.status = 'active'
+                 AND users.email_verified_at IS NULL
+             )`,
+        )
+        .bind(input.verifiedAt, input.tokenHash, input.verifiedAt),
+      this.database
+        .prepare(
+          `UPDATE users
+           SET email_verified_at = COALESCE(email_verified_at, ?),
+               updated_at = ?
+           WHERE user_id = (
+             SELECT user_id FROM email_verification_tokens
+             WHERE token_hash = ? AND used_at = ?
+           ) AND status = 'active' AND changes() = 1`,
+        )
+        .bind(
+          input.verifiedAt,
+          input.verifiedAt,
+          input.tokenHash,
+          input.verifiedAt,
+        ),
+      this.database
+        .prepare(
+          `UPDATE email_verification_tokens
+           SET used_at = ?
+           WHERE user_id = (
+             SELECT user_id FROM email_verification_tokens
+             WHERE token_hash = ?
+           ) AND used_at IS NULL AND changes() = 1`,
+        )
+        .bind(input.verifiedAt, input.tokenHash),
+    ]);
+    if ((results[0].meta.changes ?? 0) !== 1) return null;
+    const row = await this.database
+      .prepare(
+        `SELECT
+           users.user_id,
+           users.email,
+           users.email_normalized,
+           users.email_verified_at,
+           users.display_name,
+           users.status,
+           users.password_algorithm,
+           users.password_salt,
+           users.password_hash,
+           users.password_iterations,
+           users.created_at,
+           users.updated_at,
+           users.password_changed_at
+         FROM users
+         INNER JOIN email_verification_tokens
+           ON email_verification_tokens.user_id = users.user_id
+         WHERE email_verification_tokens.token_hash = ?`,
       )
       .bind(input.tokenHash)
       .first<UserRow>();
@@ -1614,6 +2334,82 @@ implements WorkspaceRepository, AuthRepository {
     await this.auditStatement(event).run();
   }
 
+  async listWorkspaceAuditEvents(
+    workspaceId: string,
+    query: WorkspaceAuditQuery = {},
+  ): Promise<AuditEventRecord[]> {
+    const clauses = ['workspace_id = ?'];
+    const bindings: Array<string | number> = [workspaceId];
+    if (query.action) {
+      clauses.push('action = ?');
+      bindings.push(query.action);
+    }
+    if (query.actorUserId) {
+      clauses.push('actor_user_id = ?');
+      bindings.push(query.actorUserId);
+    }
+    if (query.targetType) {
+      clauses.push('target_type = ?');
+      bindings.push(query.targetType);
+    }
+    if (query.fromCreatedAt != null) {
+      clauses.push('created_at >= ?');
+      bindings.push(query.fromCreatedAt);
+    }
+    if (query.toCreatedAt != null) {
+      clauses.push('created_at <= ?');
+      bindings.push(query.toCreatedAt);
+    }
+    if (query.cursor) {
+      clauses.push('(created_at < ? OR (created_at = ? AND event_id < ?))');
+      bindings.push(
+        query.cursor.createdAt,
+        query.cursor.createdAt,
+        query.cursor.id,
+      );
+    }
+    const safeLimit = Math.max(
+      1,
+      Math.min(201, Math.floor(query.limit ?? 50)),
+    );
+    bindings.push(safeLimit);
+    const result = await this.database
+      .prepare(
+        `SELECT event_id, workspace_id, actor_user_id, action,
+                target_type, target_id, metadata_json, created_at
+         FROM audit_events
+         WHERE ${clauses.join(' AND ')}
+         ORDER BY created_at DESC, event_id DESC
+         LIMIT ?`,
+      )
+      .bind(...bindings)
+      .all<AuditEventRow>();
+    return result.results.map((row) => {
+      let metadata: Record<string, unknown> | undefined;
+      try {
+        const candidate = JSON.parse(row.metadata_json) as unknown;
+        if (
+          candidate &&
+          typeof candidate === 'object' &&
+          !Array.isArray(candidate) &&
+          Object.keys(candidate).length > 0
+        ) metadata = candidate as Record<string, unknown>;
+      } catch {
+        metadata = undefined;
+      }
+      return {
+        id: row.event_id,
+        ...(row.workspace_id ? { workspaceId: row.workspace_id } : {}),
+        ...(row.actor_user_id ? { actorUserId: row.actor_user_id } : {}),
+        action: row.action,
+        ...(row.target_type ? { targetType: row.target_type } : {}),
+        ...(row.target_id ? { targetId: row.target_id } : {}),
+        ...(metadata ? { metadata } : {}),
+        createdAt: row.created_at,
+      };
+    });
+  }
+
   async listWorkspaceRevisions(
     workspaceId: string,
     limit = MAX_STORED_REVISIONS,
@@ -1691,12 +2487,73 @@ implements WorkspaceRepository, AuthRepository {
       .bind(workspaceId, sourceRevision, writeToken, projectedAt);
   }
 
+  private projectionRebuildGateStatement(
+    workspaceId: string,
+    sourceRevision: number,
+    writeToken: string,
+    projectedAt: number,
+  ): D1PreparedStatement {
+    return this.database
+      .prepare(
+        `INSERT INTO workspace_projection_state (
+           workspace_id, source_revision, write_token, projected_at
+         )
+         SELECT workspace_id, revision, ?, ?
+         FROM workspaces
+         WHERE workspace_id = ? AND revision = ?
+         ON CONFLICT (workspace_id) DO UPDATE SET
+           source_revision = excluded.source_revision,
+           write_token = excluded.write_token,
+           projected_at = excluded.projected_at`,
+      )
+      .bind(writeToken, projectedAt, workspaceId, sourceRevision);
+  }
+
   private projectionStatements(
     workspaceId: string,
     sourceRevision: number,
     writeToken: string,
   ): D1PreparedStatement[] {
     return [
+      this.database
+        .prepare(
+          `INSERT INTO workspace_projection_documents (
+             workspace_id, source_revision, root_json,
+             reconciliation_status, source_checksum,
+             projection_checksum, reconciled_at, details_json
+           )
+           SELECT
+             workspaces.workspace_id,
+             workspaces.revision,
+             json_remove(workspaces.data_json, '$.classes'),
+             'pending',
+             NULL,
+             NULL,
+             NULL,
+             '{}'
+           FROM workspaces
+           WHERE
+             workspaces.workspace_id = ? AND
+             workspaces.revision = ? AND
+             json_valid(workspaces.data_json) AND
+             EXISTS (
+               SELECT 1
+               FROM workspace_projection_state
+               WHERE
+                 workspace_id = workspaces.workspace_id AND
+                 source_revision = workspaces.revision AND
+                 write_token = ?
+             )
+           ON CONFLICT (workspace_id) DO UPDATE SET
+             source_revision = excluded.source_revision,
+             root_json = excluded.root_json,
+             reconciliation_status = 'pending',
+             source_checksum = NULL,
+             projection_checksum = NULL,
+             reconciled_at = NULL,
+             details_json = '{}'`,
+        )
+        .bind(workspaceId, sourceRevision, writeToken),
       this.database
         .prepare(
           `DELETE FROM classes
@@ -1719,6 +2576,7 @@ implements WorkspaceRepository, AuthRepository {
              class_id,
              name,
              source_revision,
+             sort_index,
              record_json
            )
            SELECT
@@ -1729,6 +2587,7 @@ implements WorkspaceRepository, AuthRepository {
                ''
              ),
              workspaces.revision,
+             CAST(class_item.key AS INTEGER),
              class_item.value
            FROM workspaces
            JOIN json_each(
@@ -1773,6 +2632,7 @@ implements WorkspaceRepository, AuthRepository {
              pet_happiness,
              pet_level,
              source_revision,
+             sort_index,
              record_json
            )
            SELECT
@@ -1806,6 +2666,7 @@ implements WorkspaceRepository, AuthRepository {
                json_extract(student_item.value, '$.pet.level'), 1
              ) AS INTEGER),
              classes.source_revision,
+             CAST(student_item.key AS INTEGER),
              student_item.value
            FROM classes
            JOIN json_each(
@@ -1845,6 +2706,7 @@ implements WorkspaceRepository, AuthRepository {
              created_at,
              updated_at,
              source_revision,
+             sort_index,
              record_json
            )
            SELECT
@@ -1871,6 +2733,7 @@ implements WorkspaceRepository, AuthRepository {
                json_extract(exam_item.value, '$.updatedAt'), 0
              ) AS INTEGER),
              classes.source_revision,
+             CAST(exam_item.key AS INTEGER),
              exam_item.value
            FROM classes
            JOIN json_each(
@@ -1910,6 +2773,7 @@ implements WorkspaceRepository, AuthRepository {
              mentor_comment,
              updated_at,
              source_revision,
+             sort_index,
              record_json
            )
            SELECT
@@ -1927,6 +2791,7 @@ implements WorkspaceRepository, AuthRepository {
                json_extract(result_item.value, '$.updatedAt'), 0
              ) AS INTEGER),
              exam_records.source_revision,
+             CAST(result_item.key AS INTEGER),
              result_item.value
            FROM exam_records
            JOIN json_each(
@@ -1975,6 +2840,7 @@ implements WorkspaceRepository, AuthRepository {
              evidence_revision,
              created_at,
              source_revision,
+             sort_index,
              record_json
            )
            SELECT
@@ -2023,6 +2889,7 @@ implements WorkspaceRepository, AuthRepository {
                json_extract(evidence_item.value, '$.createdAt'), 0
              ) AS INTEGER),
              classes.source_revision,
+             CAST(evidence_item.key AS INTEGER),
              evidence_item.value
            FROM classes
            JOIN json_each(
@@ -2077,6 +2944,7 @@ implements WorkspaceRepository, AuthRepository {
              competency,
              created_at,
              source_revision,
+             sort_index,
              record_json
            )
            SELECT
@@ -2102,6 +2970,7 @@ implements WorkspaceRepository, AuthRepository {
                json_extract(adjustment_item.value, '$.createdAt'), 0
              ) AS INTEGER),
              students.source_revision,
+             CAST(adjustment_item.key AS INTEGER),
              adjustment_item.value
            FROM students
            JOIN json_each(
@@ -2152,6 +3021,7 @@ implements WorkspaceRepository, AuthRepository {
              reverses_record_id,
              created_at,
              source_revision,
+             sort_index,
              record_json
            )
            SELECT
@@ -2180,6 +3050,7 @@ implements WorkspaceRepository, AuthRepository {
                json_extract(discipline_item.value, '$.createdAt'), 0
              ) AS INTEGER),
              students.source_revision,
+             CAST(discipline_item.key AS INTEGER),
              discipline_item.value
            FROM students
            JOIN json_each(
@@ -2228,7 +3099,7 @@ implements WorkspaceRepository, AuthRepository {
              participation_reward_rank_points, participation_reward_happiness,
              improvement_reward_points, improvement_reward_rank_points,
              improvement_reward_happiness, received_improvement_reward,
-             created_at, source_revision, record_json
+             created_at, source_revision, sort_index, record_json
            )
            SELECT
              students.workspace_id,
@@ -2328,6 +3199,7 @@ implements WorkspaceRepository, AuthRepository {
                json_extract(reward_item.value, '$.createdAt'), 0
              ) AS INTEGER),
              students.source_revision,
+             CAST(reward_item.key AS INTEGER),
              reward_item.value
            FROM students
            JOIN json_each(

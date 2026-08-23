@@ -27,6 +27,7 @@ import {
   UsersRound,
 } from 'lucide-react';
 import { useAuth } from '../auth/AuthProvider';
+import { TurnstileWidget } from './TurnstileWidget';
 
 type AuthMode = 'login' | 'register' | 'forgot' | 'reset' | 'invite';
 type FieldErrors = Partial<Record<
@@ -99,6 +100,9 @@ const authErrorMessage = (error: unknown, mode: AuthMode) => {
   }
   if (code.includes('NETWORK') || code.includes('ABORT') || code.includes('TIMEOUT')) {
     return '目前無法連線，請檢查網路後再試。';
+  }
+  if (code.includes('BOT_CHALLENGE') || code.includes('BOT_PROTECTION')) {
+    return '安全驗證未完成或已逾期，請重新驗證後再試。';
   }
   if (code.includes('REGISTRATION_DISABLED') || (mode === 'register' && code.includes('403'))) {
     return '目前暫停建立新帳號，請向學校管理者索取開通資訊。';
@@ -292,7 +296,10 @@ const ClassroomPreview = () => (
 export const AuthScreen = () => {
   const {
     claimableLegacyWorkspace,
+    authenticationEnabled,
     registrationEnabled,
+    botProtectionEnabled,
+    turnstileSiteKey,
     status,
     login,
     register,
@@ -313,6 +320,8 @@ export const AuthScreen = () => {
   const [pending, setPending] = useState(false);
   const [forgotComplete, setForgotComplete] = useState(false);
   const [resetComplete, setResetComplete] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState('');
+  const [turnstileNonce, setTurnstileNonce] = useState(0);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const errorRef = useRef<HTMLDivElement>(null);
 
@@ -390,6 +399,8 @@ export const AuthScreen = () => {
     setClaimLegacyWorkspace(false);
     setForgotComplete(false);
     setResetComplete(false);
+    setTurnstileToken('');
+    setTurnstileNonce((current) => current + 1);
     if (nextMode !== 'reset' && nextMode !== 'invite') setResetToken('');
     replaceAuthRoute(nextMode);
   };
@@ -445,6 +456,13 @@ export const AuthScreen = () => {
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setSubmitError('');
+    if (
+      !authenticationEnabled &&
+      (mode === 'login' || mode === 'register' || mode === 'forgot')
+    ) {
+      setSubmitError('帳號安全驗證服務暫時無法使用，請稍後再試。');
+      return;
+    }
     if (mode === 'register' && !registrationEnabled) {
       setSubmitError('目前暫停建立新帳號，請向學校管理者索取開通資訊。');
       return;
@@ -456,15 +474,28 @@ export const AuthScreen = () => {
         : '邀請連結不完整，請聯絡工作區管理員。');
       return;
     }
+    const requiresBotChallenge =
+      botProtectionEnabled &&
+      (mode === 'login' || mode === 'register' || mode === 'forgot');
+    if (requiresBotChallenge && !turnstileToken) {
+      setSubmitError('請先完成安全驗證。');
+      return;
+    }
 
     setPending(true);
     try {
       if (mode === 'login') {
-        await login({ email, password });
+        await login({ email, password, turnstileToken });
       } else if (mode === 'register') {
-        await register({ displayName, email, password, claimLegacyWorkspace });
+        await register({
+          displayName,
+          email,
+          password,
+          claimLegacyWorkspace,
+          turnstileToken,
+        });
       } else if (mode === 'forgot') {
-        await forgotPassword(email);
+        await forgotPassword(email, turnstileToken);
         setForgotComplete(true);
       } else if (mode === 'reset') {
         await resetPassword(resetToken, password);
@@ -479,6 +510,10 @@ export const AuthScreen = () => {
       setSubmitError(authErrorMessage(error, mode));
     } finally {
       setPending(false);
+      if (requiresBotChallenge) {
+        setTurnstileToken('');
+        setTurnstileNonce((current) => current + 1);
+      }
     }
   };
 
@@ -729,9 +764,27 @@ export const AuthScreen = () => {
                     </div>
                   )}
 
+                  {botProtectionEnabled &&
+                    turnstileSiteKey &&
+                    (mode === 'login' || mode === 'register' || mode === 'forgot') && (
+                      <div key={`${mode}-${turnstileNonce}`}>
+                        <TurnstileWidget
+                          siteKey={turnstileSiteKey}
+                          action={mode}
+                          onToken={setTurnstileToken}
+                        />
+                      </div>
+                    )}
+
                   <button
                     type="submit"
-                    disabled={pending || (isRegister && !registrationEnabled)}
+                    disabled={
+                      pending ||
+                      (isRegister && !registrationEnabled) ||
+                      (botProtectionEnabled &&
+                        (mode === 'login' || mode === 'register' || mode === 'forgot') &&
+                        !turnstileToken)
+                    }
                     className="mt-6 inline-flex min-h-14 w-full items-center justify-center gap-3 rounded-2xl bg-slate-950 px-5 py-3 text-base font-black text-white shadow-lg shadow-slate-950/15 transition duration-200 hover:-translate-y-0.5 hover:bg-teal-950 hover:shadow-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-700 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:translate-y-0 disabled:bg-slate-300 disabled:shadow-none"
                   >
                     {pending && <LoaderCircle aria-hidden="true" className="h-5 w-5 motion-safe:animate-spin" />}

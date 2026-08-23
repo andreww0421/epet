@@ -52,6 +52,14 @@ const serveStatic = async (
     'referrer-policy': 'no-referrer',
     'permissions-policy': 'camera=(), microphone=(), geolocation=()',
     'cross-origin-opener-policy': 'same-origin',
+    'cross-origin-resource-policy': 'same-origin',
+    'content-security-policy':
+      "default-src 'self'; connect-src 'self'; img-src 'self' data:; " +
+      "font-src 'self'; style-src 'self' 'unsafe-inline'; " +
+      "script-src 'self' https://challenges.cloudflare.com; " +
+      "frame-src https://challenges.cloudflare.com; " +
+      "base-uri 'self'; form-action 'self'; frame-ancestors 'none'; " +
+      "object-src 'none'",
   });
   createReadStream(filePath).pipe(response);
   return true;
@@ -61,24 +69,36 @@ export type EpetServerOptions = {
   dataFile: string;
   distDirectory: string;
   auth?: ApiOptions['auth'];
+  accountLifecycleMailer?: ApiOptions['accountLifecycleMailer'];
+  botChallengeVerifier?: ApiOptions['botChallengeVerifier'];
+  botProtectionRequired?: boolean;
+  emailVerificationMailer?: ApiOptions['emailVerificationMailer'];
+  emailVerificationRequired?: boolean;
   forgotResponseFloorMs?: number;
   passwordResetMailer?: ApiOptions['passwordResetMailer'];
   workspaceInvitationMailer?: ApiOptions['workspaceInvitationMailer'];
   registrationEnabled?: boolean;
+  turnstileSiteKey?: string;
 };
 
 export const createEpetServer = (options: EpetServerOptions) => {
   const repository = new JsonWorkspaceRepository(options.dataFile);
   const handleApi = createApiHandler(repository, {
     allowLocalWorkspaceIds: true,
-    allowedOrigins: ['*'],
+    allowedOrigins: [],
     auth: options.auth,
+    accountLifecycleMailer: options.accountLifecycleMailer,
+    botChallengeVerifier: options.botChallengeVerifier,
+    botProtectionRequired: options.botProtectionRequired,
     clientIdentity: (request) =>
       request.headers.get(TRUSTED_CLIENT_IDENTITY_HEADER),
     forgotResponseFloorMs: options.forgotResponseFloorMs,
+    emailVerificationMailer: options.emailVerificationMailer,
+    emailVerificationRequired: options.emailVerificationRequired,
     passwordResetMailer: options.passwordResetMailer,
     workspaceInvitationMailer: options.workspaceInvitationMailer,
     registrationEnabled: options.registrationEnabled === true,
+    turnstileSiteKey: options.turnstileSiteKey,
   });
 
   const server = createServer(async (request, response) => {
@@ -108,9 +128,17 @@ export const createEpetServer = (options: EpetServerOptions) => {
         ...(hasBody ? { duplex: 'half' } : {}),
       } as RequestInit);
       const webResponse = await handleApi(webRequest);
+      const responseHeaders: Record<string, string | string[]> =
+        Object.fromEntries(webResponse.headers.entries());
+      const setCookies = (
+        webResponse.headers as Headers & {
+          getSetCookie?: () => string[];
+        }
+      ).getSetCookie?.() ?? [];
+      if (setCookies.length > 0) responseHeaders['set-cookie'] = setCookies;
       response.writeHead(
         webResponse.status,
-        Object.fromEntries(webResponse.headers.entries()),
+        responseHeaders,
       );
       response.end(Buffer.from(await webResponse.arrayBuffer()));
       return;

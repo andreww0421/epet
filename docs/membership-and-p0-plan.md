@@ -19,13 +19,19 @@
 - 成員角色變更、移除、owner 移轉、工作區與帳號雙重確認刪除。
 - 刪除學生時同步清除所有保留 revision 與正規化投影中的該生資料。
 - Worker cron 與 Node 每日清理到期／撤銷 session、reset token、rate limit 與邀請。
+- P1 正規化根層投影、陣列順序回填、checksum 對帳、漂移回退與每日自動修復；預設讀取已切到正規化表。
+- P1 同站 Worker Static Assets、`__Host-` HttpOnly session cookie、Origin 與 double-submit CSRF 防護；前端不再接觸 raw session token。
+- P1 新帳號 Email 驗證（24 小時、單次、僅存 token hash）、重寄輪替與未驗證工作區鎖定；既有帳號 migration 安全回填為已驗證。
+- P1 Turnstile 註冊／登入／忘記密碼防護，伺服器驗證 token、action、hostname 與來源 IP；widget token 只留在記憶體並於每次送出後重建。
+- P1 密碼變更、Email 驗證、加入／移除工作區、角色／所有權異動、工作區及帳號刪除的非同步安全通知。
+- P1 owner／admin 資料治理控制台：revision 預覽與受控復原、單生限縮匯出、伺服器端 audit 篩選與 cursor 分頁；高風險復原需先 flush、輸入 revision 確認字串，成功後以新 revision 重載。
 
 這不等於已達公開商業上架。下列仍是需要外部決策或正式環境的 release blocker：
 
-- 公開註冊的 Email 驗證與 bot 防護；完成前必須維持 `REGISTRATION_ENABLED=false` 並使用邀請制。
-- 正規化表與相容 blob 的全量對帳、切換讀取來源及 blob 退場計畫。
-- revision 復原、單生匯出與稽核查詢的管理 UI，以及 D1 備份還原演練與核定的 RPO／RTO。
-- 同站 `HttpOnly` cookie 與完整 WCAG 2.2 AA 核心流程驗證。
+- 正式 Turnstile site／secret key、Resend 核准寄件者與正式 hostname 的實收驗收；完成前必須維持 `REGISTRATION_ENABLED=false` 並使用邀請制。
+- 正式 D1 套用 `0006` 後的全量 `verified` 營運驗收，以及連續 30 日無差異後才可執行的 blob 物理移除。
+- D1 備份還原演練與核定的 RPO／RTO。
+- 完整 WCAG 2.2 AA 核心流程驗證，以及正式同站網域的瀏覽器 smoke test。
 - 法定營運者、隱私窗口、保留期限、學校資料處理協議與正式寄件者身分核准。
 
 隱私盤點、保留／刪除缺口與資料請求 runbook 見
@@ -47,23 +53,23 @@
 ### 註冊
 
 1. 輸入姓名、Email、密碼。
-2. 後端正規化 Email、檢查密碼政策並建立帳號。
-3. 若瀏覽器持有尚未被認領的舊雲端工作區，明確提示後進行一次性認領。
-4. 否則建立新的工作區，將使用者設為 `owner`。
-5. 建立短效 session，回到教師工作台。
+2. Turnstile widget 產生單次 token；後端向 Siteverify 驗證成功、action 與 hostname 完全相符後才繼續。
+3. 後端正規化 Email、檢查密碼政策並建立帳號與 24 小時驗證 token；資料庫只保存 token hash。
+4. 建立 HttpOnly session，但在完成 Email 驗證前，工作區讀寫與新增工作區一律回覆 `EMAIL_VERIFICATION_REQUIRED`。
+5. 驗證連結只能使用一次；重寄會令先前未使用 token 失效。驗證成功後同一 session 即可進入工作區。
 
-公開註冊上線前仍要加入 Email 驗證與機器人防護；封閉試點可先採邀請制。
+既有帳號在 `0007_email_verification.sql` 遷移時回填為已驗證，避免切換造成存量帳號無法登入。公開註冊仍須等正式 Turnstile／Resend 實收驗收後才可開啟。
 
 ### 登入
 
-1. Email 與密碼送往後端。
-2. 成功後建立隨機 session token；資料庫只保存 token 的 SHA-256。
-3. 所有資料 API 都先驗 session，再驗工作區 membership 與角色。
+1. Email、密碼與 Turnstile token 送往後端；bot token 必須通過伺服器驗證。
+2. 成功後建立隨機 session token；資料庫只保存 token 的 SHA-256，瀏覽器只取得 HttpOnly cookie。
+3. 所有資料 API 都先驗 session 與 Email 狀態，再驗工作區 membership 與角色。
 4. 失敗一律使用通用錯誤，不回傳「帳號不存在」等可枚舉訊息。
 
 ### 忘記密碼
 
-1. 使用者輸入 Email。
+1. 使用者輸入 Email 並完成 Turnstile。
 2. 不論帳號是否存在，畫面與 API 都回覆相同訊息。
 3. 若帳號存在，後端產生 32-byte 隨機 token，只保存 token hash，有效 30 分鐘。
 4. Resend 寄出重設連結；正式環境不在 API、log 或分析事件中回傳 raw token。
@@ -87,8 +93,9 @@
 4. 移除成員會立即撤銷其該 workspace 存取、清除 session 的 active workspace，並保留 actor、前一角色與時間的 audit event。
 5. 刪除帳號前先處理其擁有的 workspace：移轉唯一 owner、刪除，或取消操作；
    不允許產生沒有 owner 的工作區。
+6. Email 驗證、密碼變更、加入／移除工作區、角色與所有權異動、工作區刪除及帳號刪除都會排程寄送安全通知；寄信失敗會寫入 Worker 錯誤紀錄，但不回滾已完成的帳號交易。
 
-帳號停用、Email 變更與所有權移轉安全通知尚未實作；導入學校身分系統前不開放 Email 變更或帳號停用 UI。
+帳號停用與 Email 變更仍未開放；導入學校身分系統前不提供這兩種 UI。正式環境必須監看寄信失敗並建立人工補救流程。
 
 學生／家長入口等資料分享、法源、可見範圍與撤銷流程確定後再獨立設計，
 不可直接沿用教師的完整 workspace 權限。
@@ -103,6 +110,7 @@
 | 管理 admin | 是 | 否 | 否 | 否 |
 | 移轉所有權、刪除工作區 | 是 | 否 | 否 | 否 |
 | 匯出完整個資 | 是 | 是 | 依校方政策 | 否 |
+| revision 復原、單生匯出與 audit 查詢 | 是 | 是 | 否 | 否 |
 
 前端隱藏按鈕只改善 UX；真正權限必須由 API 在每次請求執行。
 
@@ -120,7 +128,7 @@ P0 新增：
 - `auth_rate_limits`：登入、註冊與忘記密碼的濫用限制。
 - `workspace_invitations`：一次性邀請 token hash、角色、班級範圍、到期、接受與撤銷狀態。
 
-現有 `workspaces.data_json` 保留為相容讀取層；P0 已依下列順序回填並建立交易式 dual-write：
+現有 `workspaces.data_json` 保留為相容寫入、revision 與緊急回滾副本；P0 已依下列順序回填並建立交易式 dual-write：
 
 1. `classes`、`students`
 2. `exam_records`、`exam_results`
@@ -128,7 +136,7 @@ P0 新增：
 4. `point_adjustments`、`discipline_records`
 5. `boss_events`、`boss_rewards`
 
-寫入以 revision gate 與 D1 batch 確保 blob、投影表及 audit 同成同敗。目前仍由 blob 讀取；全量對帳後才能切換讀取來源，不可直接刪除舊 blob。
+寫入以 revision gate 與 D1 batch 確保 blob、投影表及 audit 同成同敗。P1 已新增根層投影與穩定 SHA-256 對帳，驗證成功後預設由正規化表重建讀取；任何缺表、revision 不一致或 checksum 漂移都自動改讀 blob。切換、回滾與物理退場閘門見 [`p1-normalized-read-cutover.md`](p1-normalized-read-cutover.md)。
 
 ## 密碼與 session 基線
 
@@ -140,18 +148,14 @@ P0 新增：
 
 ## 部署架構
 
-目前 GitHub Pages 與 `workers.dev` 是跨站來源。階段性版本使用：
+正式部署由同一個 Cloudflare Worker 提供：
 
-- `Authorization: Bearer` 的 opaque session。
-- token 只放 `sessionStorage`，不放 `localStorage`。
-- 嚴格 CSP、短效 session、後端可撤銷。
+- `/` 與前端檔案由 Workers Static Assets 提供，`/api/` 由同一 Worker 處理。
+- session 使用 `__Host-epet_session`、`HttpOnly`、`Secure`、`SameSite=Lax` cookie；瀏覽器 JavaScript 不可讀取 raw token。
+- 寫入要求同站 `Origin`，並比對 `__Host-epet_csrf` cookie 與 `X-CSRF-Token` header。
+- Worker 統一加上 CSP、HSTS、`nosniff`、`no-referrer`、COOP 與 CORP 安全標頭。
 
-公開商業上架前應改成同站部署：
-
-- `https://app.<domain>/` 提供前端。
-- `https://app.<domain>/api/` 由同一 Cloudflare Worker 處理。
-- session 改為 `__Host-`、`HttpOnly`、`Secure`、`SameSite=Lax` cookie。
-- 寫入請求加入 CSRF token 或嚴格 Origin 驗證。
+目前正式來源為 `workers.dev`；日後綁定 `https://app.<domain>/` 時，前端與 `/api/` 必須繼續維持同一來源，Turnstile widget 也必須核准該 hostname。舊 GitHub Pages 只能停用或導向正式網站，不能當成跨站 API 客戶端。session 切換見 [`p1-same-origin-session-cutover.md`](p1-same-origin-session-cutover.md)，帳號安全切換見 [`p1-account-security-cutover.md`](p1-account-security-cutover.md)。
 
 ## 舊資料遷移
 
@@ -164,13 +168,13 @@ P0 新增：
 ## 上線順序
 
 1. 先套用 D1 migration。
-2. 部署同時支援新 auth API 與舊資料格式的 Worker。
-3. 驗證註冊、登入、租戶隔離、forgot/reset、舊工作區認領。
-4. 再部署有 Auth Gate 的前端。
+2. 將新 Worker、auth API 與前端 Static Assets 作為同一個版本部署。
+3. 驗證 cookie flags、Origin／CSRF 拒絕路徑、註冊、登入、租戶隔離、forgot/reset 與舊工作區認領。
+4. 停用舊 GitHub Pages 正式入口，確認使用者只從同站網址登入。
 5. 觀察錯誤率後關閉未登入 workspace 能力金鑰路徑。
 6. 最後才把 `REGISTRATION_ENABLED` 從預設的 `false` 改為 `true`，開放公開註冊與付費方案。
 
-若前端先上線或 Worker 未先 migration，會造成所有現有使用者無法同步，因此不可反向部署。
+若 Worker 未先 migration，會造成現有使用者無法同步；前端與 API 不可拆成不同版本發布。
 
 ## P0 驗收
 

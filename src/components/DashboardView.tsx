@@ -41,17 +41,31 @@ const StudentAnalyticsPanel = lazy(() =>
   })),
 );
 
+const DataGovernancePanel = lazy(() =>
+  import('./dashboard/DataGovernancePanel').then((module) => ({
+    default: module.DataGovernancePanel,
+  })),
+);
+
 type PointAdjustmentTarget =
   | { kind: 'student'; id: string; name: string }
   | { kind: 'batch'; ids: string[]; count: number }
   | { kind: 'class'; count: number };
 
-type DashboardSection = 'students' | 'rewards' | 'activities' | 'analytics' | 'rules' | 'records';
+type DashboardSection =
+  | 'students'
+  | 'rewards'
+  | 'activities'
+  | 'analytics'
+  | 'rules'
+  | 'records'
+  | 'governance';
 
 type DashboardViewProps = {
   readOnly?: boolean;
   canExportFullData?: boolean;
   canAdministerWorkspace?: boolean;
+  flushChanges?: () => Promise<boolean>;
 };
 
 const READ_ONLY_MUTATION_ACTIONS = new Set([
@@ -97,6 +111,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   readOnly = false,
   canExportFullData = false,
   canAdministerWorkspace = false,
+  flushChanges = async () => true,
 }) => {
   const dashboardStore = useStore(
     useShallow((state) => ({
@@ -403,7 +418,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   }, [dashboardSection, readOnly]);
 
   useEffect(() => {
-    if (!readOnly && !canAdministerWorkspace && dashboardSection === 'rules') {
+    if (
+      !readOnly &&
+      !canAdministerWorkspace &&
+      (dashboardSection === 'rules' || dashboardSection === 'governance')
+    ) {
       setDashboardSection('students');
     }
   }, [canAdministerWorkspace, dashboardSection, readOnly]);
@@ -959,10 +978,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           ['analytics', tLang.dashboardTabAnalytics, BarChart3],
           ['rules', tLang.dashboardTabRules, Settings],
           ['records', tLang.dashboardTabRecords, BookOpen],
+          ['governance', lang === 'en' ? 'Data governance' : '資料治理', Shield],
         ] as const)
           .filter(([section]) => {
             if (readOnly) return section === 'analytics' || section === 'records';
-            return canAdministerWorkspace || section !== 'rules';
+            return canAdministerWorkspace || (
+              section !== 'rules' && section !== 'governance'
+            );
           })
           .map(([section, label, Icon]) => (
           <button
@@ -1071,6 +1093,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           )}
         >
           <StudentAnalyticsPanel readOnly={readOnly} classId={selectedClassId} />
+        </Suspense>
+      )}
+
+      {dashboardSection === 'governance' && canAdministerWorkspace && (
+        <Suspense
+          fallback={(
+            <div className="flex min-h-64 items-center justify-center text-sm font-medium text-slate-500">
+              <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+              {tLang.loading}
+            </div>
+          )}
+        >
+          <DataGovernancePanel
+            classes={data.classes}
+            language={lang}
+            flushChanges={flushChanges}
+          />
         </Suspense>
       )}
 

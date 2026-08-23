@@ -1,13 +1,13 @@
 # 班級寵物養成系統
 
-一個給班級經營使用的教育遊戲化系統。導師可以管理學生積分、學習證據、警告與處罰；學生則能用積分餵食寵物、升級、對戰、抽扭蛋，並查看排行榜與寵物狀態。正式環境使用 Cloudflare Worker API 與 D1 保存資料。
+一個給班級經營使用的教育遊戲化系統。導師可以管理學生積分、學習證據、警告與處罰；學生則能用積分餵食寵物、升級、對戰、抽扭蛋，並查看排行榜與寵物狀態。正式環境由同一個 Cloudflare Worker 提供前端與 API，並使用 D1 保存資料。
 
 ## 直接使用
 
-- GitHub Pages: [https://andreww0421.github.io/epet/](https://andreww0421.github.io/epet/)
+- 正式網站：[https://epet-api.jtwen12345us.workers.dev/](https://epet-api.jtwen12345us.workers.dev/)
 - GitHub Repo: [https://github.com/andreww0421/epet](https://github.com/andreww0421/epet)
 
-推送到 `main` 後，GitHub Actions 會自動重新部署網站。
+推送到 `main` 後，GitHub Actions 會先驗證、套用 D1 migration，再將前端靜態資源與 API 一起部署到 Cloudflare Worker。
 
 ## 目前功能
 
@@ -24,8 +24,8 @@
 - 考試分析：試算表多格貼上、整批分數驗證、學習趨勢／弱項、導師評語與個別 A4 PDF
 - 教育指標：證據覆蓋、進展／精熟率、目標對齊、支持後進展與能力涵蓋
 - 公開安全：可切換的包容性模式、姓名遮罩、排行榜模式、週末暫停衰減與友善照護
-- 會員安全：註冊、登入、登出、忘記／重設密碼、可撤銷 session 與工作區角色權限
-- 資料管理：Cloudflare D1 同步、revision 衝突保護、版本快照、JSON 匯出 / 匯入與舊本機資料明確遷移
+- 會員安全：Email 驗證、Turnstile bot 防護、登入／重設密碼、可撤銷 session、角色權限與帳號生命週期通知
+- 資料管理：Cloudflare D1 同步、revision 衝突保護、受控版本復原、單生限縮匯出、可查詢 audit 與舊本機資料明確遷移
 
 ## 遊戲規則摘要
 
@@ -164,6 +164,7 @@ migrations/
   0003_core_entities.sql
   0004_workspace_class_assignments.sql
   0005_workspace_invitations.sql
+  0006_projection_read_model.sql
 .github/
   workflows/
     deploy.yml
@@ -174,17 +175,18 @@ wrangler.jsonc
 
 ## 資料保存
 
-- 正式 API：`https://epet-api.jtwen12345us.workers.dev`
+- 正式網站與 API：`https://epet-api.jtwen12345us.workers.dev/` 與同站 `/api/`
 - Cloudflare D1 是連線時的主要資料來源；學生個資預設不寫入 `localStorage`
 - 每次寫入帶有 `baseRevision`；版本不符時 API 回傳 `409`，避免靜默覆蓋
-- 每次資料請求都先驗證 Bearer session，再驗證工作區 membership；工作區 ID 本身不是憑證
+- 每次資料請求都先驗證 `__Host-epet_session` HttpOnly cookie，再驗證工作區 membership；工作區 ID 本身不是憑證
+- 所有變更狀態的 API 都要求同站 `Origin` 與 double-submit CSRF token；session token 不提供給 JavaScript，也不保存於 Web Storage
 - D1 保留最近 25 份 workspace revision 快照，供稽核與受控復原
 - autosave 使用串行 queue、退避重試、版本衝突保護與 `sessionStorage` 未同步草稿；登出或切換工作區前會先 flush
-- 核心班級、學生、考試、學習證據、加減分、處罰與魔王獎勵交易式雙寫至正規化表；`data_json` 保留為相容讀取層
+- 核心班級、學生、考試、學習證據、加減分、處罰與魔王獎勵交易式雙寫至正規化表；驗證後預設由正規化投影讀取，`data_json` 僅保留為相容寫入與緊急回滾副本
 - owner／admin 可邀請成員、管理角色與班級範圍；owner 可移轉所有權及雙重確認刪除工作區
 - 帳號可自助刪除，但必須先移轉或刪除其擁有的工作區
 - 刪除學生時會連同所有保留 revision 中的該生資料清除
-- `admin` 可透過 API 查看／復原 revision，並匯出單一學生的限縮資料集，不夾帶同班其他學生
+- owner／admin 可在「資料治理」管理介面預覽並復原 revision、匯出單一學生的限縮資料集，以及依動作／操作人／對象／日期查詢 audit；audit 查詢本身也會留痕
 - 可匯出為 JSON 備份
 - 可匯入既有資料，系統會自動補齊新版欄位
 - 找到舊版固定本機資料時，畫面只提供「下載備份／明確匯入／稍後」，不會自動掛到新帳號
@@ -192,22 +194,26 @@ wrangler.jsonc
 - 舊導師每日評語會遷移為獨立、可版本化的學習證據
 - 未自訂競爭或懲罰規則的舊資料會啟用包容性模式；已有明確自訂規則者會保留原設定
 
-完整會員、安全與舊資料上線設計見 [`docs/membership-and-p0-plan.md`](docs/membership-and-p0-plan.md)；學生資料盤點、保存／刪除與請求處理見 [`docs/privacy-data-governance.md`](docs/privacy-data-governance.md)。公開註冊前仍應完成 Email 驗證、機器人防護與同站 `HttpOnly` cookie；目前跨站 GitHub Pages／Worker 架構使用可撤銷的短效 opaque Bearer session。
+完整會員、安全與舊資料上線設計見 [`docs/membership-and-p0-plan.md`](docs/membership-and-p0-plan.md)；學生資料盤點、保存／刪除與請求處理見 [`docs/privacy-data-governance.md`](docs/privacy-data-governance.md)。同站 session 切換見 [`docs/p1-same-origin-session-cutover.md`](docs/p1-same-origin-session-cutover.md)；Email 驗證、Turnstile 與通知切換見 [`docs/p1-account-security-cutover.md`](docs/p1-account-security-cutover.md)；資料治理管理操作與驗收見 [`docs/p1-data-governance-console.md`](docs/p1-data-governance-console.md)。
 
 ## Cloudflare 部署
 
-D1 資料庫名稱為 `epet-production`。部署順序不可顛倒：先 migration、再 Worker、最後才部署有登入閘門的前端。
+D1 資料庫名稱為 `epet-production`。Cloudflare Workers Static Assets 會將前端與 API 發布成同一個不可分割的部署；順序為先 migration，再部署 Worker 與靜態資源。
 
 正式環境要先設定寄件服務。`RESEND_API_KEY` 必須使用 Worker secret，不可寫入 `wrangler.jsonc`：
 
 ```bash
 npx wrangler secret put RESEND_API_KEY
 npx wrangler secret put PASSWORD_RESET_FROM
+npx wrangler secret put TURNSTILE_SECRET_KEY
+npx wrangler secret put TURNSTILE_SITE_KEY
 ```
 
-`PUBLIC_APP_URL` 與 `REGISTRATION_ENABLED` 可使用 Worker vars。同一組核准的寄件者設定同時用於密碼重設與工作區邀請。專案預設關閉正式環境公開註冊；完成公開註冊的 Email 驗證與 bot 防護前不要開啟。若未設定寄件金鑰或寄件者，忘記密碼會保持通用回覆，邀請 API 則會關閉寄送；不可在此狀態開放正式使用。
+`TURNSTILE_SECRET_KEY` 只能存在 Worker secret；site key 會透過公開 health config 提供前端，本身不是機密，但不可誤用其他 hostname 的 widget。`PUBLIC_APP_URL`、`EMAIL_VERIFICATION_REQUIRED`、`BOT_PROTECTION_REQUIRED` 與 `REGISTRATION_ENABLED` 可使用 Worker vars。同一組核准寄件者用於密碼重設、驗證信、工作區邀請與帳號生命週期通知。
 
-Worker 每日由 cron 清理到期驗證資料。正式上線前還必須依 [`docs/p0-operations-runbook.md`](docs/p0-operations-runbook.md) 完成備份還原演練並核定 RPO／RTO。
+專案預設 `EMAIL_VERIFICATION_REQUIRED=true`、`REGISTRATION_ENABLED=false`，並暫將 `BOT_PROTECTION_REQUIRED=false`，避免尚未配置正式 Turnstile 金鑰時鎖死登入。公開註冊的安全切換順序是：先設定並實測 Resend 與兩個 Turnstile binding，再把 `BOT_PROTECTION_REQUIRED=true`，確認 `/api/v1/health` 的 `botProtectionEnabled`、`emailVerificationEnabled`、`lifecycleNotificationsEnabled` 都為 `true`，最後才開啟 `REGISTRATION_ENABLED=true`。未完成時維持邀請制。
+
+Worker 每日由 cron 清理到期驗證資料，並分批對帳／修復正規化投影。正式上線前還必須依 [`docs/p0-operations-runbook.md`](docs/p0-operations-runbook.md) 完成備份還原演練並核定 RPO／RTO；正規化切讀與 blob 退場見 [`docs/p1-normalized-read-cutover.md`](docs/p1-normalized-read-cutover.md)。GitHub Actions 的 production environment 必須設定 `CLOUDFLARE_ACCOUNT_ID` 與具 Workers／D1 部署權限的 `CLOUDFLARE_API_TOKEN`。
 
 套用 migration：
 
@@ -215,10 +221,10 @@ Worker 每日由 cron 清理到期驗證資料。正式上線前還必須依 [`d
 npm run db:migrate:remote
 ```
 
-部署 Worker：
+部署 Worker 與前端靜態資源：
 
 ```bash
 npm run deploy:worker
 ```
 
-GitHub Pages 的 production build 已設定 `VITE_API_BASE_URL`，推送 `main` 後會連到正式 Worker。
+舊 GitHub Pages 網站不能再作為正式登入入口，因為 HttpOnly session 只接受同站 cookie。切換後應停用 Pages 或只保留導向正式網站的靜態頁，不可恢復前端可讀取的 Bearer token。

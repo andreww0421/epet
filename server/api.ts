@@ -15,14 +15,20 @@ import {
   AuthForbiddenError,
   AuthService,
   AuthValidationError,
+  DEFAULT_SESSION_TTL_MS,
+  EmailVerificationRequiredError,
   InvalidCredentialsError,
+  InvalidEmailVerificationTokenError,
   InvalidPasswordResetTokenError,
   InvalidSessionError,
+  isEmailVerificationToken,
   isPasswordResetToken,
   isRoleAtLeast,
-  parseBearerToken,
+  type AccountLifecycleDelivery,
   type AuthRateLimitPolicy,
+  type AuthSessionEnvelope,
   type AuthServiceOptions,
+  type EmailVerificationDelivery,
   type PasswordResetDelivery,
   type WorkspaceInvitationDelivery,
 } from './auth';
@@ -35,9 +41,11 @@ import {
   WorkspaceMembershipNotFoundError,
   WorkspaceNotFoundError,
   WorkspaceOwnerTransferRequiredError,
+  type AuditEventRecord,
   type AuthRateLimitScope,
   type AuthRateLimitResult,
   type AuthRepository,
+  type WorkspaceAuditQuery,
   type WorkspaceRole,
   type WorkspaceRepository,
 } from './contracts';
@@ -52,6 +60,29 @@ const MAX_AUTH_BODY_BYTES = 16 * 1024;
 const DEFAULT_FORGOT_RESPONSE_FLOOR_MS = 300;
 const LOCAL_WORKSPACE_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 const CLOUD_WORKSPACE_PATTERN = /^ws_[a-zA-Z0-9_-]{24,61}$/;
+const SESSION_COOKIE_NAME = '__Host-epet_session';
+const CSRF_COOKIE_NAME = '__Host-epet_csrf';
+const SESSION_TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,256}$/;
+const CSRF_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+class InvalidCsrfError extends Error {
+  constructor() {
+    super('CSRF_INVALID');
+  }
+}
+
+class BotChallengeFailedError extends Error {
+  constructor() {
+    super('BOT_CHALLENGE_FAILED');
+  }
+}
+
+class BotProtectionUnavailableError extends Error {
+  constructor() {
+    super('BOT_PROTECTION_UNAVAILABLE');
+  }
+}
 
 const AUTH_RATE_LIMIT_POLICIES: Record<
   AuthRateLimitScope,
@@ -76,6 +107,11 @@ const AUTH_RATE_LIMIT_POLICIES: Record<
     windowMs: 15 * 60 * 1000,
     maxAttempts: 10,
     blockMs: 15 * 60 * 1000,
+  },
+  verify: {
+    windowMs: 60 * 60 * 1000,
+    maxAttempts: 5,
+    blockMs: 60 * 60 * 1000,
   },
 };
 
@@ -103,12 +139,36 @@ const AUTH_GLOBAL_RATE_LIMIT_POLICIES: Record<
     maxAttempts: 30,
     blockMs: 15 * 60 * 1000,
   },
+  verify: {
+    windowMs: 60 * 60 * 1000,
+    maxAttempts: 20,
+    blockMs: 60 * 60 * 1000,
+  },
+};
+
+export type BotChallengeVerification = {
+  token: string;
+  action: 'login' | 'register' | 'forgot';
+  remoteIp?: string;
+  expectedHostname: string;
 };
 
 export type ApiOptions = {
   allowLocalWorkspaceIds?: boolean;
   allowedOrigins?: string[];
   auth?: AuthServiceOptions;
+  accountLifecycleMailer?: (
+    delivery: AccountLifecycleDelivery,
+  ) => Promise<void>;
+  botChallengeVerifier?: (
+    input: BotChallengeVerification,
+  ) => Promise<boolean>;
+  botProtectionRequired?: boolean;
+  clientIp?: (request: Request) => string | null | undefined;
+  emailVerificationMailer?: (
+    delivery: EmailVerificationDelivery,
+  ) => Promise<void>;
+  emailVerificationRequired?: boolean;
   passwordResetMailer?: (
     delivery: PasswordResetDelivery,
   ) => Promise<void>;
@@ -119,19 +179,89 @@ export type ApiOptions = {
   deferBackgroundTask?: (task: Promise<void>) => void;
   forgotResponseFloorMs?: number;
   registrationEnabled?: boolean;
+  turnstileSiteKey?: string;
+  sessionCookieMaxAgeSeconds?: number;
 };
 
 const json = (
   body: unknown,
   status = 200,
   headers: HeadersInit = {},
-) => Response.json(body, {
-  status,
-  headers: {
-    'cache-control': 'no-store',
-    ...headers,
-  },
-});
+) => {
+  const responseHeaders = new Headers(headers);
+  if (!responseHeaders.has('cache-control')) {
+    responseHeaders.set('cache-control', 'no-store');
+  }
+  return Response.json(body, { status, headers: responseHeaders });
+};
+
+const parseCookies = (request: Request) => {
+  const cookies = new Map<string, string>();
+  for (const segment of (request.headers.get('cookie') ?? '').split(';')) {
+    const separator = segment.indexOf('=');
+    if (separator <= 0) continue;
+    const name = segment.slice(0, separator).trim();
+    const value = segment.slice(separator + 1).trim();
+    if (name && !cookies.has(name)) cookies.set(name, value);
+  }
+  return cookies;
+};
+
+const getSessionToken = (request: Request) => {
+  const token = parseCookies(request).get(SESSION_COOKIE_NAME) ?? '';
+  return SESSION_TOKEN_PATTERN.test(token) ? token : null;
+};
+
+const createCsrfToken = () => {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary)
+    .replaceAll('+', '-')
+    .replaceAll('/', '_')
+    .replace(/=+$/, '');
+};
+
+const constantTimeTextEqual = (left: string, right: string) => {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  }
+  return difference === 0;
+};
+
+const validateCsrf = (request: Request) => {
+  const cookieToken = parseCookies(request).get(CSRF_COOKIE_NAME) ?? '';
+  const headerToken = request.headers.get('x-csrf-token') ?? '';
+  if (
+    !CSRF_TOKEN_PATTERN.test(cookieToken) ||
+    !CSRF_TOKEN_PATTERN.test(headerToken) ||
+    !constantTimeTextEqual(cookieToken, headerToken)
+  ) {
+    throw new InvalidCsrfError();
+  }
+};
+
+const sessionCookie = (token: string, maximumAgeSeconds: number) =>
+  `${SESSION_COOKIE_NAME}=${token}; Path=/; Max-Age=${maximumAgeSeconds}; ` +
+  'HttpOnly; Secure; SameSite=Lax; Priority=High';
+
+const csrfCookie = (token: string, maximumAgeSeconds: number) =>
+  `${CSRF_COOKIE_NAME}=${token}; Path=/; Max-Age=${maximumAgeSeconds}; ` +
+  'Secure; SameSite=Lax; Priority=High';
+
+const clearCookie = (name: string, httpOnly = false) =>
+  `${name}=; Path=/; Max-Age=0; ${httpOnly ? 'HttpOnly; ' : ''}` +
+  'Secure; SameSite=Lax; Priority=High';
+
+const withClearedAuthCookies = (headers: HeadersInit = {}) => {
+  const result = new Headers(headers);
+  result.append('set-cookie', clearCookie(SESSION_COOKIE_NAME, true));
+  result.append('set-cookie', clearCookie(CSRF_COOKIE_NAME));
+  return result;
+};
 
 const readJsonBody = async (
   request: Request,
@@ -291,6 +421,106 @@ const getRevisionLimit = (url: URL) => {
     : null;
 };
 
+const getAuditQuery = (url: URL): WorkspaceAuditQuery | null => {
+  const rawLimit = url.searchParams.get('limit');
+  const limit = rawLimit == null ? 50 : Number(rawLimit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) return null;
+
+  const readText = (name: string, maximumLength: number) => {
+    const raw = url.searchParams.get(name);
+    if (raw == null) return { valid: true, value: undefined };
+    const value = raw.trim();
+    return value && value.length <= maximumLength
+      ? { valid: true, value }
+      : { valid: false, value: undefined };
+  };
+  const action = readText('action', 120);
+  const actorUserId = readText('actorUserId', 128);
+  const targetType = readText('targetType', 80);
+  if (!action.valid || !actorUserId.valid || !targetType.valid) return null;
+
+  const readTimestamp = (name: string) => {
+    const raw = url.searchParams.get(name);
+    if (raw == null) return { valid: true, value: undefined };
+    if (!/^\d{1,16}$/.test(raw)) {
+      return { valid: false, value: undefined };
+    }
+    const value = Number(raw);
+    return Number.isSafeInteger(value) && value >= 0
+      ? { valid: true, value }
+      : { valid: false, value: undefined };
+  };
+  const from = readTimestamp('from');
+  const to = readTimestamp('to');
+  if (
+    !from.valid ||
+    !to.valid ||
+    (from.value != null && to.value != null && from.value > to.value)
+  ) return null;
+
+  const rawCursor = url.searchParams.get('cursor');
+  let cursor: WorkspaceAuditQuery['cursor'];
+  if (rawCursor != null) {
+    const separator = rawCursor.indexOf(':');
+    const createdAtText = rawCursor.slice(0, separator);
+    const id = rawCursor.slice(separator + 1);
+    if (
+      separator <= 0 ||
+      !/^\d{1,16}$/.test(createdAtText) ||
+      !id ||
+      id.length > 256
+    ) return null;
+    const createdAt = Number(createdAtText);
+    if (!Number.isSafeInteger(createdAt) || createdAt < 0) return null;
+    cursor = { createdAt, id };
+  }
+
+  return {
+    limit,
+    ...(cursor ? { cursor } : {}),
+    ...(action.value ? { action: action.value } : {}),
+    ...(actorUserId.value ? { actorUserId: actorUserId.value } : {}),
+    ...(targetType.value ? { targetType: targetType.value } : {}),
+    ...(from.value != null ? { fromCreatedAt: from.value } : {}),
+    ...(to.value != null ? { toCreatedAt: to.value } : {}),
+  };
+};
+
+const SENSITIVE_AUDIT_METADATA_KEY =
+  /token|password|secret|authorization|cookie|credential|session/i;
+
+const sanitizeAuditMetadataValue = (value: unknown, depth = 0): unknown => {
+  if (depth >= 5) return '[depth-limited]';
+  if (Array.isArray(value)) {
+    return value.slice(0, 50).map((item) =>
+      sanitizeAuditMetadataValue(item, depth + 1)
+    );
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([key]) => !SENSITIVE_AUDIT_METADATA_KEY.test(key))
+        .slice(0, 100)
+        .map(([key, item]) => [
+          key,
+          sanitizeAuditMetadataValue(item, depth + 1),
+        ]),
+    );
+  }
+  return typeof value === 'string' ? value.slice(0, 2_000) : value;
+};
+
+const auditEventForResponse = (
+  event: AuditEventRecord,
+): AuditEventRecord => {
+  const { metadata, ...record } = event;
+  if (!metadata) return record;
+  const safeMetadata = sanitizeAuditMetadataValue(metadata);
+  return safeMetadata && typeof safeMetadata === 'object'
+    ? { ...record, metadata: safeMetadata as Record<string, unknown> }
+    : record;
+};
+
 const createStudentPrivacyRecord = (student: Student) => ({
   id: student.id,
   name: student.name,
@@ -313,19 +543,20 @@ const createStudentPrivacyRecord = (student: Student) => ({
 
 const getCorsHeaders = (request: Request, allowedOrigins: string[]) => {
   const requestOrigin = request.headers.get('origin');
+  const requestUrl = new URL(request.url);
   const allowAny = allowedOrigins.includes('*');
+  const sameOrigin = requestOrigin === requestUrl.origin;
   const allowedOrigin =
-    allowAny || !requestOrigin || allowedOrigins.includes(requestOrigin)
-      ? allowAny
-        ? '*'
-        : requestOrigin
+    sameOrigin || allowAny || !requestOrigin || allowedOrigins.includes(requestOrigin)
+      ? requestOrigin
       : null;
   return {
     allowed: Boolean(allowedOrigin || !requestOrigin),
     headers: {
       ...(allowedOrigin ? { 'access-control-allow-origin': allowedOrigin } : {}),
+      ...(allowedOrigin ? { 'access-control-allow-credentials': 'true' } : {}),
       'access-control-allow-headers':
-        'authorization, content-type, x-epet-workspace, x-request-id',
+        'content-type, x-csrf-token, x-epet-workspace, x-request-id',
       'access-control-allow-methods': 'GET, PUT, POST, PATCH, DELETE, OPTIONS',
       vary: 'Origin',
     },
@@ -352,15 +583,101 @@ export const createApiHandler = (
   repository: WorkspaceRepository & AuthRepository,
   options: ApiOptions = {},
 ) => {
-  const allowedOrigins = options.allowedOrigins ?? ['*'];
+  const allowedOrigins = options.allowedOrigins ?? [];
   const allowLocalWorkspaceIds = options.allowLocalWorkspaceIds ?? true;
-  const registrationEnabled = options.registrationEnabled === true;
+  const emailVerificationRequired =
+    options.emailVerificationRequired === true;
+  const botProtectionRequired = options.botProtectionRequired === true;
+  const turnstileSiteKey = options.turnstileSiteKey?.trim() ?? '';
+  const botProtectionEnabled = Boolean(
+    options.botChallengeVerifier && turnstileSiteKey,
+  );
+  const authenticationEnabled =
+    !botProtectionRequired || botProtectionEnabled;
+  const registrationEnabled = options.registrationEnabled === true &&
+    authenticationEnabled &&
+    (!emailVerificationRequired || Boolean(options.emailVerificationMailer));
+  const sessionCookieMaxAgeSeconds = Math.max(
+    60,
+    Math.floor(
+      options.sessionCookieMaxAgeSeconds ??
+      (options.auth?.sessionTtlMs ?? DEFAULT_SESSION_TTL_MS) / 1000,
+    ),
+  );
   const resolveClientIdentity = options.clientIdentity ?? getPlatformClientIdentity;
+  const resolveClientIp = options.clientIp ?? (() => undefined);
   const deferBackgroundTask = options.deferBackgroundTask ?? (() => undefined);
   const forgotResponseFloorMs = Number.isFinite(options.forgotResponseFloorMs)
     ? Math.min(2_000, Math.max(0, options.forgotResponseFloorMs ?? 0))
     : DEFAULT_FORGOT_RESPONSE_FLOOR_MS;
-  const authService = new AuthService(repository, options.auth);
+  const scheduleBackgroundDelivery = (
+    task: Promise<void>,
+    label: string,
+  ) => {
+    const handledTask = task.catch((error: unknown) => {
+      console.error(`${label} delivery failed`, error);
+    });
+    try {
+      deferBackgroundTask(handledTask);
+    } catch (error) {
+      console.error(`${label} delivery scheduling failed`, error);
+    }
+  };
+  const authService = new AuthService(repository, {
+    ...options.auth,
+    emailVerificationRequired,
+    lifecycleNotifier: options.accountLifecycleMailer
+      ? (delivery) => scheduleBackgroundDelivery(
+          options.accountLifecycleMailer!(delivery),
+          'Account lifecycle',
+        )
+      : undefined,
+  });
+
+  const verifyBotChallenge = async (
+    request: Request,
+    body: Record<string, unknown>,
+    action: BotChallengeVerification['action'],
+  ) => {
+    if (!botProtectionEnabled) {
+      if (botProtectionRequired) throw new BotProtectionUnavailableError();
+      return;
+    }
+    const candidate = getString(body.turnstileToken);
+    if (!candidate || candidate.length > 2_048) {
+      throw new BotChallengeFailedError();
+    }
+    const verified = await options.botChallengeVerifier!({
+      token: candidate,
+      action,
+      remoteIp: resolveClientIp(request)?.trim() || undefined,
+      expectedHostname: new URL(request.url).hostname,
+    });
+    if (!verified) throw new BotChallengeFailedError();
+  };
+
+  const authenticatedJson = (
+    envelope: AuthSessionEnvelope,
+    status: number,
+    headers: HeadersInit,
+    extra: Record<string, unknown> = {},
+  ) => {
+    const csrfToken = createCsrfToken();
+    const responseHeaders = new Headers(headers);
+    responseHeaders.append(
+      'set-cookie',
+      sessionCookie(envelope.sessionToken, sessionCookieMaxAgeSeconds),
+    );
+    responseHeaders.append(
+      'set-cookie',
+      csrfCookie(csrfToken, sessionCookieMaxAgeSeconds),
+    );
+    return json(
+      { session: envelope.session, csrfToken, ...extra },
+      status,
+      responseHeaders,
+    );
+  };
 
   return async (request: Request): Promise<Response> => {
     const cors = getCorsHeaders(request, allowedOrigins);
@@ -370,6 +687,12 @@ export const createApiHandler = (
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: cors.headers });
     }
+    if (
+      !SAFE_METHODS.has(request.method.toUpperCase()) &&
+      !request.headers.get('origin')
+    ) {
+      return json({ error: 'ORIGIN_REQUIRED' }, 403, cors.headers);
+    }
 
     const url = new URL(request.url);
     if (request.method === 'GET' && url.pathname === '/api/v1/health') {
@@ -378,8 +701,15 @@ export const createApiHandler = (
           ok: true,
           service: 'epet-api',
           version: 1,
+          authenticationEnabled,
           registrationEnabled,
           invitationEnabled: Boolean(options.workspaceInvitationMailer),
+          emailVerificationEnabled: Boolean(options.emailVerificationMailer),
+          lifecycleNotificationsEnabled: Boolean(
+            options.accountLifecycleMailer,
+          ),
+          botProtectionEnabled,
+          ...(botProtectionEnabled ? { turnstileSiteKey } : {}),
         },
         200,
         cors.headers,
@@ -392,10 +722,17 @@ export const createApiHandler = (
         url.pathname === '/api/v1/auth/register'
       ) {
         const body = await readJsonBody(request, MAX_AUTH_BODY_BYTES);
-        if (!registrationEnabled) {
+        if (options.registrationEnabled !== true) {
           return json(
             { error: 'REGISTRATION_DISABLED' },
             403,
+            cors.headers,
+          );
+        }
+        if (!registrationEnabled) {
+          return json(
+            { error: 'REGISTRATION_CONFIGURATION_INCOMPLETE' },
+            503,
             cors.headers,
           );
         }
@@ -418,12 +755,13 @@ export const createApiHandler = (
             },
           );
         }
+        await verifyBotChallenge(request, body, 'register');
 
         const displayName = getString(body.displayName);
         const initialWorkspaceData = isAppData(body.initialWorkspaceData)
           ? normalizeAppData(body.initialWorkspaceData)
           : createInitialData();
-        const envelope = await authService.register({
+        const registration = await authService.register({
           email,
           password: getString(body.password),
           displayName,
@@ -432,40 +770,49 @@ export const createApiHandler = (
             `${displayName.trim() || 'ePet'} 的班級`,
           initialWorkspaceData,
         });
+        const {
+          emailVerification,
+          ...envelope
+        } = registration;
+        if (emailVerification && options.emailVerificationMailer) {
+          scheduleBackgroundDelivery(
+            options.emailVerificationMailer(emailVerification),
+            'Email verification',
+          );
+        }
 
         const legacyWorkspaceId = getString(body.legacyWorkspaceId);
         if (!legacyWorkspaceId) {
-          return json(envelope, 201, cors.headers);
+          return authenticatedJson(envelope, 201, cors.headers);
         }
         try {
           const session = await authService.claimLegacyWorkspace(
             envelope.sessionToken,
             legacyWorkspaceId,
           );
-          return json(
+          return authenticatedJson(
+            { ...envelope, session },
+            201,
+            cors.headers,
             {
-              ...envelope,
-              session,
               legacyClaim: {
                 status: 'claimed',
                 workspaceId: legacyWorkspaceId,
               },
             },
-            201,
-            cors.headers,
           );
         } catch (error) {
-          return json(
+          return authenticatedJson(
+            envelope,
+            201,
+            cors.headers,
             {
-              ...envelope,
               legacyClaim: {
                 status: 'failed',
                 workspaceId: legacyWorkspaceId,
                 error: legacyClaimErrorCode(error),
               },
             },
-            201,
-            cors.headers,
           );
         }
       }
@@ -494,7 +841,8 @@ export const createApiHandler = (
             },
           );
         }
-        return json(
+        await verifyBotChallenge(request, body, 'login');
+        return authenticatedJson(
           await authService.login({
             email,
             password: getString(body.password),
@@ -508,14 +856,22 @@ export const createApiHandler = (
         request.method === 'GET' &&
         url.pathname === '/api/v1/auth/session'
       ) {
-        const token = parseBearerToken(
-          request.headers.get('authorization'),
-        );
+        const token = getSessionToken(request);
         if (!token) throw new InvalidSessionError();
+        const existingCsrfToken =
+          parseCookies(request).get(CSRF_COOKIE_NAME) ?? '';
+        const csrfToken = CSRF_TOKEN_PATTERN.test(existingCsrfToken)
+          ? existingCsrfToken
+          : createCsrfToken();
+        const headers = new Headers(cors.headers);
+        headers.append(
+          'set-cookie',
+          csrfCookie(csrfToken, sessionCookieMaxAgeSeconds),
+        );
         return json(
-          { session: await authService.getSession(token) },
+          { session: await authService.getSession(token), csrfToken },
           200,
-          cors.headers,
+          headers,
         );
       }
 
@@ -523,18 +879,91 @@ export const createApiHandler = (
         request.method === 'POST' &&
         url.pathname === '/api/v1/auth/logout'
       ) {
-        const token = parseBearerToken(
-          request.headers.get('authorization'),
-        );
+        const token = getSessionToken(request);
         if (!token) throw new InvalidSessionError();
+        validateCsrf(request);
         await authService.logout(token);
         return new Response(null, {
           status: 204,
-          headers: {
+          headers: withClearedAuthCookies({
             ...cors.headers,
             'cache-control': 'no-store',
-          },
+          }),
         });
+      }
+
+      if (
+        request.method === 'POST' &&
+        url.pathname === '/api/v1/auth/email/verify'
+      ) {
+        const body = await readJsonBody(request, MAX_AUTH_BODY_BYTES);
+        const verificationToken = getString(body.token);
+        if (!isEmailVerificationToken(verificationToken)) {
+          throw new InvalidEmailVerificationTokenError();
+        }
+        const rateLimit = await consumeRequestRateLimit(
+          authService,
+          'verify',
+          normalizeClientIdentity(resolveClientIdentity(request)),
+          verificationToken,
+        );
+        if (!rateLimit.allowed) {
+          return json(
+            { error: 'RATE_LIMITED' },
+            429,
+            {
+              ...cors.headers,
+              'retry-after': String(
+                Math.max(1, Math.ceil(rateLimit.retryAfterMs / 1000)),
+              ),
+            },
+          );
+        }
+        await authService.verifyEmail(verificationToken);
+        return json({ verified: true }, 200, cors.headers);
+      }
+
+      if (
+        request.method === 'POST' &&
+        url.pathname === '/api/v1/auth/email/resend'
+      ) {
+        if (!options.emailVerificationMailer) {
+          return json(
+            { error: 'EMAIL_VERIFICATION_DELIVERY_UNAVAILABLE' },
+            503,
+            cors.headers,
+          );
+        }
+        const token = getSessionToken(request);
+        if (!token) throw new InvalidSessionError();
+        validateCsrf(request);
+        const session = await authService.getSession(token);
+        const rateLimit = await consumeRequestRateLimit(
+          authService,
+          'verify',
+          normalizeClientIdentity(resolveClientIdentity(request)),
+          session.user.id,
+        );
+        if (!rateLimit.allowed) {
+          return json(
+            { error: 'RATE_LIMITED' },
+            429,
+            {
+              ...cors.headers,
+              'retry-after': String(
+                Math.max(1, Math.ceil(rateLimit.retryAfterMs / 1000)),
+              ),
+            },
+          );
+        }
+        const delivery = await authService.requestEmailVerification(token);
+        if (delivery) {
+          scheduleBackgroundDelivery(
+            options.emailVerificationMailer(delivery),
+            'Email verification',
+          );
+        }
+        return json({ accepted: true }, 202, cors.headers);
       }
 
       if (
@@ -550,6 +979,9 @@ export const createApiHandler = (
           normalizeClientIdentity(resolveClientIdentity(request)),
           email,
         );
+        if (rateLimit.allowed) {
+          await verifyBotChallenge(request, body, 'forgot');
+        }
         const deliveryTask = rateLimit.allowed
           ? Promise.resolve()
               .then(() => authService.requestPasswordReset(email))
@@ -617,7 +1049,11 @@ export const createApiHandler = (
           token,
           getString(body.password),
         );
-        return json({ ok: true }, 200, cors.headers);
+        return json(
+          { ok: true },
+          200,
+          withClearedAuthCookies(cors.headers),
+        );
       }
 
       if (
@@ -644,7 +1080,7 @@ export const createApiHandler = (
             },
           );
         }
-        return json(
+        return authenticatedJson(
           await authService.acceptWorkspaceInvitation(
             invitationToken,
             getString(body.displayName),
@@ -655,10 +1091,11 @@ export const createApiHandler = (
         );
       }
 
-      const token = parseBearerToken(
-        request.headers.get('authorization'),
-      );
+      const token = getSessionToken(request);
       if (!token) throw new InvalidSessionError();
+      if (!SAFE_METHODS.has(request.method.toUpperCase())) {
+        validateCsrf(request);
+      }
 
       if (
         request.method === 'DELETE' &&
@@ -672,7 +1109,10 @@ export const createApiHandler = (
         );
         return new Response(null, {
           status: 204,
-          headers: { ...cors.headers, 'cache-control': 'no-store' },
+          headers: withClearedAuthCookies({
+            ...cors.headers,
+            'cache-control': 'no-store',
+          }),
         });
       }
 
@@ -961,6 +1401,62 @@ export const createApiHandler = (
               workspaceId,
               limit,
             ),
+          },
+          200,
+          cors.headers,
+        );
+      }
+
+      if (
+        request.method === 'GET' &&
+        url.pathname === '/api/v1/audit'
+      ) {
+        enforceRole(authorized.membership.role, 'admin');
+        const query = getAuditQuery(url);
+        if (!query) {
+          return json({ error: 'INVALID_AUDIT_QUERY' }, 400, cors.headers);
+        }
+        const limit = query.limit ?? 50;
+        const events = await repository.listWorkspaceAuditEvents(
+          workspaceId,
+          { ...query, limit: limit + 1 },
+        );
+        const page = events.slice(0, limit);
+        const responsePage = page.map(auditEventForResponse);
+        const lastEvent = page.at(-1);
+        const nextCursor = events.length > limit && lastEvent
+          ? `${lastEvent.createdAt}:${lastEvent.id}`
+          : undefined;
+        await repository.appendAuditEvent({
+          id: `evt_${crypto.randomUUID()}`,
+          workspaceId,
+          actorUserId: authorized.user.id,
+          action: 'audit.query',
+          targetType: 'workspace',
+          targetId: workspaceId,
+          metadata: {
+            requestId: getRequestId(request),
+            resultCount: responsePage.length,
+            ...(query.action ? { action: query.action } : {}),
+            ...(query.actorUserId
+              ? { actorUserId: query.actorUserId }
+              : {}),
+            ...(query.targetType
+              ? { targetType: query.targetType }
+              : {}),
+            ...(query.fromCreatedAt != null
+              ? { fromCreatedAt: query.fromCreatedAt }
+              : {}),
+            ...(query.toCreatedAt != null
+              ? { toCreatedAt: query.toCreatedAt }
+              : {}),
+          },
+          createdAt: Date.now(),
+        });
+        return json(
+          {
+            events: responsePage,
+            ...(nextCursor ? { nextCursor } : {}),
           },
           200,
           cors.headers,
@@ -1302,7 +1798,27 @@ export const createApiHandler = (
         return json({ error: 'INVALID_CREDENTIALS' }, 401, cors.headers);
       }
       if (error instanceof InvalidSessionError) {
-        return json({ error: 'INVALID_SESSION' }, 401, cors.headers);
+        return json(
+          { error: 'INVALID_SESSION' },
+          401,
+          withClearedAuthCookies(cors.headers),
+        );
+      }
+      if (error instanceof InvalidCsrfError) {
+        return json({ error: 'CSRF_INVALID' }, 403, cors.headers);
+      }
+      if (error instanceof BotChallengeFailedError) {
+        return json({ error: 'BOT_CHALLENGE_FAILED' }, 403, cors.headers);
+      }
+      if (error instanceof BotProtectionUnavailableError) {
+        return json({ error: 'BOT_PROTECTION_UNAVAILABLE' }, 503, cors.headers);
+      }
+      if (error instanceof EmailVerificationRequiredError) {
+        return json(
+          { error: 'EMAIL_VERIFICATION_REQUIRED' },
+          403,
+          cors.headers,
+        );
       }
       if (error instanceof AuthForbiddenError) {
         return json({ error: 'FORBIDDEN' }, 403, cors.headers);
@@ -1313,6 +1829,13 @@ export const createApiHandler = (
       if (error instanceof InvalidPasswordResetTokenError) {
         return json(
           { error: 'INVALID_PASSWORD_RESET_TOKEN' },
+          400,
+          cors.headers,
+        );
+      }
+      if (error instanceof InvalidEmailVerificationTokenError) {
+        return json(
+          { error: 'INVALID_EMAIL_VERIFICATION_TOKEN' },
           400,
           cors.headers,
         );

@@ -4,6 +4,12 @@
   "main": "worker/index.ts",
   "compatibility_date": "2026-07-29",
   "workers_dev": true,
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/**", "!/assets/**"]
+  },
   "placement": {
     "mode": "smart"
   },
@@ -14,8 +20,9 @@
     "crons": ["17 3 * * *"]
   },
   "vars": {
-    "ALLOWED_ORIGINS": "https://andreww0421.github.io,http://localhost:3000,http://127.0.0.1:3000",
-    "PUBLIC_APP_URL": "https://andreww0421.github.io/epet/",
+    "BOT_PROTECTION_REQUIRED": "false",
+    "EMAIL_VERIFICATION_REQUIRED": "true",
+    "PUBLIC_APP_URL": "https://epet-api.jtwen12345us.workers.dev/",
     "REGISTRATION_ENABLED": "false"
   },
   "d1_databases": [
