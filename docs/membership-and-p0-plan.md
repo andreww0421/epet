@@ -141,7 +141,7 @@ P0 新增：
 ## 密碼與 session 基線
 
 - 密碼長度：12–128 字元，允許密碼管理器與貼上，不強制週期性更換。
-- 現階段使用 Node Crypto `PBKDF2-HMAC-SHA256`、每位使用者獨立 salt、600,000 iterations；Cloudflare Worker 透過 `nodejs_compat` 執行完整工作因子，參數跟著帳號保存，之後可升級。
+- 現階段使用 Web Crypto `PBKDF2-HMAC-SHA256`、每位使用者獨立 salt、100,000 iterations（Cloudflare Workers runtime 上限）；參數跟著帳號保存，日後可透過登入後 rehash 或密碼變更升級。
 - session 與 reset token 都由 CSPRNG 產生，資料庫不保存 raw token。
 - 登入、註冊、忘記密碼與 reset 都要有持久化 rate limit。
 - 所有錯誤使用穩定錯誤碼，不把 SQL、stack 或帳號存在狀態送到前端。

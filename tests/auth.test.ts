@@ -26,12 +26,12 @@ import {
   runWorkspaceMutation,
 } from '../src/auth/workspaceAccess';
 
-test('default PBKDF2 policy keeps its full work factor through Node crypto', async () => {
-  assert.equal(DEFAULT_PASSWORD_ITERATIONS, 600_000);
+test('default PBKDF2 policy stays within the Cloudflare Workers runtime limit', async () => {
+  assert.equal(DEFAULT_PASSWORD_ITERATIONS, 100_000);
   const credential = await createPasswordCredential(
     'correct horse battery staple',
   );
-  assert.equal(credential.iterations, 600_000);
+  assert.equal(credential.iterations, 100_000);
   assert.equal(await verifyPassword(
     'correct horse battery staple',
     credential,
