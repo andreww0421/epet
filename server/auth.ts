@@ -1,3 +1,4 @@
+import { pbkdf2 as nodePbkdf2 } from 'node:crypto';
 import type { AppData } from '../src/store/types';
 import {
   EmailAlreadyExistsError,
@@ -232,27 +233,22 @@ const derivePasswordHash = async (
   password: string,
   salt: Uint8Array,
   iterations: number,
-  cryptoImplementation: Crypto,
-) => {
-  const key = await cryptoImplementation.subtle.importKey(
-    'raw',
-    textEncoder.encode(password),
-    'PBKDF2',
-    false,
-    ['deriveBits'],
-  );
-  const bits = await cryptoImplementation.subtle.deriveBits(
-    {
-      name: 'PBKDF2',
-      hash: 'SHA-256',
-      salt,
-      iterations,
+) => new Promise<Uint8Array>((resolve, reject) => {
+  nodePbkdf2(
+    password,
+    salt,
+    iterations,
+    32,
+    'sha256',
+    (error, derivedKey) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(new Uint8Array(derivedKey));
     },
-    key,
-    256,
   );
-  return new Uint8Array(bits);
-};
+});
 
 export const normalizeEmail = (email: string) =>
   email.trim().toLocaleLowerCase('en-US');
@@ -296,7 +292,6 @@ export const createPasswordCredential = async (
     password,
     salt,
     iterations,
-    cryptoImplementation,
   );
   return {
     algorithm: 'PBKDF2-HMAC-SHA256',
@@ -324,7 +319,6 @@ export const verifyPassword = async (
       password,
       base64UrlToBytes(credential.salt),
       credential.iterations,
-      cryptoImplementation,
     );
     return constantTimeEqual(actual, base64UrlToBytes(credential.hash));
   } catch {
@@ -628,7 +622,6 @@ export class AuthService {
         passwordCandidate,
         new Uint8Array(16),
         this.passwordIterations,
-        this.crypto,
       );
       throw new InvalidCredentialsError();
     }

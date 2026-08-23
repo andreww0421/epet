@@ -6,9 +6,12 @@ import test from 'node:test';
 import {
   AuthService,
   AuthValidationError,
+  createPasswordCredential,
+  DEFAULT_PASSWORD_ITERATIONS,
   InvalidCredentialsError,
   InvalidPasswordResetTokenError,
   InvalidSessionError,
+  verifyPassword,
 } from '../server/auth';
 import {
   EmailAlreadyExistsError,
@@ -22,6 +25,18 @@ import {
   canWriteWorkspace,
   runWorkspaceMutation,
 } from '../src/auth/workspaceAccess';
+
+test('default PBKDF2 policy keeps its full work factor through Node crypto', async () => {
+  assert.equal(DEFAULT_PASSWORD_ITERATIONS, 600_000);
+  const credential = await createPasswordCredential(
+    'correct horse battery staple',
+  );
+  assert.equal(credential.iterations, 600_000);
+  assert.equal(await verifyPassword(
+    'correct horse battery staple',
+    credential,
+  ), true);
+});
 
 const createState = (name = 'Class A'): AppData => ({
   lastOpened: 1_700_000_000_000,
