@@ -15,10 +15,13 @@ import {
   Search,
   ShieldAlert,
   ShieldCheck,
+  Trash2,
+  UserRoundCog,
   UserRoundSearch,
   X,
 } from 'lucide-react';
 import { useAuth } from '../../auth/AuthProvider';
+import { AccountDeletionDialog } from '../AccountDeletionDialog';
 import type { ClassData } from '../../store/types';
 import {
   exportStudentPrivacyData,
@@ -34,7 +37,11 @@ import {
   type WorkspaceRevisionSnapshot,
 } from '../../services/backendApi';
 
-type GovernanceView = 'revisions' | 'student-export' | 'audit';
+type GovernanceView =
+  | 'revisions'
+  | 'student-export'
+  | 'audit'
+  | 'account-lifecycle';
 
 type DataGovernancePanelProps = {
   classes: ClassData[];
@@ -198,6 +205,7 @@ export const DataGovernancePanel = ({
   const [auditLoading, setAuditLoading] = useState(true);
   const [auditLoadingMore, setAuditLoadingMore] = useState(false);
   const [auditError, setAuditError] = useState('');
+  const [accountDialogOpen, setAccountDialogOpen] = useState(false);
 
   const copy = language === 'en'
     ? {
@@ -207,6 +215,7 @@ export const DataGovernancePanel = ({
         revisions: 'Revision recovery',
         studentExport: 'Student export',
         audit: 'Audit trail',
+        accountLifecycle: 'Account lifecycle',
         current: 'Current',
         preview: 'Snapshot preview',
         selectRevision: 'Select a revision to inspect its contents before restoring.',
@@ -243,6 +252,11 @@ export const DataGovernancePanel = ({
         noEvents: 'No audit events match these filters.',
         loadMore: 'Load older events',
         reload: 'Reload',
+        accountTitle: 'Account retention and deletion',
+        accountHint: 'Account deletion is separate from workspace recovery. Transfer or delete every workspace you own before permanently deleting your sign-in identity.',
+        accountSafety: 'This removes memberships, sessions, and recovery credentials. It cannot be undone from a workspace revision.',
+        accountButton: 'Review permanent account deletion',
+        accountBadge: 'Personal identity · irreversible',
       }
     : {
         eyebrow: '營運紀錄台',
@@ -251,6 +265,7 @@ export const DataGovernancePanel = ({
         revisions: 'Revision 復原',
         studentExport: '單生匯出',
         audit: '稽核軌跡',
+        accountLifecycle: '帳號生命週期',
         current: '目前版本',
         preview: '快照預覽',
         selectRevision: '先選擇 revision 檢查內容摘要，再執行復原。',
@@ -287,6 +302,11 @@ export const DataGovernancePanel = ({
         noEvents: '沒有符合條件的稽核紀錄。',
         loadMore: '載入更早紀錄',
         reload: '重新載入',
+        accountTitle: '帳號保存與刪除',
+        accountHint: '帳號刪除與工作區 revision 復原是兩件事。永久刪除登入身分前，必須先移轉或刪除你擁有的所有工作區。',
+        accountSafety: '此操作會移除成員關係、session 與復原憑證，無法透過工作區 revision 復原。',
+        accountButton: '檢查永久刪除帳號',
+        accountBadge: '個人身分 · 不可逆',
       };
 
   const activeWorkspaceId = session?.activeWorkspaceId;
@@ -551,11 +571,12 @@ export const DataGovernancePanel = ({
         </div>
       </header>
 
-      <div className="grid border-b border-white/10 sm:grid-cols-3" role="tablist">
+      <div className="grid grid-cols-2 border-b border-white/10 lg:grid-cols-4" role="tablist">
         {([
           ['revisions', copy.revisions, History],
           ['student-export', copy.studentExport, UserRoundSearch],
           ['audit', copy.audit, Fingerprint],
+          ['account-lifecycle', copy.accountLifecycle, UserRoundCog],
         ] as const).map(([itemView, label, Icon]) => (
           <button
             key={itemView}
@@ -935,6 +956,47 @@ export const DataGovernancePanel = ({
             </div>
           </div>
         )}
+
+        {view === 'account-lifecycle' && (
+          <div className="min-h-[34rem] p-5 sm:p-8 lg:p-10">
+            <div className="mx-auto max-w-3xl overflow-hidden rounded-[1.75rem] border border-rose-300 bg-white shadow-[0_24px_60px_rgba(127,29,29,0.12)]">
+              <div className="border-b border-rose-200 bg-[linear-gradient(120deg,#fff1f2,#fff7ed)] px-6 py-6 sm:px-8">
+                <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex items-start gap-4">
+                    <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-rose-700 text-white shadow-lg shadow-rose-900/20">
+                      <UserRoundCog className="h-6 w-6" aria-hidden="true" />
+                    </span>
+                    <div>
+                      <p className="font-mono text-[10px] font-black uppercase tracking-[0.2em] text-rose-700">
+                        {copy.accountBadge}
+                      </p>
+                      <h3 className="mt-2 font-serif text-2xl font-black text-slate-950 sm:text-3xl">
+                        {copy.accountTitle}
+                      </h3>
+                    </div>
+                  </div>
+                  <ShieldAlert className="hidden h-7 w-7 text-rose-700 sm:block" aria-hidden="true" />
+                </div>
+              </div>
+              <div className="px-6 py-7 sm:px-8 sm:py-8">
+                <p className="text-sm font-bold leading-7 text-slate-700">
+                  {copy.accountHint}
+                </p>
+                <div className="mt-6 border-l-4 border-amber-500 bg-amber-50 px-4 py-4 text-sm leading-6 text-amber-950">
+                  {copy.accountSafety}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAccountDialogOpen(true)}
+                  className="mt-7 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-rose-700 px-5 py-3 text-sm font-black text-white shadow-lg shadow-rose-900/15 transition hover:-translate-y-0.5 hover:bg-rose-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-700 focus-visible:ring-offset-2 sm:w-auto"
+                >
+                  <Trash2 className="h-5 w-5" aria-hidden="true" />
+                  {copy.accountButton}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {restoreRevision != null && (
@@ -971,6 +1033,14 @@ export const DataGovernancePanel = ({
             </div>
           </section>
         </div>
+      )}
+
+      {accountDialogOpen && (
+        <AccountDeletionDialog
+          language={language}
+          onClose={() => setAccountDialogOpen(false)}
+          flushChanges={flushChanges}
+        />
       )}
     </section>
   );

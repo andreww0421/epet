@@ -1,6 +1,6 @@
 import React, { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import {
-  AlertCircle, CloudOff, Database, Dices, Dog, LogOut, RefreshCw, Settings, Smile, UserRound, Users,
+  AlertCircle, CloudOff, Database, Dices, Dog, LogOut, RefreshCw, Settings, Smile, Users,
 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { resetStoreForSession, useStore } from './store/useStore';
@@ -111,7 +111,6 @@ const EmptyWorkspaceView = ({
 };
 
 function WorkspaceApp() {
-  const [accountDialogOpen, setAccountDialogOpen] = useState(false);
   const { session, logout, selectWorkspace, invalidateSession } = useAuth();
   const activeWorkspaceId = session?.activeWorkspaceId ?? null;
   const activeWorkspace = session?.workspaces.find(
@@ -318,15 +317,6 @@ function WorkspaceApp() {
               )}
               <button
                 type="button"
-                onClick={() => setAccountDialogOpen(true)}
-                aria-label={lang === 'en' ? 'Account settings' : '帳號設定'}
-                title={lang === 'en' ? 'Account settings' : '帳號設定'}
-                className="flex h-10 w-10 items-center justify-center rounded-md text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900"
-              >
-                <UserRound className="h-4 w-4" aria-hidden="true" />
-              </button>
-              <button
-                type="button"
                 onClick={() => void handleLogout()}
                 aria-label={lang === 'en' ? 'Log out' : '登出'}
                 title={lang === 'en' ? 'Log out' : '登出'}
@@ -497,14 +487,6 @@ function WorkspaceApp() {
             <span className="font-medium">{toast.message}</span>
           </div>
         </div>
-      )}
-
-      {accountDialogOpen && (
-        <AccountDeletionDialog
-          language={lang}
-          onClose={() => setAccountDialogOpen(false)}
-          flushChanges={flushBackendChanges}
-        />
       )}
     </div>
   );
