@@ -140,6 +140,8 @@ src/
   components/
     dashboard/
       BossRewardSettings.tsx
+      DashboardDialogs.tsx
+      DashboardRecordsPanel.tsx
       PointReasonSettings.tsx
       StudentAnalyticsPanel.tsx
   hooks/useBackendSync.ts
@@ -157,6 +159,7 @@ server/
 worker/
   index.ts
   passwordResetEmail.ts
+  projectionStatements.ts
   repository.ts
 migrations/
   0001_create_workspaces.sql

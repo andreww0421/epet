@@ -11,27 +11,32 @@ import { PET_TYPES, DEFAULT_BATTLE_MODE, DEFAULT_MAX_TEAM_SIZE } from '../store/
 import { normalizeAppData, applyDecay, getSettingsImpactPreview } from '../store/utils';
 import {
   Student, Language, BattleMode, BossRewardTier, LearningCompetency, BossAttackMode,
-  PublicNameMode, PublicLeaderboardMode, PetCareMode, BossRewardRecord, ClassGoal,
-  DailyAssessment, DailyReflection,
+  PublicNameMode, PublicLeaderboardMode, PetCareMode, ClassGoal,
 } from '../store/types';
 import { 
-  isPenaltyActive, WARNING_THRESHOLD, WARNING_AUTO_PENALTY, DIRECT_DISCIPLINE_PENALTY,
+  isPenaltyActive, WARNING_THRESHOLD,
   SOLO_BATTLE_FULLNESS_COST, SOLO_BATTLE_WIN_POINTS, SOLO_BATTLE_LOSS_POINTS,
   TEAM_BATTLE_MIN_FULLNESS, TEAM_BATTLE_MIN_FULLNESS_ENABLED,
   TEAM_BATTLE_ATTACKER_FULLNESS_COST, TEAM_BATTLE_ATTACKER_TEAMMATE_FULLNESS_COST,
   TEAM_BATTLE_DEFENDER_FULLNESS_COST, TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST,
   DEFAULT_BOSS_ATTACK_MAX_TARGETS, DEFAULT_BOSS_ATTACK_DAMAGE, DEFAULT_BOSS_REWARD_TIERS,
   DEFAULT_BOSS_PARTICIPATION_REWARD, DEFAULT_BOSS_IMPROVEMENT_REWARD,
-  getDateKey, hasActiveLevelDecreaseCooldown,
-  type DisciplineRecordType
+  hasActiveLevelDecreaseCooldown,
 } from '../gameRules';
 import {
-  getClassGoalCoverage, getClassGoalProgress, getRecordCompetency, getWeeklyEducationInsights,
+  getClassGoalCoverage, getClassGoalProgress, getWeeklyEducationInsights,
 } from '../educationInsights';
 import { BossRewardSettings } from './dashboard/BossRewardSettings';
 import { PointReasonSettings } from './dashboard/PointReasonSettings';
 import { RosterImportPanel } from './dashboard/RosterImportPanel';
 import { WorkspaceAccessPanel } from './dashboard/WorkspaceAccessPanel';
+import { DashboardRecordsPanel } from './dashboard/DashboardRecordsPanel';
+import {
+  AddClassDialog,
+  DeleteConfirmationDialog,
+  PointAdjustmentDialog,
+  type PointAdjustmentTarget,
+} from './dashboard/DashboardDialogs';
 import { runWorkspaceMutation } from '../auth/workspaceAccess';
 import { exportWorkspacePrivacyData } from '../services/backendApi';
 
@@ -46,11 +51,6 @@ const DataGovernancePanel = lazy(() =>
     default: module.DataGovernancePanel,
   })),
 );
-
-type PointAdjustmentTarget =
-  | { kind: 'student'; id: string; name: string }
-  | { kind: 'batch'; ids: string[]; count: number }
-  | { kind: 'class'; count: number };
 
 type DashboardSection =
   | 'students'
@@ -96,16 +96,6 @@ const READ_ONLY_MUTATION_ACTIONS = new Set([
   'updateSettings',
   'warnStudent',
 ]);
-
-type BossRewardRecordWithStudent = BossRewardRecord & {
-  studentId: string;
-  studentName: string;
-};
-
-type DailyFeedbackRecordWithStudent = DailyReflection & {
-  studentId: string;
-  studentName: string;
-};
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
   readOnly = false,
@@ -181,15 +171,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [newStudentName, setNewStudentName] = useState('');
   const [studentToDelete, setStudentToDelete] = useState<string | null>(null);
   const [pointAdjustmentTarget, setPointAdjustmentTarget] = useState<PointAdjustmentTarget | null>(null);
-  const [pointAdjustmentAmount, setPointAdjustmentAmount] = useState('');
-  const [pointAdjustmentReason, setPointAdjustmentReason] = useState('');
-  const [pointAdjustmentCompetency, setPointAdjustmentCompetency] =
-    useState<LearningCompetency>('participation');
   const [dashboardSection, setDashboardSection] = useState<DashboardSection>(
     readOnly ? 'analytics' : 'students',
   );
-  const [recordView, setRecordView] =
-    useState<'discipline' | 'points' | 'feedback' | 'boss'>('discipline');
   const [decayAmount, setDecayAmount] = useState(data.settings?.decayAmount ?? 2);
   const [decayType, setDecayType] = useState<'hourly' | 'daily'>(data.settings?.decayType ?? 'hourly');
   const [inclusiveMode, setInclusiveMode] = useState(data.settings?.inclusiveMode !== false);
@@ -275,9 +259,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const [selectedReasons, setSelectedReasons] = useState<Record<string, string>>({});
   const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
-  const [reasonSuggestionsOpen, setReasonSuggestionsOpen] = useState(false);
-  
-  const [newClassName, setNewClassName] = useState('');
   const [showAddClass, setShowAddClass] = useState(false);
   const [classToDelete, setClassToDelete] = useState<string | null>(null);
 
@@ -309,13 +290,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     useState<LearningCompetency>('collaboration');
   const [classGoalTarget, setClassGoalTarget] = useState(20);
   const [editingClassGoalId, setEditingClassGoalId] = useState<string | null>(null);
-  const [mentorFeedbackStudentId, setMentorFeedbackStudentId] = useState('');
-  const [mentorFeedbackCompetency, setMentorFeedbackCompetency] =
-    useState<LearningCompetency>('assignmentQuality');
-  const [mentorFeedbackAssessment, setMentorFeedbackAssessment] =
-    useState<DailyAssessment>('progressing');
-  const [mentorFeedbackText, setMentorFeedbackText] = useState('');
-
   const selectedClassId = readOnly ? readOnlyClassId : data.currentClassId;
   const currentClass = data.classes.find((c: any) => c.id === selectedClassId);
   const currentStudents = useMemo(() => currentClass?.students || [], [currentClass]);
@@ -334,23 +308,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       currentClass?.learningEvidenceRecords ?? [],
     ),
     [currentClass?.learningEvidenceRecords, currentStudents],
-  );
-  const todayKey = getDateKey();
-  const selectedMentorFeedback = useMemo(
-    () => currentStudents
-      .find((student: Student) => student.id === mentorFeedbackStudentId)
-      ?.dailyProgress?.reflections?.find(
-        (reflection) => reflection.date === todayKey && reflection.author === 'mentor',
-      ),
-    [currentStudents, mentorFeedbackStudentId, todayKey],
-  );
-  const todayMentorFeedbackCount = useMemo(
-    () => currentStudents.filter((student: Student) =>
-      student.dailyProgress?.reflections?.some(
-        (reflection) => reflection.date === todayKey && reflection.author === 'mentor',
-      ),
-    ).length,
-    [currentStudents, todayKey],
   );
   const currentStudentIds = useMemo(
     () => new Set(currentStudents.map((student: Student) => student.id)),
@@ -443,104 +400,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   useEffect(() => {
     setSelectedStudentIds([]);
     setPointAdjustmentTarget(null);
-    setPointAdjustmentAmount('');
-    setPointAdjustmentReason('');
-    setMentorFeedbackStudentId('');
   }, [currentClass?.id]);
-  useEffect(() => {
-    if (!mentorFeedbackStudentId) {
-      setMentorFeedbackCompetency('assignmentQuality');
-      setMentorFeedbackAssessment('progressing');
-      setMentorFeedbackText('');
-      return;
-    }
-    setMentorFeedbackCompetency(selectedMentorFeedback?.competency ?? 'assignmentQuality');
-    setMentorFeedbackAssessment(
-      selectedMentorFeedback?.mentorAssessment ??
-        selectedMentorFeedback?.selfAssessment ??
-        'progressing',
-    );
-    setMentorFeedbackText(selectedMentorFeedback?.text ?? '');
-  }, [mentorFeedbackStudentId, selectedMentorFeedback]);
-  useEffect(() => {
-    if (mentorFeedbackStudentId && !currentStudentIds.has(mentorFeedbackStudentId)) {
-      setMentorFeedbackStudentId('');
-    }
-  }, [currentStudentIds, mentorFeedbackStudentId]);
   useEffect(() => {
     if (selectAllCheckboxRef.current) {
       selectAllCheckboxRef.current.indeterminate = someStudentsSelected;
     }
   }, [someStudentsSelected]);
-  const disciplineRecords = useMemo(
-    () => currentStudents
-      .flatMap((student: any) =>
-        (student.disciplineRecords ?? []).map((record: any) => ({
-          ...record,
-          studentName: student.name,
-        })),
-      )
-      .sort((a: any, b: any) => b.createdAt - a.createdAt)
-      .slice(0, 12),
-    [currentStudents],
-  );
-  const pointAdjustmentRecords = useMemo(
-    () => currentStudents
-      .flatMap((student: any) =>
-        (student.pointAdjustmentRecords ?? []).map((record: any) => ({
-          ...record,
-          studentName: student.name,
-        })),
-      )
-      .sort((a: any, b: any) => b.createdAt - a.createdAt)
-      .slice(0, 12),
-    [currentStudents],
-  );
-  const dailyFeedbackRecords = useMemo(
-    () => currentStudents
-      .flatMap((student: Student) =>
-        (student.dailyProgress?.reflections ?? []).map(
-          (record): DailyFeedbackRecordWithStudent => ({
-            ...record,
-            studentId: student.id,
-            studentName: student.name,
-          }),
-        ),
-      )
-      .sort((left, right) => right.createdAt - left.createdAt)
-      .slice(0, 30),
-    [currentStudents],
-  );
-  const bossRewardRecords = useMemo(
-    () => currentStudents
-      .flatMap((student) =>
-        (student.bossRewardRecords ?? []).map((record): BossRewardRecordWithStudent => ({
-          ...record,
-          studentId: student.id,
-          studentName: student.name,
-        })),
-      )
-      .sort((a, b) => b.createdAt - a.createdAt)
-      .slice(0, 12),
-    [currentStudents],
-  );
-
-  const getRecordLabel = (type: DisciplineRecordType) => {
-    if (type === 'autoPenalty') return tLang.recordAutoPenalty;
-    if (type === 'discipline') return tLang.recordDiscipline;
-    if (type === 'levelDecrease') return lang === 'en' ? 'Level decrease' : '降級';
-    if (type === 'reversal') return lang === 'en' ? 'Compensating reversal' : '撤銷補償';
-    return tLang.recordWarning;
-  };
-
-  const getRecordTone = (type: DisciplineRecordType) => {
-    if (type === 'autoPenalty') return 'bg-amber-100 text-amber-700';
-    if (type === 'discipline') return 'bg-rose-100 text-rose-700';
-    if (type === 'levelDecrease') return 'bg-orange-100 text-orange-700';
-    if (type === 'reversal') return 'bg-emerald-100 text-emerald-800';
-    return 'bg-slate-100 text-slate-700';
-  };
-
   const formatRecordTime = (timestamp: number) =>
     new Date(timestamp).toLocaleString(lang === 'zh' ? 'zh-TW' : 'en-US', {
       month: 'numeric',
@@ -549,19 +414,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       minute: '2-digit',
       hour12: false,
     });
-
-  const penaltySummary = (penalty: { points: number; fullness: number; happiness: number; rankPoints: number }) =>
-    tLang.recordPenaltySummary
-      .replace('{points}', penalty.points.toString())
-      .replace('{fullness}', penalty.fullness.toString())
-      .replace('{happiness}', penalty.happiness.toString())
-      .replace('{rankPoints}', penalty.rankPoints.toString());
-
-  const bossRewardSummary = (points: number, rankPoints: number, happiness: number) =>
-    tLang.bossRewardBreakdownSummary
-      .replace('{points}', points.toString())
-      .replace('{rankPoints}', rankPoints.toString())
-      .replace('{happiness}', happiness.toString());
 
   const requestSafetyAction = (
     actionLabel: string,
@@ -620,29 +472,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   );
   const defaultPointReasonId =
     pointReasonOptions[0]?.id ?? configuredPointReasons[0]?.id ?? POINT_REASON_OPTIONS[0].id;
-  const pointAdjustmentReasonSuggestions = useMemo(() => {
-    const suggestions = new Map<string, { label: string; competency?: LearningCompetency }>();
-    feedbackReasonHistory.forEach((label) => {
-      suggestions.set(label.toLocaleLowerCase(), { label });
-    });
-
-    pointReasonOptions.forEach((option) => {
-      const key = option.label.toLocaleLowerCase();
-      if (!suggestions.has(key)) {
-        suggestions.set(key, { label: option.label, competency: option.competency });
-      }
-    });
-    const query = pointAdjustmentReason.trim().toLocaleLowerCase();
-    return [...suggestions.values()]
-      .filter((suggestion) => !query || suggestion.label.toLocaleLowerCase().includes(query))
-      .sort((left, right) => {
-        if (!query) return 0;
-        const leftStarts = left.label.toLocaleLowerCase().startsWith(query);
-        const rightStarts = right.label.toLocaleLowerCase().startsWith(query);
-        return Number(rightStarts) - Number(leftStarts);
-      })
-      .slice(0, 10);
-  }, [feedbackReasonHistory, pointAdjustmentReason, pointReasonOptions]);
   const guideStudentItems =
     lang === 'en'
       ? [
@@ -730,13 +559,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         bronze: Number(rewardBronze),
       }
     });
-  };
-
-  const handleAddClass = () => {
-    if (!newClassName.trim()) return;
-    store.addClass(newClassName.trim());
-    setNewClassName('');
-    setShowAddClass(false);
   };
 
   const handleAddStudent = () => {
@@ -902,15 +724,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     setClassGoalTitle('');
     setClassGoalCompetency('collaboration');
     setClassGoalTarget(20);
-  };
-
-  const handleSaveMentorDailyFeedback = () => {
-    if (!mentorFeedbackStudentId || !mentorFeedbackText.trim()) return;
-    store.saveMentorDailyFeedback(mentorFeedbackStudentId, {
-      competency: mentorFeedbackCompetency,
-      assessment: mentorFeedbackAssessment,
-      text: mentorFeedbackText.trim(),
-    });
   };
 
   const handleInclusiveModeToggle = () => {
@@ -1528,555 +1341,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </div>
 
-      <section className={`${dashboardSection === 'records' ? '' : 'hidden'} border border-slate-200 bg-white p-5 shadow-sm`}>
-        <div className="-mx-5 -mt-5 mb-5 border-b border-emerald-200 bg-emerald-50 px-5 py-5">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <h3 className="flex items-center text-lg font-semibold text-emerald-950">
-                <BookOpen className="mr-2 h-5 w-5 text-emerald-700" />
-                {tLang.dailyReflectionTitle}
-              </h3>
-              <p className="mt-1 text-sm text-emerald-800">{tLang.dailyReflectionHint}</p>
-            </div>
-            <span className="text-sm font-bold text-emerald-800">
-              {tLang.dailyFeedbackCoverage
-                .replace('{current}', todayMentorFeedbackCount.toString())
-                .replace('{total}', currentStudents.length.toString())}
-            </span>
-          </div>
-
-          <div className="mt-4 grid gap-4 md:grid-cols-2">
-            <label className="block text-sm font-bold text-slate-800">
-              {tLang.dailyFeedbackStudent}
-              <select
-                value={mentorFeedbackStudentId}
-                onChange={(event) => setMentorFeedbackStudentId(event.target.value)}
-                className="mt-1 w-full rounded-md border border-emerald-200 bg-white p-2 text-sm shadow-sm focus:border-emerald-500 focus:ring-emerald-500"
-              >
-                <option value="">{tLang.dailyFeedbackSelectStudent}</option>
-                {currentStudents.map((student: Student) => (
-                  <option key={student.id} value={student.id}>{student.name}</option>
-                ))}
-              </select>
-            </label>
-            <label className="block text-sm font-bold text-slate-800">
-              {tLang.dailyReflectionCompetency}
-              <select
-                value={mentorFeedbackCompetency}
-                onChange={(event) =>
-                  setMentorFeedbackCompetency(event.target.value as LearningCompetency)
-                }
-                disabled={!mentorFeedbackStudentId}
-                className="mt-1 w-full rounded-md border border-emerald-200 bg-white p-2 text-sm shadow-sm focus:border-emerald-500 focus:ring-emerald-500 disabled:bg-slate-100"
-              >
-                {(Object.keys(competencyLabels) as LearningCompetency[]).map((competency) => (
-                  <option key={competency} value={competency}>
-                    {competencyLabels[competency]}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          <div className="mt-4">
-            <p className="text-sm font-bold text-slate-800">{tLang.dailyFeedbackAssessment}</p>
-            <div
-              className="mt-1 grid max-w-xl grid-cols-3 gap-1"
-              role="group"
-              aria-label={tLang.dailyFeedbackAssessment}
-            >
-              {([
-                ['needsSupport', tLang.dailyReflectionNeedsSupport],
-                ['progressing', tLang.dailyReflectionProgressing],
-                ['confident', tLang.dailyReflectionConfident],
-              ] as Array<[DailyAssessment, string]>).map(([assessment, label]) => (
-                <button
-                  key={assessment}
-                  type="button"
-                  aria-pressed={mentorFeedbackAssessment === assessment}
-                  disabled={!mentorFeedbackStudentId}
-                  onClick={() => setMentorFeedbackAssessment(assessment)}
-                  className={`min-h-10 rounded-md px-2 py-2 text-xs font-bold transition-colors ${
-                    mentorFeedbackAssessment === assessment
-                      ? 'bg-emerald-700 text-white'
-                      : 'border border-emerald-200 bg-white text-slate-700 hover:bg-emerald-100'
-                  } disabled:cursor-not-allowed disabled:opacity-50`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <label className="mt-4 block text-sm font-bold text-slate-800">
-            {tLang.dailyReflectionPrompt}
-            <textarea
-              value={mentorFeedbackText}
-              onChange={(event) => setMentorFeedbackText(event.target.value.slice(0, 160))}
-              disabled={!mentorFeedbackStudentId}
-              maxLength={160}
-              rows={3}
-              placeholder={tLang.dailyReflectionPlaceholder}
-              className="mt-1 w-full resize-none rounded-md border border-emerald-200 bg-white p-2 text-sm shadow-sm focus:border-emerald-500 focus:ring-emerald-500 disabled:bg-slate-100"
-            />
-          </label>
-          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-xs text-emerald-800">
-              {selectedMentorFeedback
-                ? tLang.dailyFeedbackAlreadyRecorded
-                : tLang.dailyFeedbackSaveHint}
-            </p>
-            <button
-              type="button"
-              onClick={handleSaveMentorDailyFeedback}
-              disabled={!mentorFeedbackStudentId || !mentorFeedbackText.trim()}
-              className="inline-flex min-h-10 items-center justify-center rounded-md bg-emerald-700 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-300"
-            >
-              <Save className="mr-2 h-4 w-4" />
-              {selectedMentorFeedback
-                ? tLang.dailyFeedbackUpdate
-                : tLang.dailyReflectionSubmit}
-            </button>
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-2 border-b border-slate-200 pb-4 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <h3 className="flex items-center text-lg font-semibold text-slate-900">
-              <BarChart3 className="mr-2 h-5 w-5 text-emerald-600" />
-              {tLang.weeklyInsights}
-            </h3>
-            <p className="mt-1 text-sm text-slate-500">{tLang.weeklyInsightsHint}</p>
-          </div>
-          <div className="text-sm font-bold text-slate-600">
-            {weeklyInsights.positiveCount + weeklyInsights.negativeCount === 0
-              ? tLang.noWeeklyFeedback
-              : tLang.positiveRatio}
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-px bg-slate-200 sm:grid-cols-3 lg:grid-cols-6">
-          {[
-            [tLang.positiveFeedback, weeklyInsights.positiveCount, 'text-emerald-700'],
-            [tLang.correctiveFeedback, weeklyInsights.negativeCount, 'text-rose-700'],
-            [tLang.positiveRatio, `${Math.round(weeklyInsights.positiveRatio * 100)}%`, 'text-indigo-700'],
-            [
-              tLang.feedbackCoverage,
-              tLang.studentsReached
-                .replace('{current}', weeklyInsights.feedbackStudents.toString())
-                .replace('{total}', currentStudents.length.toString()),
-              'text-teal-700',
-            ],
-            [
-              tLang.collaborationReach,
-              tLang.studentsReached
-                .replace('{current}', weeklyInsights.collaborationStudents.toString())
-                .replace('{total}', currentStudents.length.toString()),
-              'text-sky-700',
-            ],
-            [tLang.reflectionCount, weeklyInsights.reflectionCount, 'text-violet-700'],
-          ].map(([label, value, tone]) => (
-            <div key={String(label)} className="bg-white px-4 py-4">
-              <p className="text-xs font-medium text-slate-500">{label}</p>
-              <p className={`mt-1 text-xl font-black ${tone}`}>{value}</p>
-            </div>
-          ))}
-        </div>
-        <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-xs font-medium text-slate-600">
-          <span>
-            {tLang.positiveFeedback}: {tLang.comparedPreviousWeek.replace(
-              '{value}',
-              `${weeklyInsights.positiveFeedbackTrend >= 0 ? '+' : ''}${weeklyInsights.positiveFeedbackTrend}`,
-            )}
-          </span>
-          <span>
-            {tLang.feedbackCoverage}: {tLang.comparedPreviousWeek.replace(
-              '{value}',
-              `${weeklyInsights.feedbackCoverageTrend >= 0 ? '+' : ''}${weeklyInsights.feedbackCoverageTrend}`,
-            )}
-          </span>
-        </div>
-
-        {weeklyInsights.positiveCount + weeklyInsights.negativeCount >= 3 &&
-          weeklyInsights.positiveRatio < 0.7 && (
-            <div className="mt-4 flex items-start gap-3 border-l-4 border-amber-400 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-              <p>{tLang.feedbackBalanceWarning}</p>
-            </div>
-          )}
-
-        <div className="mt-5 grid gap-6 lg:grid-cols-3">
-          <div>
-            <h4 className="mb-3 text-sm font-bold text-slate-800">{tLang.competencyDistribution}</h4>
-            <div className="space-y-3">
-              {(Object.keys(competencyLabels) as LearningCompetency[]).map((competency) => {
-                const count = weeklyInsights.competencyCounts[competency];
-                const total = Math.max(
-                  1,
-                  (Object.keys(competencyLabels) as LearningCompetency[]).reduce(
-                    (sum, item) => sum + weeklyInsights.competencyCounts[item],
-                    0,
-                  ),
-                );
-                return (
-                  <div key={competency}>
-                    <div className="mb-1 flex justify-between gap-3 text-xs">
-                      <span className="font-medium text-slate-700">{competencyLabels[competency]}</span>
-                      <span className="font-bold text-slate-500">
-                        {tLang.feedbackCount.replace('{count}', count.toString())}
-                      </span>
-                    </div>
-                    <div className="h-2 overflow-hidden rounded-full bg-slate-100">
-                      <div
-                        className="h-full rounded-full bg-emerald-500"
-                        style={{ width: `${(count / total) * 100}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          <div>
-            <h4 className="mb-3 text-sm font-bold text-slate-800">{tLang.topReasons}</h4>
-            {weeklyInsights.reasonCounts.length === 0 ? (
-              <p className="text-sm text-slate-500">{tLang.noWeeklyFeedback}</p>
-            ) : (
-              <div className="divide-y divide-slate-100">
-                {weeklyInsights.reasonCounts.slice(0, 6).map((reason) => (
-                  <div key={reason.id} className="flex items-center justify-between gap-3 py-2 text-sm">
-                    <span className="truncate text-slate-700">{reason.label}</span>
-                    <span className="shrink-0 font-bold text-slate-500">
-                      {tLang.feedbackCount.replace('{count}', reason.count.toString())}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div>
-            <h4 className="mb-3 text-sm font-bold text-slate-800">{tLang.overlookedStudents}</h4>
-            {weeklyInsights.overlookedStudents.length === 0 ? (
-              <p className="text-sm font-medium text-emerald-700">{tLang.noOverlookedStudents}</p>
-            ) : (
-              <div className="flex flex-wrap gap-2">
-                {weeklyInsights.overlookedStudents.map((student) => (
-                  <span
-                    key={student.id}
-                    className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs font-bold text-amber-800"
-                  >
-                    {student.name}
-                  </span>
-                ))}
-              </div>
-            )}
-            <h4 className="mb-3 mt-5 text-sm font-bold text-slate-800">{tLang.needsPositiveFeedback}</h4>
-            {weeklyInsights.needsPositiveFeedbackStudents.length === 0 ? (
-              <p className="text-sm font-medium text-emerald-700">{tLang.noPositiveFeedbackGap}</p>
-            ) : (
-              <div className="flex flex-wrap gap-2">
-                {weeklyInsights.needsPositiveFeedbackStudents.map((student) => (
-                  <span
-                    key={student.id}
-                    className="rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-xs font-bold text-rose-800"
-                  >
-                    {student.name}
-                  </span>
-                ))}
-              </div>
-            )}
-            <h4 className="mb-3 mt-5 text-sm font-bold text-slate-800">{tLang.needsSupportReflection}</h4>
-            {weeklyInsights.needsSupportReflectionStudents.length === 0 ? (
-              <p className="text-sm font-medium text-emerald-700">{tLang.noNeedsSupportReflection}</p>
-            ) : (
-              <div className="divide-y divide-violet-100 border-y border-violet-100">
-                {weeklyInsights.needsSupportReflectionStudents.map((student) => (
-                  <div key={student.id} className="py-2 text-xs">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-bold text-violet-900">{student.name}</span>
-                      <span className="rounded bg-violet-50 px-1.5 py-0.5 font-bold text-violet-700">
-                        {competencyLabels[student.competency]}
-                      </span>
-                    </div>
-                    {student.text && (
-                      <p className="mt-1 line-clamp-2 leading-5 text-slate-600">{student.text}</p>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      </section>
-
-      <div className={`${dashboardSection === 'records' ? '' : 'hidden'} mt-6 bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200`}>
-        <div className="px-5 py-4 border-b border-slate-200 bg-slate-50 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <h3 className="text-lg font-medium text-slate-900 flex items-center">
-            {recordView === 'boss'
-              ? <Swords className="h-5 w-5 mr-2 text-amber-600" />
-              : recordView === 'feedback'
-                ? <BookOpen className="h-5 w-5 mr-2 text-emerald-600" />
-                : <Shield className="h-5 w-5 mr-2 text-rose-500" />}
-            {recordView === 'discipline'
-              ? tLang.disciplineRecords
-              : recordView === 'points'
-                ? tLang.pointAdjustmentRecords
-                : recordView === 'feedback'
-                  ? tLang.dailyFeedbackRecords
-                  : tLang.bossRewardRecords}
-          </h3>
-          <div className="flex flex-wrap rounded-full bg-white p-1 border border-slate-200">
-            <button
-              onClick={() => setRecordView('discipline')}
-              className={`rounded-full px-3 py-1 text-xs font-bold transition-colors ${
-                recordView === 'discipline' ? 'bg-rose-100 text-rose-700' : 'text-slate-500 hover:bg-slate-100'
-              }`}
-            >
-              {tLang.recordMenuDiscipline}
-            </button>
-            <button
-              onClick={() => setRecordView('points')}
-              className={`rounded-full px-3 py-1 text-xs font-bold transition-colors ${
-                recordView === 'points' ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500 hover:bg-slate-100'
-              }`}
-            >
-              {tLang.recordMenuPoints}
-            </button>
-            <button
-              onClick={() => setRecordView('feedback')}
-              className={`rounded-full px-3 py-1 text-xs font-bold transition-colors ${
-                recordView === 'feedback' ? 'bg-emerald-100 text-emerald-800' : 'text-slate-500 hover:bg-slate-100'
-              }`}
-            >
-              {tLang.recordMenuDailyFeedback}
-            </button>
-            <button
-              onClick={() => setRecordView('boss')}
-              className={`rounded-full px-3 py-1 text-xs font-bold transition-colors ${
-                recordView === 'boss' ? 'bg-amber-100 text-amber-800' : 'text-slate-500 hover:bg-slate-100'
-              }`}
-            >
-              {tLang.recordMenuBossRewards}
-            </button>
-          </div>
-        </div>
-        {recordView === 'discipline' ? (
-          disciplineRecords.length === 0 ? (
-            <div className="px-5 py-8 text-sm text-slate-500 text-center">{tLang.noDisciplineRecords}</div>
-          ) : (
-            <div className="divide-y divide-slate-200">
-              {disciplineRecords.map((record: any) => (
-                <div key={record.id} className="px-5 py-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-bold ${getRecordTone(record.type)}`}>
-                        {getRecordLabel(record.type)}
-                      </span>
-                      <span className="font-medium text-slate-900">{record.studentName}</span>
-                      {record.type === 'warning' && (
-                        <span className="text-sm text-slate-500">
-                          {tLang.warningPoints} {record.warningCount}/{WARNING_THRESHOLD}
-                        </span>
-                      )}
-                    </div>
-                    <div className="mt-1 text-sm text-slate-600">
-                      {record.type === 'warning'
-                        ? tLang.warningIssued.replace('{name}', record.studentName).replace('{count}', String(record.warningCount ?? 1))
-                        : record.type === 'autoPenalty'
-                          ? penaltySummary(WARNING_AUTO_PENALTY)
-                          : record.type === 'discipline'
-                            ? penaltySummary(DIRECT_DISCIPLINE_PENALTY)
-                            : record.type === 'levelDecrease'
-                              ? (lang === 'en' ? 'Pet level decreased by 1.' : '寵物等級降低 1 級。')
-                              : (lang === 'en'
-                                  ? 'Original event retained; a compensating reversal was recorded.'
-                                  : '原始事件已保留，並新增一筆撤銷補償紀錄。')}
-                    </div>
-                    {record.reason && (
-                      <div className="mt-1 text-xs text-slate-500">
-                        {lang === 'en' ? 'Reason' : '理由'}：{record.reason}
-                      </div>
-                    )}
-                    {record.reversesRecordId && (
-                      <div className="mt-1 font-mono text-[11px] text-slate-400">
-                        {lang === 'en' ? 'Reverses' : '撤銷事件'}：{record.reversesRecordId}
-                      </div>
-                    )}
-                  </div>
-                  <div className="text-xs font-medium text-slate-400">{formatRecordTime(record.createdAt)}</div>
-                </div>
-              ))}
-            </div>
-          )
-        ) : recordView === 'points' ? (
-          pointAdjustmentRecords.length === 0 ? (
-            <div className="px-5 py-8 text-sm text-slate-500 text-center">{tLang.noPointAdjustmentRecords}</div>
-          ) : (
-            <div className="divide-y divide-slate-200">
-              {pointAdjustmentRecords.map((record: any) => (
-                <div key={record.id} className="px-5 py-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-bold ${
-                        record.amount >= 0 ? 'bg-indigo-100 text-indigo-700' : 'bg-rose-100 text-rose-700'
-                      }`}>
-                        {record.source === 'airdrop'
-                          ? tLang.recordAirdrop
-                          : record.source === 'dailyTask'
-                            ? tLang.dailyTaskRecord
-                          : record.source === 'manual'
-                            ? tLang.recordManualAdjust
-                            : tLang.recordQuickAdjust}
-                      </span>
-                      <span className="font-medium text-slate-900">{record.studentName}</span>
-                      {getRecordCompetency(record) && (
-                        <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700">
-                          {competencyLabels[getRecordCompetency(record)!]}
-                        </span>
-                      )}
-                    </div>
-                    <div className="mt-1 text-sm text-slate-600">
-                      {record.reasonLabel
-                        ? `${record.reasonLabel} (${record.amount >= 0 ? '+' : '-'}${Math.abs(record.amount)})`
-                        : tLang.recordPointSummary
-                            .replace('{label}', record.amount >= 0 ? '+' : '-')
-                            .replace('{amount}', Math.abs(record.amount).toString())}
-                    </div>
-                  </div>
-                  <div className="text-xs font-medium text-slate-400">{formatRecordTime(record.createdAt)}</div>
-                </div>
-              ))}
-            </div>
-          )
-        ) : recordView === 'feedback' ? (
-          dailyFeedbackRecords.length === 0 ? (
-            <div className="px-5 py-8 text-sm text-slate-500 text-center">
-              {tLang.noDailyFeedbackRecords}
-            </div>
-          ) : (
-            <div className="divide-y divide-slate-200">
-              {dailyFeedbackRecords.map((record) => {
-                const assessment = record.mentorAssessment ?? record.selfAssessment ?? 'progressing';
-                const assessmentLabel =
-                  assessment === 'needsSupport'
-                    ? tLang.dailyReflectionNeedsSupport
-                    : assessment === 'confident'
-                      ? tLang.dailyReflectionConfident
-                      : tLang.dailyReflectionProgressing;
-                return (
-                  <div
-                    key={`${record.studentId}-${record.id}`}
-                    className="px-5 py-4 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between"
-                  >
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-bold ${
-                          record.author === 'mentor'
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : 'bg-violet-100 text-violet-800'
-                        }`}>
-                          {record.author === 'mentor'
-                            ? tLang.mentorFeedbackSource
-                            : tLang.studentReflectionSource}
-                        </span>
-                        <span className="font-medium text-slate-900">{record.studentName}</span>
-                        <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-700">
-                          {competencyLabels[record.competency]}
-                        </span>
-                        <span className="rounded-md bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-800">
-                          {assessmentLabel}
-                        </span>
-                      </div>
-                      <p className="mt-2 text-sm leading-6 text-slate-700">
-                        {record.text || tLang.noDailyFeedbackText}
-                      </p>
-                    </div>
-                    <div className="shrink-0 text-xs font-medium text-slate-400">
-                      {formatRecordTime(record.createdAt)}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )
-        ) : (
-          bossRewardRecords.length === 0 ? (
-            <div className="px-5 py-8 text-sm text-slate-500 text-center">{tLang.noBossRewardRecords}</div>
-          ) : (
-            <div className="divide-y divide-slate-200">
-              {bossRewardRecords.map((record) => {
-                const rewardParts = [
-                  {
-                    label: tLang.bossRankBonus,
-                    points: record.rankRewardPoints,
-                    rankPoints: record.rankRewardRankPoints,
-                    happiness: record.rankRewardHappiness,
-                  },
-                  {
-                    label: tLang.bossParticipationBonus,
-                    points: record.participationRewardPoints,
-                    rankPoints: record.participationRewardRankPoints,
-                    happiness: record.participationRewardHappiness,
-                  },
-                  {
-                    label: tLang.bossImprovementBonus,
-                    points: record.improvementRewardPoints,
-                    rankPoints: record.improvementRewardRankPoints,
-                    happiness: record.improvementRewardHappiness,
-                  },
-                ];
-
-                return (
-                  <div key={`${record.studentId}-${record.id}`} className="px-5 py-4">
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                      <div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-800">
-                            {tLang.bossRewardRecordMeta
-                              .replace('{damage}', record.damage.toString())
-                              .replace('{rank}', record.rank.toString())}
-                          </span>
-                          <span className="font-medium text-slate-900">{record.studentName}</span>
-                          <span className="text-sm text-slate-500">{record.bossName}</span>
-                        </div>
-                        <div className="mt-1 text-sm font-semibold text-slate-700">
-                          {tLang.bossRewardRecordSummary
-                            .replace('{points}', record.rewardPoints.toString())
-                            .replace('{rankPoints}', record.rewardRankPoints.toString())
-                            .replace('{happiness}', record.rewardHappiness.toString())}
-                        </div>
-                      </div>
-                      <div className="text-xs font-medium text-slate-400">{formatRecordTime(record.createdAt)}</div>
-                    </div>
-                    <div className="mt-3 grid gap-2 sm:grid-cols-3">
-                      {rewardParts.map((part) => {
-                        const hasReward = part.points > 0 || part.rankPoints > 0 || part.happiness > 0;
-                        return (
-                          <div
-                            key={part.label}
-                            className={`border-l-2 px-3 py-2 ${
-                              hasReward
-                                ? 'border-amber-300 bg-amber-50 text-amber-950'
-                                : 'border-slate-200 bg-slate-50 text-slate-400'
-                            }`}
-                          >
-                            <div className="text-xs font-bold">{part.label}</div>
-                            <div className="mt-1 text-xs">
-                              {bossRewardSummary(part.points, part.rankPoints, part.happiness)}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )
-        )}
-      </div>
+      <DashboardRecordsPanel
+        classId={currentClass?.id}
+        competencyLabels={competencyLabels}
+        lang={lang}
+        onSaveMentorDailyFeedback={store.saveMentorDailyFeedback}
+        students={currentStudents}
+        tLang={tLang}
+        visible={dashboardSection === 'records'}
+        weeklyInsights={weeklyInsights}
+      />
 
       <section className={`${dashboardSection === 'activities' ? '' : 'hidden'} border border-emerald-200 bg-white p-5 shadow-sm`}>
         <div className="mb-5 flex flex-col gap-2 border-b border-emerald-100 pb-4 sm:flex-row sm:items-start sm:justify-between">
@@ -3042,302 +2316,85 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </div>
 
-      {/* Add Class Modal */}
-      {showAddClass && (
-        <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
-          <div className="bg-white rounded-xl shadow-xl max-w-sm w-full overflow-hidden">
-            <div className="p-6">
-              <h3 className="text-lg font-bold text-slate-900 mb-4">{tLang.addClass}</h3>
-              <div className="mb-4">
-                <label htmlFor="className" className="block text-sm font-medium text-slate-700 mb-1">{tLang.className}</label>
-                <input
-                  type="text"
-                  id="className"
-                  value={newClassName}
-                  onChange={(e) => setNewClassName(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleAddClass()}
-                  className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
-                  placeholder={tLang.enterClassName}
-                  autoFocus
-                />
-              </div>
-            </div>
-            <div className="bg-slate-50 px-6 py-4 flex justify-end space-x-3">
-              <button 
-                onClick={() => { setShowAddClass(false); setNewClassName(''); }} 
-                className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50"
-              >
-                {tLang.cancel}
-              </button>
-              <button 
-                onClick={handleAddClass} 
-                disabled={!newClassName.trim()}
-                className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 border border-transparent rounded-md hover:bg-indigo-700 disabled:bg-indigo-300"
-              >
-                {tLang.add}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <AddClassDialog
+        open={showAddClass}
+        onAdd={(name) => {
+          store.addClass(name);
+          setShowAddClass(false);
+        }}
+        onClose={() => setShowAddClass(false)}
+        tLang={tLang}
+      />
 
-      {/* Delete Class Modal */}
-      {classToDelete && (
-        <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
-          <div className="bg-white rounded-xl shadow-xl max-w-sm w-full overflow-hidden">
-            <div className="p-6">
-              <div className="flex items-center justify-center w-12 h-12 rounded-full bg-red-100 mb-4 mx-auto">
-                <AlertCircle className="h-6 w-6 text-red-600" />
-              </div>
-              <h3 className="text-lg font-bold text-slate-900 text-center mb-2">{tLang.deleteClass}</h3>
-              <p className="text-slate-600 text-sm text-center mb-4">
-                {tLang.deleteClassWarning.replace('{name}', data.classes.find((c: any) => c.id === classToDelete)?.name || '')}
-              </p>
-            </div>
-            <div className="bg-slate-50 px-6 py-4 flex justify-end space-x-3">
-              <button 
-                onClick={() => setClassToDelete(null)} 
-                className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50"
-              >
-                {tLang.cancel}
-              </button>
-              <button 
-                onClick={() => {
-                  store.deleteClass(classToDelete);
-                  setClassToDelete(null);
-                }} 
-                className="px-4 py-2 text-sm font-medium text-white bg-red-600 border border-transparent rounded-md hover:bg-red-700"
-              >
-                {tLang.delete}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <DeleteConfirmationDialog
+        cancelLabel={tLang.cancel}
+        confirmLabel={tLang.delete}
+        message={tLang.deleteClassWarning.replace(
+          '{name}',
+          data.classes.find((classData) => classData.id === classToDelete)?.name ?? '',
+        )}
+        onCancel={() => setClassToDelete(null)}
+        onConfirm={() => {
+          if (!classToDelete) return;
+          store.deleteClass(classToDelete);
+          setClassToDelete(null);
+        }}
+        open={Boolean(classToDelete)}
+        title={tLang.deleteClass}
+      />
 
-      {/* Shared Point Adjustment Modal */}
-      {pointAdjustmentTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 animate-in fade-in duration-200">
-          <div className="w-full max-w-sm overflow-hidden rounded-xl bg-white shadow-xl">
-            <div className="p-6">
-              <div className={`mb-4 flex h-11 w-11 items-center justify-center rounded-full ${
-                pointAdjustmentTarget.kind === 'class'
-                  ? 'bg-emerald-100 text-emerald-700'
-                  : 'bg-indigo-100 text-indigo-700'
-              }`}>
-                {pointAdjustmentTarget.kind === 'class'
-                  ? <Gift className="h-5 w-5" />
-                  : pointAdjustmentTarget.kind === 'batch'
-                    ? <Users className="h-5 w-5" />
-                    : <Edit2 className="h-5 w-5" />}
-              </div>
-              <h3 className="text-lg font-bold text-slate-900">
-                {pointAdjustmentTarget.kind === 'class'
-                  ? tLang.airdropTitle
-                  : pointAdjustmentTarget.kind === 'batch'
-                    ? tLang.batchAdjustTitle
-                    : tLang.manualAdjustTitle}
-              </h3>
-              <p className="mt-2 text-sm text-slate-600">
-                {pointAdjustmentTarget.kind === 'class'
-                  ? tLang.airdropDesc.replace('{count}', pointAdjustmentTarget.count.toString())
-                  : pointAdjustmentTarget.kind === 'batch'
-                    ? tLang.batchAdjustDesc.replace('{count}', pointAdjustmentTarget.count.toString())
-                    : tLang.manualAdjustDesc.replace('{name}', pointAdjustmentTarget.name)}
-              </p>
-              <label className="mt-5 block text-sm font-medium text-slate-700">
-                {tLang.airdropAmount}
-                <input
-                  type="number"
-                  step="1"
-                  value={pointAdjustmentAmount}
-                  onChange={(e) => setPointAdjustmentAmount(e.target.value)}
-                  className="mt-1 w-full rounded-md border border-slate-300 p-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
-                  placeholder={tLang.airdropAmountPlaceholder}
-                  autoFocus
-                />
-              </label>
-              <div className="mt-4 text-sm font-medium text-slate-700">
-                <label htmlFor="point-adjustment-reason">{tLang.airdropReason}</label>
-                <div
-                  className="relative"
-                  onBlur={(event) => {
-                    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-                      setReasonSuggestionsOpen(false);
-                    }
-                  }}
-                >
-                  <input
-                    id="point-adjustment-reason"
-                    type="text"
-                    role="combobox"
-                    aria-autocomplete="list"
-                    aria-expanded={reasonSuggestionsOpen}
-                    aria-controls="point-adjustment-reason-options"
-                    value={pointAdjustmentReason}
-                    onFocus={() => setReasonSuggestionsOpen(true)}
-                    onChange={(event) => {
-                      setPointAdjustmentReason(event.target.value);
-                      setReasonSuggestionsOpen(true);
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Escape') setReasonSuggestionsOpen(false);
-                    }}
-                    className="mt-1 w-full rounded-md border border-slate-300 p-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
-                    placeholder={tLang.airdropReasonPlaceholder}
-                    autoComplete="off"
-                  />
-                  {reasonSuggestionsOpen && pointAdjustmentReasonSuggestions.length > 0 && (
-                    <div
-                      id="point-adjustment-reason-options"
-                      role="listbox"
-                      className="absolute z-20 mt-1 max-h-52 w-full overflow-y-auto rounded-md border border-slate-200 bg-white p-1 shadow-lg"
-                    >
-                      {pointAdjustmentReasonSuggestions.map((suggestion) => (
-                        <button
-                          key={`${suggestion.label}-${suggestion.competency ?? 'history'}`}
-                          type="button"
-                          role="option"
-                          aria-selected={pointAdjustmentReason === suggestion.label}
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => {
-                            setPointAdjustmentReason(suggestion.label);
-                            if (suggestion.competency) {
-                              setPointAdjustmentCompetency(suggestion.competency);
-                            }
-                            setReasonSuggestionsOpen(false);
-                          }}
-                          className="flex w-full items-center justify-between gap-3 rounded px-3 py-2 text-left text-sm text-slate-700 hover:bg-indigo-50 hover:text-indigo-900"
-                        >
-                          <span>{suggestion.label}</span>
-                          {suggestion.competency && (
-                            <span className="shrink-0 text-xs text-slate-400">
-                              {competencyLabels[suggestion.competency]}
-                            </span>
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <span className="mt-1 block text-xs font-normal text-slate-500">
-                  {tLang.feedbackReasonHistoryHint}
-                </span>
-              </div>
-              <label className="mt-4 block text-sm font-medium text-slate-700">
-                {tLang.feedbackCompetency}
-                <select
-                  value={pointAdjustmentCompetency}
-                  onChange={(event) => setPointAdjustmentCompetency(event.target.value as LearningCompetency)}
-                  className="mt-1 w-full rounded-md border border-slate-300 bg-white p-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
-                >
-                  {(Object.keys(competencyLabels) as LearningCompetency[]).map((competency) => (
-                    <option key={competency} value={competency}>{competencyLabels[competency]}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            <div className="flex justify-end gap-3 bg-slate-50 px-6 py-4">
-              <button
-                onClick={() => {
-                  setPointAdjustmentTarget(null);
-                  setPointAdjustmentAmount('');
-                  setPointAdjustmentReason('');
-                  setPointAdjustmentCompetency('participation');
-                  setReasonSuggestionsOpen(false);
-                }}
-                className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-              >
-                {tLang.cancel}
-              </button>
-              <button
-                onClick={() => {
-                  const amount = Math.trunc(Number(pointAdjustmentAmount));
-                  if (pointAdjustmentTarget.kind === 'class') {
-                    store.airdropPoints(amount, pointAdjustmentReason, pointAdjustmentCompetency);
-                  } else if (pointAdjustmentTarget.kind === 'batch') {
-                    store.adjustPointsForStudents(
-                      pointAdjustmentTarget.ids,
-                      amount,
-                      'manual',
-                      {
-                        label: pointAdjustmentReason.trim() || undefined,
-                        competency: pointAdjustmentCompetency,
-                      },
-                    );
-                    setSelectedStudentIds([]);
-                  } else {
-                    store.addPoints(
-                      pointAdjustmentTarget.id,
-                      amount,
-                      'manual',
-                      {
-                        label: pointAdjustmentReason.trim() || undefined,
-                        competency: pointAdjustmentCompetency,
-                      },
-                    );
-                  }
-                  setPointAdjustmentTarget(null);
-                  setPointAdjustmentAmount('');
-                  setPointAdjustmentReason('');
-                  setPointAdjustmentCompetency('participation');
-                  setReasonSuggestionsOpen(false);
-                }}
-                disabled={
-                  !Number.isFinite(Number(pointAdjustmentAmount)) ||
-                  Math.trunc(Number(pointAdjustmentAmount)) === 0 ||
-                  !pointAdjustmentReason.trim()
-                }
-                className={`rounded-md px-4 py-2 text-sm font-medium text-white disabled:bg-slate-300 ${
-                  pointAdjustmentTarget.kind === 'class'
-                    ? 'bg-emerald-600 hover:bg-emerald-700'
-                    : 'bg-indigo-600 hover:bg-indigo-700'
-                }`}
-              >
-                {pointAdjustmentTarget.kind === 'class'
-                  ? tLang.confirmAirdrop
-                  : pointAdjustmentTarget.kind === 'batch'
-                    ? tLang.confirmBatchAdjustment
-                    : tLang.confirmAdjustment}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <PointAdjustmentDialog
+        competencyLabels={competencyLabels}
+        feedbackReasonHistory={feedbackReasonHistory}
+        onCancel={() => setPointAdjustmentTarget(null)}
+        onConfirm={({ amount, competency, reason, target }) => {
+          if (target.kind === 'class') {
+            store.airdropPoints(amount, reason, competency);
+          } else if (target.kind === 'batch') {
+            store.adjustPointsForStudents(
+              target.ids,
+              amount,
+              'manual',
+              {
+                label: reason.trim() || undefined,
+                competency,
+              },
+            );
+            setSelectedStudentIds([]);
+          } else {
+            store.addPoints(
+              target.id,
+              amount,
+              'manual',
+              {
+                label: reason.trim() || undefined,
+                competency,
+              },
+            );
+          }
+          setPointAdjustmentTarget(null);
+        }}
+        pointReasonOptions={pointReasonOptions}
+        target={pointAdjustmentTarget}
+        tLang={tLang}
+      />
 
-      {/* Delete Confirmation Modal */}
-      {studentToDelete && (
-        <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
-          <div className="bg-white rounded-xl shadow-xl max-w-sm w-full overflow-hidden">
-            <div className="p-6">
-              <div className="flex items-center justify-center w-12 h-12 rounded-full bg-red-100 mb-4 mx-auto">
-                <AlertCircle className="h-6 w-6 text-red-600" />
-              </div>
-              <h3 className="text-lg font-bold text-center text-slate-900 mb-2">{tLang.confirmDelete}</h3>
-              <p className="text-center text-slate-500 text-sm">
-                {tLang.deleteWarning.replace('{name}', currentClass?.students.find((s: any) => s.id === studentToDelete)?.name || '')}
-              </p>
-            </div>
-            <div className="bg-slate-50 px-6 py-4 flex justify-end space-x-3">
-              <button 
-                onClick={() => setStudentToDelete(null)} 
-                className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50"
-              >
-                {tLang.cancel}
-              </button>
-              <button 
-                onClick={() => {
-                  store.deleteStudent(studentToDelete);
-                  setStudentToDelete(null);
-                }} 
-                className="px-4 py-2 text-sm font-medium text-white bg-red-600 border border-transparent rounded-md hover:bg-red-700"
-              >
-                {tLang.confirmDeleteBtn}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <DeleteConfirmationDialog
+        cancelLabel={tLang.cancel}
+        confirmLabel={tLang.confirmDeleteBtn}
+        message={tLang.deleteWarning.replace(
+          '{name}',
+          currentStudents.find((student) => student.id === studentToDelete)?.name ?? '',
+        )}
+        onCancel={() => setStudentToDelete(null)}
+        onConfirm={() => {
+          if (!studentToDelete) return;
+          store.deleteStudent(studentToDelete);
+          setStudentToDelete(null);
+        }}
+        open={Boolean(studentToDelete)}
+        title={tLang.confirmDelete}
+      />
     </div>
   );
 };
