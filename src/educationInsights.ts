@@ -3,6 +3,8 @@ import {
   type DailyReflection,
   type LearningCompetency,
   type PointAdjustmentRecord,
+  getDateKey,
+  getMedianPoints,
   LEARNING_COMPETENCIES,
 } from './gameRules';
 import {
@@ -13,6 +15,7 @@ import {
 export type StudentFeedbackSource = {
   id: string;
   name: string;
+  points?: number;
   pointAdjustmentRecords?: PointAdjustmentRecord[];
   dailyProgress?: {
     lastClaimDate?: string;
@@ -58,6 +61,95 @@ export type WeeklyStudentGrowth = {
   netPoints: number;
 };
 
+export type DailyPointFairnessInsights = {
+  positiveCount: number;
+  negativeCount: number;
+  positiveToNegativeRatio: number | null;
+  targetRatio: number;
+  belowTarget: boolean;
+  clampedCount: number;
+  blockedCount: number;
+  participationTopUpCount: number;
+  catchUpBonusCount: number;
+  supportRewardPoints: number;
+  catchUpCandidates: Array<{ id: string; name: string }>;
+  uncoveredStudents: Array<{ id: string; name: string }>;
+};
+
+const TEACHER_FEEDBACK_SOURCES = new Set(['quick', 'manual', 'airdrop']);
+
+export const getDailyPointFairnessInsights = (
+  students: StudentFeedbackSource[],
+  now = Date.now(),
+  timeZone = 'Asia/Taipei',
+  targetRatio = 3,
+  catchUpGapThreshold = 100,
+  dailyCatchUpBonus = 10,
+): DailyPointFairnessInsights => {
+  const dateKey = getDateKey(now, timeZone);
+  const positiveStudentIds = new Set<string>();
+  let positiveCount = 0;
+  let negativeCount = 0;
+  let clampedCount = 0;
+  let blockedCount = 0;
+  let participationTopUpCount = 0;
+  let catchUpBonusCount = 0;
+  let supportRewardPoints = 0;
+
+  students.forEach((student) => {
+    (student.pointAdjustmentRecords ?? []).forEach((record) => {
+      if (getDateKey(record.createdAt, timeZone) !== dateKey) return;
+      if (record.source === 'participationTopUp') {
+        participationTopUpCount += 1;
+        supportRewardPoints += Math.max(0, record.amount);
+        return;
+      }
+      if (record.source === 'catchUpBonus') {
+        catchUpBonusCount += 1;
+        supportRewardPoints += Math.max(0, record.amount);
+        return;
+      }
+      if (!TEACHER_FEEDBACK_SOURCES.has(record.source)) return;
+      if (record.amount > 0) {
+        positiveCount += 1;
+        positiveStudentIds.add(student.id);
+      }
+      if (record.amount < 0) negativeCount += 1;
+      if (record.guardrailOutcome === 'clamped') clampedCount += 1;
+      if (record.guardrailOutcome === 'blocked') blockedCount += 1;
+    });
+  });
+
+  const normalizedTarget = Math.max(1, Math.min(10, Number(targetRatio) || 3));
+  const positiveToNegativeRatio = negativeCount > 0
+    ? positiveCount / negativeCount
+    : null;
+
+  const classMedianPoints = getMedianPoints(
+    students.map((student) => ({ points: Number(student.points) || 0 })),
+  );
+  const normalizedCatchUpGap = Math.max(0, Math.min(10_000, Number(catchUpGapThreshold) || 0));
+
+  return {
+    positiveCount,
+    negativeCount,
+    positiveToNegativeRatio,
+    targetRatio: normalizedTarget,
+    belowTarget: negativeCount > 0 && positiveCount < negativeCount * normalizedTarget,
+    clampedCount,
+    blockedCount,
+    participationTopUpCount,
+    catchUpBonusCount,
+    supportRewardPoints,
+    catchUpCandidates: Number(dailyCatchUpBonus) > 0 ? students
+      .filter((student) => classMedianPoints - (Number(student.points) || 0) >= normalizedCatchUpGap)
+      .map(({ id, name }) => ({ id, name })) : [],
+    uncoveredStudents: students
+      .filter((student) => !positiveStudentIds.has(student.id))
+      .map(({ id, name }) => ({ id, name })),
+  };
+};
+
 const LEGACY_REASON_COMPETENCIES: Record<string, LearningCompetency> = {
   homework: 'assignmentQuality',
   missingHomework: 'assignmentQuality',
@@ -67,6 +159,10 @@ const LEGACY_REASON_COMPETENCIES: Record<string, LearningCompetency> = {
   late: 'selfManagement',
   disruptive: 'selfManagement',
 };
+
+export const isParticipationSupportRecord = (
+  record: Pick<PointAdjustmentRecord, 'source'>,
+) => record.source === 'participationTopUp' || record.source === 'catchUpBonus';
 
 export const getRecordCompetency = (
   record: Pick<PointAdjustmentRecord, 'competency' | 'reasonId'>,
@@ -79,22 +175,24 @@ export const getStudentGoalProgress = (
   evidence?: LearningEvidenceRecord[],
 ) => {
   if (!goal) return 0;
-  if (evidence) {
-    return getActiveLearningEvidence(evidence).filter(
+  const evidenceProgress = evidence
+    ? getActiveLearningEvidence(evidence).filter(
       (record) =>
         record.studentId === student.id &&
         record.createdAt >= goal.createdAt &&
         record.level !== 'needsSupport' &&
         record.competency === goal.competency,
-    ).length;
-  }
+    ).length
+    : 0;
 
-  return (student.pointAdjustmentRecords ?? []).filter(
+  const rewardProgress = (student.pointAdjustmentRecords ?? []).filter(
     (record) =>
       record.createdAt >= goal.createdAt &&
       record.amount > 0 &&
+      !isParticipationSupportRecord(record) &&
       getRecordCompetency(record) === goal.competency,
   ).length;
+  return evidenceProgress + rewardProgress;
 };
 
 export const getClassGoalProgress = (
@@ -130,23 +228,30 @@ export const getNextStudentGoal = (
   const goalsWithProgress = goals.map((goal) => ({
     goal,
     progress: getStudentGoalProgress(student, goal, evidence),
-  }));
+  })).filter(({ goal, progress }) => progress < goal.targetCount);
 
-  return (
-    goalsWithProgress.find(({ progress }) => progress === 0) ??
-    goalsWithProgress.sort(
+  const unstartedGoals = goalsWithProgress.filter(({ progress }) => progress === 0);
+  if (unstartedGoals.length > 0) {
+    return unstartedGoals.sort(
       (left, right) =>
-        left.progress - right.progress ||
+        left.goal.targetCount - right.goal.targetCount ||
         left.goal.createdAt - right.goal.createdAt,
-    )[0]
-  );
+    )[0];
+  }
+
+  return goalsWithProgress.sort(
+    (left, right) =>
+      (left.goal.targetCount - left.progress) -
+        (right.goal.targetCount - right.progress) ||
+      left.goal.createdAt - right.goal.createdAt,
+  )[0];
 };
 
 export const getLatestPositiveFeedback = (
   student: Pick<StudentFeedbackSource, 'pointAdjustmentRecords'>,
 ) =>
   [...(student.pointAdjustmentRecords ?? [])]
-    .filter((record) => record.amount > 0)
+    .filter((record) => record.amount > 0 && !isParticipationSupportRecord(record))
     .sort((left, right) => right.createdAt - left.createdAt)[0];
 
 export const getWeeklyStudentGrowth = (
@@ -167,6 +272,7 @@ export const getWeeklyStudentGrowth = (
       (student.pointAdjustmentRecords ?? [])
         .filter((record) => record.createdAt >= since)
         .forEach((record) => {
+          if (isParticipationSupportRecord(record)) return;
           netPoints += record.amount;
           if (activeEvidence || record.amount <= 0) return;
           positiveFeedbackCount += 1;
@@ -281,6 +387,7 @@ export const getWeeklyEducationInsights = (
   } else {
     students.forEach((student) => {
       (student.pointAdjustmentRecords ?? []).forEach((record) => {
+        if (isParticipationSupportRecord(record)) return;
         if (record.createdAt >= previousSince && record.createdAt < since) {
           previousStudentsWithFeedback.add(student.id);
           if (record.amount > 0) previousPositiveCount += 1;

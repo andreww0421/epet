@@ -20,6 +20,7 @@ import {
 } from '../../services/backendApi';
 import { useStore } from '../../store/useStore';
 import { ExamAssessmentPanel } from './ExamAssessmentPanel';
+import { EconomyDashboardPanel } from './EconomyDashboardPanel';
 
 const levelTone: Record<LearningEvidenceLevel, string> = {
   needsSupport: 'bg-rose-500',
@@ -36,12 +37,13 @@ export const StudentAnalyticsPanel: React.FC<StudentAnalyticsPanelProps> = ({
   classId,
   readOnly = false,
 }) => {
-  const { currentClass, lang, addLearningEvidence } = useStore(
+  const { currentClass, lang, maxPoints, addLearningEvidence } = useStore(
     useShallow((state) => ({
       currentClass: state.data.classes.find(
         (classData) => classData.id === (classId ?? state.data.currentClassId),
       ),
       lang: state.data.settings?.language || 'zh',
+      maxPoints: state.data.settings?.maxPoints ?? 700,
       addLearningEvidence: state.addLearningEvidence,
     })),
   );
@@ -142,6 +144,7 @@ export const StudentAnalyticsPanel: React.FC<StudentAnalyticsPanelProps> = ({
 
   return (
     <>
+    <EconomyDashboardPanel students={students} maxPoints={maxPoints} lang={lang} />
     <section className="border border-slate-200 bg-white shadow-sm">
       <header className="border-b border-slate-200 bg-slate-50 px-5 py-4">
         <h2 className="flex items-center text-lg font-bold text-slate-900">

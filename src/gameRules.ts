@@ -66,7 +66,47 @@ export const hasActiveLevelDecreaseCooldown = (
   );
 };
 
-export type PointAdjustmentSource = 'quick' | 'manual' | 'airdrop' | 'dailyTask';
+export type PointAdjustmentSource =
+  | 'quick'
+  | 'manual'
+  | 'airdrop'
+  | 'dailyTask'
+  | 'participationTopUp'
+  | 'catchUpBonus';
+
+export type PointGuardrailOutcome = 'applied' | 'clamped' | 'blocked';
+export type PointGuardrailReason = 'dailyPositiveLimit' | 'dailyNegativeLimit';
+
+export type PointGuardrailOptions = {
+  enabled?: boolean;
+  timeZone?: string;
+  dailyPositiveLimit?: number;
+  dailyNegativeLimit?: number;
+};
+
+export type PointGuardrailResult = {
+  requestedAmount: number;
+  appliedAmount: number;
+  outcome: PointGuardrailOutcome;
+  reason?: PointGuardrailReason;
+  usedAmount: number;
+  remainingAmount: number;
+};
+
+export type ParticipationSupportOptions = {
+  enabled?: boolean;
+  timeZone?: string;
+  minimumDailyParticipationPoints?: number;
+  catchUpGapThreshold?: number;
+  dailyCatchUpBonus?: number;
+};
+
+export type ParticipationSupportPlan = {
+  participationTopUp: number;
+  catchUpBonus: number;
+  classMedianPoints: number;
+  gapAfterBaseReward: number;
+};
 
 export type ClassGoal = {
   id: string;
@@ -74,6 +114,7 @@ export type ClassGoal = {
   competency: LearningCompetency;
   targetCount: number;
   createdAt: number;
+  weekStartDate?: string;
 };
 
 export type PointAdjustmentRecord = {
@@ -84,6 +125,68 @@ export type PointAdjustmentRecord = {
   reasonId?: string;
   reasonLabel?: string;
   competency?: LearningCompetency;
+  effectiveDate?: string;
+  claimKind?: DailyTaskClaimKind;
+  requestedAmount?: number;
+  guardrailOutcome?: Exclude<PointGuardrailOutcome, 'applied'>;
+  guardrailReason?: PointGuardrailReason;
+};
+
+export const ECONOMY_EVENT_KINDS = [
+  'issuance',
+  'spend',
+  'petChange',
+] as const;
+
+export type EconomyEventKind = (typeof ECONOMY_EVENT_KINDS)[number];
+
+export const ECONOMY_EVENT_SOURCES = [
+  'feed',
+  'play',
+  'upgrade',
+  'gacha',
+  'upgradeReroll',
+  'revive',
+  'soloBattle',
+  'teamBattle',
+  'bossReward',
+] as const;
+
+export type EconomyEventSource = (typeof ECONOMY_EVENT_SOURCES)[number];
+
+export type EconomyEventRecord = {
+  id: string;
+  kind: EconomyEventKind;
+  source: EconomyEventSource;
+  amount: number;
+  createdAt: number;
+  referenceId?: string;
+  previousPetType?: string;
+  newPetType?: string;
+};
+
+export const isEconomyEventKind = (value: unknown): value is EconomyEventKind =>
+  ECONOMY_EVENT_KINDS.includes(value as EconomyEventKind);
+
+export const isEconomyEventSource = (value: unknown): value is EconomyEventSource =>
+  ECONOMY_EVENT_SOURCES.includes(value as EconomyEventSource);
+
+export type DailyTaskClaimKind = 'current' | 'makeup';
+
+export type DailyTaskCalendarOptions = {
+  timeZone?: string;
+  schoolWeekdays?: number[];
+  holidayDates?: string[];
+  excusedDates?: string[];
+  makeupWindowDays?: number;
+};
+
+export type DailyTaskClaimPlan = {
+  schoolDate: string;
+  targetDate?: string;
+  claimKind?: DailyTaskClaimKind;
+  alreadyClaimed: boolean;
+  frozen: boolean;
 };
 
 export type PenaltyStatus = {
@@ -95,6 +198,7 @@ export type DailyProgress = {
   lastClaimDate?: string;
   streak: number;
   reflections?: DailyReflection[];
+  excusedDates?: string[];
 };
 
 export type DailyAssessment = 'needsSupport' | 'progressing' | 'confident';
@@ -117,6 +221,18 @@ export type MentorDailyFeedbackInput = {
   text: string;
 };
 
+export type DailyTaskReflectionInput = {
+  competency: LearningCompetency;
+  assessment: DailySelfAssessment;
+  text: string;
+};
+
+export type BossRecoveryStatus = {
+  impact: number;
+  startedAt: number;
+  recoverAt: number;
+};
+
 export type StudentRuleState = {
   points: number;
   rankPoints?: number;
@@ -137,8 +253,10 @@ export type StudentRuleState = {
   penaltyStatus?: PenaltyStatus;
   disciplineRecords?: DisciplineRecord[];
   pointAdjustmentRecords?: PointAdjustmentRecord[];
+  economyEventRecords?: EconomyEventRecord[];
   bossRewardRecords?: BossRewardRecord[];
   dailyProgress?: DailyProgress;
+  bossRecovery?: BossRecoveryStatus;
   lastBossDamage?: number;
   lastBossFairScore?: number;
 };
@@ -163,7 +281,7 @@ export type WorldBoss = {
   isActive: boolean;
 };
 
-export type BossAttackMode = 'shared' | 'random';
+export type BossAttackMode = 'recoverable' | 'shared' | 'random';
 
 export type BossReward = {
   points: number;
@@ -263,10 +381,20 @@ export const MAX_ACTIVITY_RECORDS = 20;
 export const MAX_POINT_ADJUSTMENT_RECORDS = 200;
 export const MAX_BOSS_REWARD_RECORDS = 100;
 export const MAX_DAILY_REFLECTIONS = 60;
+export const MAX_ECONOMY_EVENT_RECORDS = 240;
 export const PET_DEATH_DELAY_MS = 1000 * 60 * 60 * 24;
 export const REVIVE_COST = 120;
 export const DAILY_TASK_REWARD_POINTS = 30;
 export const DAILY_TASK_REWARD_HAPPINESS = 8;
+export const DEFAULT_SCHOOL_TIME_ZONE = 'Asia/Taipei';
+export const DEFAULT_SCHOOL_WEEKDAYS = [1, 2, 3, 4, 5];
+export const DEFAULT_DAILY_TASK_MAKEUP_WINDOW_DAYS = 7;
+export const DEFAULT_DAILY_POSITIVE_POINT_LIMIT = 200;
+export const DEFAULT_DAILY_NEGATIVE_POINT_LIMIT = 60;
+export const DEFAULT_POSITIVE_FEEDBACK_RATIO_TARGET = 3;
+export const DEFAULT_MINIMUM_DAILY_PARTICIPATION_POINTS = 20;
+export const DEFAULT_CATCH_UP_GAP_THRESHOLD = 100;
+export const DEFAULT_DAILY_CATCH_UP_BONUS = 10;
 export const SOLO_BATTLE_MIN_FULLNESS = 50;
 export const SOLO_BATTLE_FULLNESS_COST = 50;
 export const SOLO_BATTLE_WIN_POINTS = 50;
@@ -289,6 +417,8 @@ export const BOSS_ATTACK_FULLNESS_COST = 20;
 export const FAIR_BOSS_RANKING_ATTACK_CAP = 3;
 export const DEFAULT_BOSS_ATTACK_MAX_TARGETS = 4;
 export const DEFAULT_BOSS_ATTACK_DAMAGE = 20;
+export const DEFAULT_BOSS_RECOVERY_MINUTES = 15;
+export const MAX_BOSS_RECOVERY_MINUTES = 120;
 export const DEFAULT_BOSS_PARTICIPATION_REWARD: BossReward = { points: 10, happiness: 5, rankPoints: 5 };
 export const DEFAULT_BOSS_IMPROVEMENT_REWARD: BossReward = { points: 15, happiness: 5, rankPoints: 5 };
 export const DEFAULT_BOSS_REWARD_TIERS: BossRewardTier[] = [
@@ -388,6 +518,14 @@ export const createPointAdjustmentRecord = (
   source: PointAdjustmentSource,
   reason?: { id?: string; label?: string; competency?: LearningCompetency },
   now = Date.now(),
+  audit?: Pick<
+    PointAdjustmentRecord,
+    | 'effectiveDate'
+    | 'claimKind'
+    | 'requestedAmount'
+    | 'guardrailOutcome'
+    | 'guardrailReason'
+  >,
 ): PointAdjustmentRecord => ({
   id: `points-${now}-${Math.random().toString(36).slice(2, 8)}`,
   amount,
@@ -396,6 +534,31 @@ export const createPointAdjustmentRecord = (
   reasonId: reason?.id,
   reasonLabel: reason?.label,
   competency: reason?.competency,
+  ...(audit?.effectiveDate ? { effectiveDate: audit.effectiveDate } : {}),
+  ...(audit?.claimKind ? { claimKind: audit.claimKind } : {}),
+  ...(audit?.requestedAmount != null ? { requestedAmount: audit.requestedAmount } : {}),
+  ...(audit?.guardrailOutcome ? { guardrailOutcome: audit.guardrailOutcome } : {}),
+  ...(audit?.guardrailReason ? { guardrailReason: audit.guardrailReason } : {}),
+});
+
+export const createEconomyEventRecord = (
+  kind: EconomyEventKind,
+  source: EconomyEventSource,
+  amount: number,
+  now = Date.now(),
+  details: Pick<
+    EconomyEventRecord,
+    'referenceId' | 'previousPetType' | 'newPetType'
+  > = {},
+): EconomyEventRecord => ({
+  id: `economy-${now}-${Math.random().toString(36).slice(2, 8)}`,
+  kind,
+  source,
+  amount: Math.trunc(toFiniteNumber(amount, 0)),
+  createdAt: now,
+  ...(details.referenceId ? { referenceId: details.referenceId } : {}),
+  ...(details.previousPetType ? { previousPetType: details.previousPetType } : {}),
+  ...(details.newPetType ? { newPetType: details.newPetType } : {}),
 });
 
 export const appendRecord = <T extends { createdAt: number }>(
@@ -403,6 +566,32 @@ export const appendRecord = <T extends { createdAt: number }>(
   record: T,
   limit = MAX_ACTIVITY_RECORDS,
 ) => [record, ...(records ?? [])].sort((a, b) => b.createdAt - a.createdAt).slice(0, limit);
+
+export const appendEconomyEventToStudent = <T extends StudentRuleState>(
+  student: T,
+  record: EconomyEventRecord,
+) => ({
+  ...student,
+  economyEventRecords: appendRecord(
+    student.economyEventRecords,
+    record,
+    MAX_ECONOMY_EVENT_RECORDS,
+  ),
+});
+
+const appendEconomyDelta = <T extends StudentRuleState>(
+  before: T,
+  after: T,
+  source: EconomyEventSource,
+  now: number,
+): T => {
+  const amount = Math.trunc(after.points - before.points);
+  if (amount === 0) return after;
+  return appendEconomyEventToStudent(
+    after,
+    createEconomyEventRecord(amount > 0 ? 'issuance' : 'spend', source, amount, now),
+  ) as T;
+};
 
 export const createPenaltyStatus = (source: PenaltyStatusSource, now = Date.now()): PenaltyStatus => ({
   source,
@@ -467,7 +656,423 @@ const getTeamBattleScore = <T extends StudentRuleState>(
   return Math.round(leaderPower + supportPower + synergyBonus);
 };
 
-export const getDateKey = (timestamp = Date.now()) => new Date(timestamp).toISOString().slice(0, 10);
+export const isDateKey = (value: unknown): value is string => {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+};
+
+export const normalizeDateKeyList = (value: unknown, limit = 366) => {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value.filter(isDateKey))).sort().slice(0, limit);
+};
+
+export const normalizeSchoolTimeZone = (value: unknown) => {
+  const requested = typeof value === 'string' && value.trim() ? value.trim() : DEFAULT_SCHOOL_TIME_ZONE;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: requested }).format(0);
+    return requested;
+  } catch {
+    return DEFAULT_SCHOOL_TIME_ZONE;
+  }
+};
+
+export const normalizeSchoolWeekdays = (value: unknown) => {
+  if (!Array.isArray(value)) return [...DEFAULT_SCHOOL_WEEKDAYS];
+  const weekdays = Array.from(new Set(
+    value
+      .map((day) => Math.floor(Number(day)))
+      .filter((day) => Number.isInteger(day) && day >= 0 && day <= 6),
+  )).sort((left, right) => left - right);
+  return weekdays.length > 0 ? weekdays : [...DEFAULT_SCHOOL_WEEKDAYS];
+};
+
+export const normalizeDailyTaskMakeupWindowDays = (value: unknown) =>
+  clamp(
+    Math.floor(toFiniteNumber(value, DEFAULT_DAILY_TASK_MAKEUP_WINDOW_DAYS)),
+    0,
+    30,
+  );
+
+export const getDateKey = (timestamp = Date.now(), timeZone = 'UTC') => {
+  if (timeZone === 'UTC') return new Date(timestamp).toISOString().slice(0, 10);
+  const safeTimeZone = normalizeSchoolTimeZone(timeZone);
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: safeTimeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(timestamp));
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+};
+
+const TEACHER_FEEDBACK_SOURCES = new Set<PointAdjustmentSource>([
+  'quick',
+  'manual',
+  'airdrop',
+]);
+
+export const getDailyTeacherPointTotals = (
+  student: Pick<StudentRuleState, 'pointAdjustmentRecords'>,
+  now = Date.now(),
+  timeZone = DEFAULT_SCHOOL_TIME_ZONE,
+) => {
+  const dateKey = getDateKey(now, timeZone);
+  return (student.pointAdjustmentRecords ?? []).reduce(
+    (totals, record) => {
+      if (
+        !TEACHER_FEEDBACK_SOURCES.has(record.source) ||
+        getDateKey(record.createdAt, timeZone) !== dateKey
+      ) {
+        return totals;
+      }
+      if (record.amount > 0) totals.positive += record.amount;
+      if (record.amount < 0) totals.negative += Math.abs(record.amount);
+      return totals;
+    },
+    { positive: 0, negative: 0 },
+  );
+};
+
+export const applyPointGuardrail = (
+  student: Pick<StudentRuleState, 'pointAdjustmentRecords'>,
+  requestedAmount: number,
+  now = Date.now(),
+  options: PointGuardrailOptions = {},
+): PointGuardrailResult => {
+  const normalizedRequest = Math.trunc(toFiniteNumber(requestedAmount, 0));
+  if (normalizedRequest === 0 || options.enabled === false) {
+    return {
+      requestedAmount: normalizedRequest,
+      appliedAmount: normalizedRequest,
+      outcome: 'applied',
+      usedAmount: 0,
+      remainingAmount: Number.POSITIVE_INFINITY,
+    };
+  }
+
+  const totals = getDailyTeacherPointTotals(student, now, options.timeZone);
+  const isPositive = normalizedRequest > 0;
+  const configuredLimit = isPositive
+    ? options.dailyPositiveLimit
+    : options.dailyNegativeLimit;
+  const fallbackLimit = isPositive
+    ? DEFAULT_DAILY_POSITIVE_POINT_LIMIT
+    : DEFAULT_DAILY_NEGATIVE_POINT_LIMIT;
+  const limit = clamp(
+    Math.trunc(toFiniteNumber(configuredLimit, fallbackLimit)),
+    0,
+    10_000,
+  );
+  const usedAmount = isPositive ? totals.positive : totals.negative;
+  const remainingAmount = Math.max(0, limit - usedAmount);
+  const requestedMagnitude = Math.abs(normalizedRequest);
+  const appliedMagnitude = Math.min(requestedMagnitude, remainingAmount);
+  const appliedAmount = isPositive ? appliedMagnitude : -appliedMagnitude;
+  const reason: PointGuardrailReason = isPositive
+    ? 'dailyPositiveLimit'
+    : 'dailyNegativeLimit';
+
+  return {
+    requestedAmount: normalizedRequest,
+    appliedAmount,
+    outcome:
+      appliedMagnitude === 0
+        ? 'blocked'
+        : appliedMagnitude < requestedMagnitude
+          ? 'clamped'
+          : 'applied',
+    ...(appliedMagnitude < requestedMagnitude ? { reason } : {}),
+    usedAmount,
+    remainingAmount: Math.max(0, remainingAmount - appliedMagnitude),
+  };
+};
+
+const PARTICIPATION_BASE_SOURCES = new Set<PointAdjustmentSource>([
+  'quick',
+  'manual',
+  'airdrop',
+  'dailyTask',
+]);
+
+export const getMedianPoints = (
+  students: Array<Pick<StudentRuleState, 'points'>>,
+) => {
+  if (students.length === 0) return 0;
+  const values = students.map((student) => student.points).sort((left, right) => left - right);
+  const middle = Math.floor(values.length / 2);
+  return values.length % 2 === 0
+    ? (values[middle - 1] + values[middle]) / 2
+    : values[middle];
+};
+
+export const getParticipationSupportPlan = (
+  student: Pick<StudentRuleState, 'points' | 'pointAdjustmentRecords'>,
+  comparisonStudents: Array<Pick<StudentRuleState, 'points'>>,
+  now = Date.now(),
+  options: ParticipationSupportOptions = {},
+): ParticipationSupportPlan => {
+  const classMedianPoints = getMedianPoints(comparisonStudents);
+  const gapAfterBaseReward = Math.max(0, classMedianPoints - student.points);
+  if (options.enabled === false) {
+    return { participationTopUp: 0, catchUpBonus: 0, classMedianPoints, gapAfterBaseReward };
+  }
+
+  const timeZone = options.timeZone ?? DEFAULT_SCHOOL_TIME_ZONE;
+  const dateKey = getDateKey(now, timeZone);
+  const todayRecords = (student.pointAdjustmentRecords ?? []).filter(
+    (record) => getDateKey(record.createdAt, timeZone) === dateKey,
+  );
+  const hasParticipationTopUp = todayRecords.some(
+    (record) => record.source === 'participationTopUp',
+  );
+  const hasCatchUpBonus = todayRecords.some((record) => record.source === 'catchUpBonus');
+  const qualifyingParticipationPoints = todayRecords.reduce(
+    (total, record) =>
+      PARTICIPATION_BASE_SOURCES.has(record.source) && record.amount > 0
+        ? total + record.amount
+        : total,
+    0,
+  );
+  const minimumDailyParticipationPoints = clamp(
+    Math.floor(toFiniteNumber(
+      options.minimumDailyParticipationPoints,
+      DEFAULT_MINIMUM_DAILY_PARTICIPATION_POINTS,
+    )),
+    0,
+    1_000,
+  );
+  const catchUpGapThreshold = clamp(
+    Math.floor(toFiniteNumber(options.catchUpGapThreshold, DEFAULT_CATCH_UP_GAP_THRESHOLD)),
+    0,
+    10_000,
+  );
+  const configuredCatchUpBonus = clamp(
+    Math.floor(toFiniteNumber(options.dailyCatchUpBonus, DEFAULT_DAILY_CATCH_UP_BONUS)),
+    0,
+    1_000,
+  );
+
+  return {
+    participationTopUp:
+      !hasParticipationTopUp && qualifyingParticipationPoints > 0
+        ? Math.max(0, minimumDailyParticipationPoints - qualifyingParticipationPoints)
+        : 0,
+    catchUpBonus:
+      !hasCatchUpBonus &&
+      qualifyingParticipationPoints > 0 &&
+      configuredCatchUpBonus > 0 &&
+      gapAfterBaseReward >= catchUpGapThreshold
+        ? configuredCatchUpBonus
+        : 0,
+    classMedianPoints,
+    gapAfterBaseReward,
+  };
+};
+
+export const applyParticipationSupportToStudent = <T extends StudentRuleState>(
+  student: T,
+  comparisonStudents: Array<Pick<StudentRuleState, 'points'>>,
+  now = Date.now(),
+  maxPoints = 700,
+  options: ParticipationSupportOptions = {},
+) => {
+  const plan = getParticipationSupportPlan(student, comparisonStudents, now, options);
+  let nextStudent = student;
+  const records: PointAdjustmentRecord[] = [];
+
+  const applyReward = (
+    requestedAmount: number,
+    source: Extract<PointAdjustmentSource, 'participationTopUp' | 'catchUpBonus'>,
+    reasonId: string,
+  ) => {
+    const actualAmount = Math.min(
+      requestedAmount,
+      Math.max(0, maxPoints - nextStudent.points),
+    );
+    if (actualAmount <= 0) return;
+    const record = createPointAdjustmentRecord(
+      actualAmount,
+      source,
+      { id: reasonId, competency: 'participation' },
+      now,
+    );
+    nextStudent = applyPointAdjustmentToStudent(nextStudent, actualAmount, record, maxPoints);
+    records.push(record);
+  };
+
+  applyReward(plan.participationTopUp, 'participationTopUp', 'participation-safety-net');
+  applyReward(plan.catchUpBonus, 'catchUpBonus', 'catch-up-bonus');
+
+  return {
+    student: nextStudent,
+    participationTopUp: records.find((record) => record.source === 'participationTopUp')?.amount ?? 0,
+    catchUpBonus: records.find((record) => record.source === 'catchUpBonus')?.amount ?? 0,
+    records,
+    plan,
+  };
+};
+
+export const addDaysToDateKey = (dateKey: string, days: number) => {
+  const date = new Date(`${dateKey}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+};
+
+export const getWeekStartDateFromDateKey = (dateKey: string) => {
+  if (!isDateKey(dateKey)) return dateKey;
+  const day = new Date(`${dateKey}T00:00:00.000Z`).getUTCDay();
+  const daysSinceMonday = (day + 6) % 7;
+  return addDaysToDateKey(dateKey, -daysSinceMonday);
+};
+
+export const getWeekStartDate = (
+  timestamp = Date.now(),
+  timeZone = DEFAULT_SCHOOL_TIME_ZONE,
+) => getWeekStartDateFromDateKey(getDateKey(timestamp, timeZone));
+
+export const getWeekEndDate = (
+  timestamp = Date.now(),
+  timeZone = DEFAULT_SCHOOL_TIME_ZONE,
+) => addDaysToDateKey(getWeekStartDate(timestamp, timeZone), 6);
+
+export const getActiveClassGoals = (
+  goals: ClassGoal[] | undefined,
+  timestamp = Date.now(),
+  timeZone = DEFAULT_SCHOOL_TIME_ZONE,
+) => {
+  const currentWeekStart = getWeekStartDate(timestamp, timeZone);
+  return (goals ?? []).filter((goal) => {
+    const goalWeekStart = goal.weekStartDate
+      ? getWeekStartDateFromDateKey(goal.weekStartDate)
+      : getWeekStartDate(goal.createdAt, timeZone);
+    return goalWeekStart === currentWeekStart;
+  });
+};
+
+export const getDateKeyDistance = (fromDateKey: string, toDateKey: string) =>
+  Math.floor(
+    (new Date(`${toDateKey}T00:00:00.000Z`).getTime() -
+      new Date(`${fromDateKey}T00:00:00.000Z`).getTime()) /
+      (24 * 60 * 60 * 1000),
+  );
+
+const normalizeDailyTaskCalendarOptions = (options: DailyTaskCalendarOptions = {}) => ({
+  timeZone: normalizeSchoolTimeZone(options.timeZone),
+  schoolWeekdays: normalizeSchoolWeekdays(options.schoolWeekdays),
+  holidayDates: new Set(normalizeDateKeyList(options.holidayDates)),
+  excusedDates: new Set(normalizeDateKeyList(options.excusedDates, 120)),
+  makeupWindowDays: normalizeDailyTaskMakeupWindowDays(options.makeupWindowDays),
+});
+
+type NormalizedDailyTaskCalendar = ReturnType<typeof normalizeDailyTaskCalendarOptions>;
+
+const isInstructionDateForCalendar = (
+  dateKey: string,
+  calendar: NormalizedDailyTaskCalendar,
+) => {
+  if (!isDateKey(dateKey)) return false;
+  const weekday = new Date(`${dateKey}T00:00:00.000Z`).getUTCDay();
+  return calendar.schoolWeekdays.includes(weekday) &&
+    !calendar.holidayDates.has(dateKey) &&
+    !calendar.excusedDates.has(dateKey);
+};
+
+const getNextInstructionDateForCalendar = (
+  afterDateKey: string,
+  calendar: NormalizedDailyTaskCalendar,
+) => {
+  if (!isDateKey(afterDateKey)) return undefined;
+  for (let offset = 1; offset <= 800; offset += 1) {
+    const candidate = addDaysToDateKey(afterDateKey, offset);
+    if (isInstructionDateForCalendar(candidate, calendar)) return candidate;
+  }
+  return undefined;
+};
+
+export const isDailyTaskInstructionDate = (
+  dateKey: string,
+  options: DailyTaskCalendarOptions = {},
+) => {
+  const calendar = normalizeDailyTaskCalendarOptions(options);
+  return isInstructionDateForCalendar(dateKey, calendar);
+};
+
+export const getNextDailyTaskInstructionDate = (
+  afterDateKey: string,
+  options: DailyTaskCalendarOptions = {},
+) => {
+  const calendar = normalizeDailyTaskCalendarOptions(options);
+  return getNextInstructionDateForCalendar(afterDateKey, calendar);
+};
+
+export const getDailyTaskClaimPlan = <T extends StudentRuleState>(
+  student: T,
+  now = Date.now(),
+  options: DailyTaskCalendarOptions = {},
+): DailyTaskClaimPlan => {
+  const calendar = normalizeDailyTaskCalendarOptions(options);
+  const schoolDate = getDateKey(now, calendar.timeZone);
+  const lastClaimDate = isDateKey(student.dailyProgress?.lastClaimDate)
+    ? student.dailyProgress?.lastClaimDate
+    : undefined;
+  const alreadyClaimed = Boolean(lastClaimDate && lastClaimDate >= schoolDate) ||
+    (student.pointAdjustmentRecords ?? []).some(
+      (record) => record.source === 'dailyTask' &&
+        getDateKey(record.createdAt, calendar.timeZone) === schoolDate,
+    );
+
+  if (alreadyClaimed) {
+    return { schoolDate, alreadyClaimed: true, frozen: false };
+  }
+
+  if (!lastClaimDate) {
+    const available = isInstructionDateForCalendar(schoolDate, calendar);
+    return available
+      ? {
+          schoolDate,
+          targetDate: schoolDate,
+          claimKind: 'current',
+          alreadyClaimed: false,
+          frozen: false,
+        }
+      : { schoolDate, alreadyClaimed: false, frozen: true };
+  }
+
+  const nextInstructionDate = getNextInstructionDateForCalendar(lastClaimDate, calendar);
+  if (nextInstructionDate && nextInstructionDate <= schoolDate) {
+    if (nextInstructionDate === schoolDate) {
+      return {
+        schoolDate,
+        targetDate: schoolDate,
+        claimKind: 'current',
+        alreadyClaimed: false,
+        frozen: false,
+      };
+    }
+    if (getDateKeyDistance(nextInstructionDate, schoolDate) <= calendar.makeupWindowDays) {
+      return {
+        schoolDate,
+        targetDate: nextInstructionDate,
+        claimKind: 'makeup',
+        alreadyClaimed: false,
+        frozen: false,
+      };
+    }
+  }
+
+  const availableToday = isInstructionDateForCalendar(schoolDate, calendar);
+  return availableToday
+    ? {
+        schoolDate,
+        targetDate: schoolDate,
+        claimKind: 'current',
+        alreadyClaimed: false,
+        frozen: false,
+      }
+    : { schoolDate, alreadyClaimed: false, frozen: true };
+};
 
 export const isPetDead = (pet: { isDead?: boolean }) => Boolean(pet.isDead);
 
@@ -528,7 +1133,7 @@ export const applyFeedToStudent = <T extends StudentRuleState>(
     return student;
   }
 
-  return {
+  const nextStudent = {
     ...student,
     points: clamp(student.points - feedCost, 0, maxPoints),
     pet: syncPetLifeState(
@@ -539,7 +1144,8 @@ export const applyFeedToStudent = <T extends StudentRuleState>(
       },
       now,
     ),
-  };
+  } as T;
+  return appendEconomyDelta(student, nextStudent, 'feed', now);
 };
 
 export const applyPlayWithPet = <T extends StudentRuleState>(
@@ -553,7 +1159,7 @@ export const applyPlayWithPet = <T extends StudentRuleState>(
     return student;
   }
 
-  return {
+  const nextStudent = {
     ...student,
     points: clamp(student.points - playCost, 0, maxPoints),
     pet: syncPetLifeState(
@@ -563,7 +1169,8 @@ export const applyPlayWithPet = <T extends StudentRuleState>(
       },
       now,
     ),
-  };
+  } as T;
+  return appendEconomyDelta(student, nextStudent, 'play', now);
 };
 
 export const applyPenaltyToStudent = <T extends StudentRuleState>(
@@ -646,7 +1253,7 @@ export const applySafetyActionReversal = <T extends StudentRuleState>(
     sameOptionalNumberList(student.activeWarningTimestamps, after.activeWarningTimestamps);
   const penaltyStateUnchanged = samePenaltyStatus(student.penaltyStatus, after.penaltyStatus);
 
-  return {
+  const nextStudent = {
     ...student,
     points: clamp(student.points - (after.points - before.points), 0, maxPoints),
     rankPoints: Math.max(0, (student.rankPoints ?? 0) - (after.rankPoints - before.rankPoints)),
@@ -664,7 +1271,8 @@ export const applySafetyActionReversal = <T extends StudentRuleState>(
       level: Math.max(1, student.pet.level - (after.level - before.level)),
     },
     disciplineRecords: appendRecord(student.disciplineRecords, reversalRecord),
-  };
+  } as T;
+  return nextStudent;
 };
 
 export const resolveBattle = <
@@ -743,50 +1351,52 @@ export const resolveBattle = <
   }
 
   const attackerWon = outcome === 'win';
+  const nextAttacker = {
+    ...attacker,
+    points: clamp(attacker.points + (attackerWon ? soloBattleWinPoints : -soloBattleLossPoints), 0, maxPoints),
+    pet: syncPetLifeState(
+      {
+        ...attacker.pet,
+        fullness: clamp(attacker.pet.fullness - soloBattleAttackerFullnessCost, 0, 100),
+        happiness: clamp(attacker.pet.happiness + (attackerWon ? 15 : -20), 0, 100),
+      },
+      now,
+    ),
+    stats: {
+      wins: attackerWon ? attackerStats.wins + 1 : attackerStats.wins,
+      losses: attackerWon ? attackerStats.losses : attackerStats.losses + 1,
+    },
+    rankPoints: attackerWon
+      ? attackerRankPoints + (options?.battleRankPointsWin ?? 20)
+      : Math.max(0, attackerRankPoints - (options?.battleRankPointsLoss ?? 10)),
+  } as TAttacker;
+  const nextDefender = {
+    ...defender,
+    points: clamp(defender.points + (attackerWon ? -soloBattleLossPoints : soloBattleWinPoints), 0, maxPoints),
+    pet: syncPetLifeState(
+      {
+        ...defender.pet,
+        fullness: clamp(defender.pet.fullness - soloBattleDefenderFullnessCost, 0, 100),
+        happiness: clamp(defender.pet.happiness + (attackerWon ? -20 : 15), 0, 100),
+      },
+      now,
+    ),
+    stats: {
+      wins: attackerWon ? defenderStats.wins : defenderStats.wins + 1,
+      losses: attackerWon ? defenderStats.losses + 1 : defenderStats.losses,
+    },
+    rankPoints: attackerWon
+      ? Math.max(0, defenderRankPoints - (options?.battleRankPointsLoss ?? 10))
+      : defenderRankPoints + (options?.battleRankPointsWin ?? 20),
+  } as TDefender;
 
   return {
     blocked: null,
     outcome,
     attackerScore,
     defenderScore,
-    attacker: {
-      ...attacker,
-      points: clamp(attacker.points + (attackerWon ? soloBattleWinPoints : -soloBattleLossPoints), 0, maxPoints),
-      pet: syncPetLifeState(
-        {
-          ...attacker.pet,
-          fullness: clamp(attacker.pet.fullness - soloBattleAttackerFullnessCost, 0, 100),
-          happiness: clamp(attacker.pet.happiness + (attackerWon ? 15 : -20), 0, 100),
-        },
-        now,
-      ),
-      stats: {
-        wins: attackerWon ? attackerStats.wins + 1 : attackerStats.wins,
-        losses: attackerWon ? attackerStats.losses : attackerStats.losses + 1,
-      },
-      rankPoints: attackerWon 
-        ? attackerRankPoints + (options?.battleRankPointsWin ?? 20) 
-        : Math.max(0, attackerRankPoints - (options?.battleRankPointsLoss ?? 10)),
-    },
-    defender: {
-      ...defender,
-      points: clamp(defender.points + (attackerWon ? -soloBattleLossPoints : soloBattleWinPoints), 0, maxPoints),
-      pet: syncPetLifeState(
-        {
-          ...defender.pet,
-          fullness: clamp(defender.pet.fullness - soloBattleDefenderFullnessCost, 0, 100),
-          happiness: clamp(defender.pet.happiness + (attackerWon ? -20 : 15), 0, 100),
-        },
-        now,
-      ),
-      stats: {
-        wins: attackerWon ? defenderStats.wins : defenderStats.wins + 1,
-        losses: attackerWon ? defenderStats.losses + 1 : defenderStats.losses,
-      },
-      rankPoints: attackerWon 
-        ? Math.max(0, defenderRankPoints - (options?.battleRankPointsLoss ?? 10)) 
-        : defenderRankPoints + (options?.battleRankPointsWin ?? 20),
-    },
+    attacker: appendEconomyDelta(attacker, nextAttacker, 'soloBattle', now),
+    defender: appendEconomyDelta(defender, nextDefender, 'soloBattle', now),
   };
 };
 
@@ -871,7 +1481,7 @@ export const resolveTeamBattle = <
     const bonusPoints = hasTeamReward ? reward?.bonusPoints ?? 0 : 0;
     const bonusHappiness = hasTeamReward ? reward?.bonusHappiness ?? 0 : 0;
 
-    return {
+    const nextStudent = {
       ...member.student,
       points: clamp(
         member.student.points + (sideWon ? TEAM_BATTLE_WIN_POINTS + bonusPoints : -TEAM_BATTLE_LOSS_POINTS),
@@ -897,7 +1507,8 @@ export const resolveTeamBattle = <
       rankPoints: sideWon
         ? rankPoints + (options?.battleRankPointsWin ?? TEAM_BATTLE_WIN_RANK_POINTS)
         : Math.max(0, rankPoints - (options?.battleRankPointsLoss ?? TEAM_BATTLE_LOSS_RANK_POINTS)),
-    };
+    } as T;
+    return appendEconomyDelta(member.student, nextStudent, 'teamBattle', now);
   };
 
   const updated: Record<string, TAttacker | TDefender> = {};
@@ -971,7 +1582,7 @@ export const applyDecayToStudent = <T extends StudentRuleState>(
   const actualDecay = Math.max(0, -newFullness);
   const nextFullness = clamp(newFullness, 0, 100);
 
-  return {
+  const nextStudent = {
     ...student,
     warningPoints: activeWarnings.length,
     activeWarningTimestamps: activeWarnings,
@@ -984,39 +1595,94 @@ export const applyDecayToStudent = <T extends StudentRuleState>(
       now,
       options?.allowDeath ?? true,
     ),
-  };
+  } as T;
+  return nextStudent;
 };
 
-export const reviveStudentPet = <T extends StudentRuleState>(student: T, reviveCost = REVIVE_COST, maxPoints = 700) => ({
-  ...student,
-  points: clamp(student.points - reviveCost, 0, maxPoints),
-  pet: {
-    ...student.pet,
-    fullness: 40,
-    happiness: Math.max(25, student.pet.happiness),
-    isDead: false,
-    zeroFullnessSince: undefined,
-  },
-});
+export const reviveStudentPet = <T extends StudentRuleState>(
+  student: T,
+  reviveCost = REVIVE_COST,
+  maxPoints = 700,
+  now = Date.now(),
+) => appendEconomyDelta(
+  student,
+  {
+    ...student,
+    points: clamp(student.points - reviveCost, 0, maxPoints),
+    pet: {
+      ...student.pet,
+      fullness: 40,
+      happiness: Math.max(25, student.pet.happiness),
+      isDead: false,
+      zeroFullnessSince: undefined,
+    },
+  } as T,
+  'revive',
+  now,
+);
 
 export const claimDailyTaskForStudent = <T extends StudentRuleState>(
   student: T,
   now = Date.now(),
   maxPoints = 700,
   reasonLabel?: string,
+  calendarOptions?: DailyTaskCalendarOptions,
+  reflectionInput?: DailyTaskReflectionInput,
 ) => {
-  const today = getDateKey(now);
-  const yesterday = getDateKey(now - 1000 * 60 * 60 * 24);
   const lastClaimDate = student.dailyProgress?.lastClaimDate;
   const currentStreak = student.dailyProgress?.streak ?? 0;
+  const plan = calendarOptions
+    ? getDailyTaskClaimPlan(student, now, {
+        ...calendarOptions,
+        excusedDates: calendarOptions.excusedDates ?? student.dailyProgress?.excusedDates,
+      })
+    : undefined;
+  const targetDate = plan?.targetDate ?? getDateKey(now);
+  const yesterday = getDateKey(now - 1000 * 60 * 60 * 24);
 
-  if (lastClaimDate === today) {
-    return { claimed: false as const, student };
+  if (plan && !plan.targetDate) {
+    return {
+      claimed: false as const,
+      student,
+      alreadyClaimed: plan.alreadyClaimed,
+      frozen: plan.frozen,
+    };
+  }
+  if (!plan && lastClaimDate === targetDate) {
+    return { claimed: false as const, student, alreadyClaimed: true, frozen: false };
   }
 
-  const nextStreak = lastClaimDate === yesterday ? currentStreak + 1 : 1;
+  const reflectionText = reflectionInput?.text.trim().slice(0, 160) ?? '';
+  const reflectionIsValid = Boolean(
+    reflectionText &&
+    reflectionInput &&
+    isLearningCompetency(reflectionInput.competency) &&
+    (
+      reflectionInput.assessment === 'needsSupport' ||
+      reflectionInput.assessment === 'progressing' ||
+      reflectionInput.assessment === 'confident'
+    ),
+  );
+  if (!reflectionIsValid || !reflectionInput) {
+    return {
+      claimed: false as const,
+      student,
+      alreadyClaimed: false,
+      frozen: false,
+      reflectionRequired: true as const,
+    };
+  }
+
+  const followsPreviousInstructionDate = calendarOptions && isDateKey(lastClaimDate)
+    ? getNextDailyTaskInstructionDate(lastClaimDate, {
+        ...calendarOptions,
+        excusedDates: calendarOptions.excusedDates ?? student.dailyProgress?.excusedDates,
+      }) === targetDate
+    : lastClaimDate === yesterday;
+  const nextStreak = followsPreviousInstructionDate ? currentStreak + 1 : 1;
   const streakBonus = Math.min(20, (nextStreak - 1) * 5);
   const rewardPoints = DAILY_TASK_REWARD_POINTS + streakBonus;
+  const claimKind = plan?.claimKind ?? 'current';
   const rewardRecord = createPointAdjustmentRecord(
     rewardPoints,
     'dailyTask',
@@ -1026,12 +1692,24 @@ export const claimDailyTaskForStudent = <T extends StudentRuleState>(
       competency: 'assignmentQuality',
     },
     now,
+    plan ? { effectiveDate: targetDate, claimKind } : undefined,
   );
+  const dailyReflection: DailyReflection = {
+    id: `reflection-${now}-${Math.random().toString(36).slice(2, 8)}`,
+    date: targetDate,
+    createdAt: now,
+    competency: reflectionInput.competency,
+    author: 'student',
+    selfAssessment: reflectionInput.assessment,
+    text: reflectionText,
+  };
 
   return {
     claimed: true as const,
     rewardPoints,
     streak: nextStreak,
+    effectiveDate: targetDate,
+    claimKind,
     student: {
       ...student,
       points: clamp(student.points + rewardPoints, 0, maxPoints),
@@ -1043,9 +1721,13 @@ export const claimDailyTaskForStudent = <T extends StudentRuleState>(
         now,
       ),
       dailyProgress: {
-        lastClaimDate: today,
+        lastClaimDate: targetDate,
         streak: nextStreak,
-        reflections: student.dailyProgress?.reflections,
+        reflections: [
+          dailyReflection,
+          ...(student.dailyProgress?.reflections ?? []),
+        ].slice(0, MAX_DAILY_REFLECTIONS),
+        excusedDates: student.dailyProgress?.excusedDates,
       },
       pointAdjustmentRecords: [
         rewardRecord,
@@ -1059,13 +1741,14 @@ export const saveMentorDailyFeedbackForStudent = <T extends StudentRuleState>(
   student: T,
   feedback: MentorDailyFeedbackInput,
   now = Date.now(),
+  timeZone = 'Asia/Taipei',
 ) => {
   const text = feedback.text.trim().slice(0, 160);
   if (!text) {
     return { saved: false as const, updated: false as const, student };
   }
 
-  const date = getDateKey(now);
+  const date = getDateKey(now, timeZone);
   const reflections = student.dailyProgress?.reflections ?? [];
   const existing = reflections.find(
     (reflection) => reflection.date === date && reflection.author === 'mentor',
@@ -1094,6 +1777,7 @@ export const saveMentorDailyFeedbackForStudent = <T extends StudentRuleState>(
             (reflection) => !(reflection.date === date && reflection.author === 'mentor'),
           ),
         ].slice(0, MAX_DAILY_REFLECTIONS),
+        excusedDates: student.dailyProgress?.excusedDates,
       },
     },
   };
@@ -1223,6 +1907,61 @@ export const resolveSharedBossAttack = <T extends StudentRuleState>(
   return { updated, targetIds, damage: sharedDamage };
 };
 
+export const isBossRecoveryActive = (
+  recovery: BossRecoveryStatus | undefined,
+  now = Date.now(),
+) => Boolean(
+  recovery &&
+  recovery.impact > 0 &&
+  recovery.startedAt <= now &&
+  recovery.recoverAt > now,
+);
+
+export const resolveRecoverableBossAttack = <T extends StudentRuleState>(
+  students: Array<TeamBattleMember<T>>,
+  totalImpact = DEFAULT_BOSS_ATTACK_DAMAGE,
+  recoveryMinutes = DEFAULT_BOSS_RECOVERY_MINUTES,
+  now = Date.now(),
+): {
+  updated: Record<string, T & { bossRecovery?: BossRecoveryStatus }>;
+  targetIds: string[];
+  damage: number;
+  recoverAt: number;
+} => {
+  const eligible = students.filter(({ student }) => !isPetDead(student.pet));
+  const safeTotalImpact = Math.max(0, Math.floor(toFiniteNumber(totalImpact, DEFAULT_BOSS_ATTACK_DAMAGE)));
+  const sharedImpact = eligible.length > 0 ? Math.ceil(safeTotalImpact / eligible.length) : 0;
+  const safeRecoveryMinutes = clamp(
+    Math.floor(toFiniteNumber(recoveryMinutes, DEFAULT_BOSS_RECOVERY_MINUTES)),
+    1,
+    MAX_BOSS_RECOVERY_MINUTES,
+  );
+  const recoverAt = now + safeRecoveryMinutes * 60_000;
+  const targetIds = sharedImpact > 0 ? eligible.map(({ id }) => id) : [];
+  const targetIdSet = new Set(targetIds);
+  const updated: Record<string, T & { bossRecovery?: BossRecoveryStatus }> = {};
+
+  students.forEach(({ id, student }) => {
+    if (!targetIdSet.has(id)) {
+      updated[id] = student;
+      return;
+    }
+    const existingImpact = isBossRecoveryActive(student.bossRecovery, now)
+      ? student.bossRecovery?.impact ?? 0
+      : 0;
+    updated[id] = {
+      ...student,
+      bossRecovery: {
+        impact: Math.max(existingImpact, sharedImpact),
+        startedAt: now,
+        recoverAt,
+      },
+    };
+  });
+
+  return { updated, targetIds, damage: sharedImpact, recoverAt };
+};
+
 export const getBossContributionStandings = <
   T extends Pick<
     StudentRuleState,
@@ -1344,7 +2083,35 @@ export const applyBossContributionRewards = <
       const standing = standingByStudentId.get(student.id);
       if (!standing) return student;
 
-      return {
+      const bossRecord: BossRewardRecord = {
+        id: `boss-reward-${boss.id}-${student.id}`,
+        bossId: boss.id,
+        bossName: boss.name,
+        createdAt: now,
+        rank: standing.rank,
+        damage: standing.damage,
+        attackCount: standing.attackCount,
+        fairScore: standing.fairScore,
+        previousDamage: standing.previousDamage,
+        previousFairScore: standing.previousFairScore,
+        improvementAmount: standing.improvementAmount,
+        fairImprovementAmount: standing.fairImprovementAmount,
+        rewardPoints: standing.rewardPoints,
+        rewardRankPoints: standing.rewardRankPoints,
+        rewardHappiness: standing.rewardHappiness,
+        rankRewardPoints: standing.rankRewardPoints,
+        rankRewardRankPoints: standing.rankRewardRankPoints,
+        rankRewardHappiness: standing.rankRewardHappiness,
+        participationRewardPoints: standing.participationRewardPoints,
+        participationRewardRankPoints: standing.participationRewardRankPoints,
+        participationRewardHappiness: standing.participationRewardHappiness,
+        improvementRewardPoints: standing.improvementRewardPoints,
+        improvementRewardRankPoints: standing.improvementRewardRankPoints,
+        improvementRewardHappiness: standing.improvementRewardHappiness,
+        receivedImprovementReward: standing.receivedImprovementReward,
+      };
+
+      const nextStudent = {
         ...student,
         points: clamp(student.points + standing.rewardPoints, 0, maxPoints),
         rankPoints: Math.max(0, (student.rankPoints ?? 0) + standing.rewardRankPoints),
@@ -1352,33 +2119,7 @@ export const applyBossContributionRewards = <
         lastBossFairScore: standing.fairScore,
         bossRewardRecords: appendRecord(
           student.bossRewardRecords,
-          {
-            id: `boss-reward-${boss.id}-${student.id}`,
-            bossId: boss.id,
-            bossName: boss.name,
-            createdAt: now,
-            rank: standing.rank,
-            damage: standing.damage,
-            attackCount: standing.attackCount,
-            fairScore: standing.fairScore,
-            previousDamage: standing.previousDamage,
-            previousFairScore: standing.previousFairScore,
-            improvementAmount: standing.improvementAmount,
-            fairImprovementAmount: standing.fairImprovementAmount,
-            rewardPoints: standing.rewardPoints,
-            rewardRankPoints: standing.rewardRankPoints,
-            rewardHappiness: standing.rewardHappiness,
-            rankRewardPoints: standing.rankRewardPoints,
-            rankRewardRankPoints: standing.rankRewardRankPoints,
-            rankRewardHappiness: standing.rankRewardHappiness,
-            participationRewardPoints: standing.participationRewardPoints,
-            participationRewardRankPoints: standing.participationRewardRankPoints,
-            participationRewardHappiness: standing.participationRewardHappiness,
-            improvementRewardPoints: standing.improvementRewardPoints,
-            improvementRewardRankPoints: standing.improvementRewardRankPoints,
-            improvementRewardHappiness: standing.improvementRewardHappiness,
-            receivedImprovementReward: standing.receivedImprovementReward,
-          },
+          bossRecord,
           MAX_BOSS_REWARD_RECORDS,
         ),
         pet: syncPetLifeState(
@@ -1388,7 +2129,15 @@ export const applyBossContributionRewards = <
           },
           now,
         ),
-      };
+      } as T;
+      const actualReward = Math.trunc(nextStudent.points - student.points);
+      if (actualReward <= 0) return nextStudent;
+      return appendEconomyEventToStudent(
+        nextStudent,
+        createEconomyEventRecord('issuance', 'bossReward', actualReward, now, {
+          referenceId: bossRecord.id,
+        }),
+      ) as T;
     }),
   };
 };

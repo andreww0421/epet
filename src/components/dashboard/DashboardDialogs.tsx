@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AlertCircle, Edit2, Gift, Users } from 'lucide-react';
-import type { LearningCompetency } from '../../store/types';
+import type { FeedbackReasonHistoryEntry, LearningCompetency } from '../../store/types';
 import { translations } from '../../i18n/translations';
 
 type DashboardCopy = (typeof translations)[keyof typeof translations];
@@ -129,13 +129,13 @@ export const DeleteConfirmationDialog = ({
 };
 
 type ReasonOption = {
-  competency?: LearningCompetency;
+  competency: LearningCompetency;
   label: string;
 };
 
 type PointAdjustmentDialogProps = {
   competencyLabels: Record<LearningCompetency, string>;
-  feedbackReasonHistory: string[];
+  feedbackReasonHistory: FeedbackReasonHistoryEntry[];
   onCancel: () => void;
   onConfirm: (input: {
     amount: number;
@@ -172,12 +172,12 @@ export const PointAdjustmentDialog = ({
 
   const suggestions = useMemo(() => {
     const options = new Map<string, ReasonOption>();
-    feedbackReasonHistory.forEach((label) => {
-      options.set(label.toLocaleLowerCase(), { label });
+    feedbackReasonHistory.forEach((entry) => {
+      options.set(entry.label.toLocaleLowerCase(), entry);
     });
     pointReasonOptions.forEach((option) => {
       const key = option.label.toLocaleLowerCase();
-      if (!options.has(key)) options.set(key, option);
+      options.set(key, option);
     });
     const query = reason.trim().toLocaleLowerCase();
     return [...options.values()]
@@ -271,24 +271,22 @@ export const PointAdjustmentDialog = ({
                 >
                   {suggestions.map((suggestion) => (
                     <button
-                      key={`${suggestion.label}-${suggestion.competency ?? 'history'}`}
+                      key={`${suggestion.label}-${suggestion.competency}`}
                       type="button"
                       role="option"
                       aria-selected={reason === suggestion.label}
                       onMouseDown={(event) => event.preventDefault()}
                       onClick={() => {
                         setReason(suggestion.label);
-                        if (suggestion.competency) setCompetency(suggestion.competency);
+                        setCompetency(suggestion.competency);
                         setSuggestionsOpen(false);
                       }}
                       className="flex w-full items-center justify-between gap-3 rounded px-3 py-2 text-left text-sm text-slate-700 hover:bg-indigo-50 hover:text-indigo-900"
                     >
                       <span>{suggestion.label}</span>
-                      {suggestion.competency && (
-                        <span className="shrink-0 text-xs text-slate-400">
-                          {competencyLabels[suggestion.competency]}
-                        </span>
-                      )}
+                      <span className="shrink-0 text-xs text-slate-400">
+                        {competencyLabels[suggestion.competency]}
+                      </span>
                     </button>
                   ))}
                 </div>

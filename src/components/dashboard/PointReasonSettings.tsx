@@ -105,6 +105,9 @@ export const PointReasonSettings: React.FC<PointReasonSettingsProps> = ({
               fill={option.isPinned ? 'currentColor' : 'none'}
             />
             {option.displayLabel}
+            <span className="rounded bg-white/70 px-1.5 py-0.5 text-[10px] font-bold opacity-80">
+              {competencyLabels[option.competency]}
+            </span>
             {(option.isPinned || option.isRecent) && (
               <span className="text-[10px] opacity-70">
                 {option.isPinned ? labels.pinnedReason : labels.recentReason}

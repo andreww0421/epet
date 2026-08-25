@@ -2,7 +2,9 @@ import {
   WorldBoss, PenaltyStatus, DisciplineRecord, PointAdjustmentRecord, DailyProgress,
   PointAdjustmentSource, BossRewardTier, BossContributionStanding,
   BossRewardRecord, LearningCompetency, ClassGoal, BossAttackMode, BossReward,
+  BossRecoveryStatus,
   DailyReflection, MentorDailyFeedbackInput, DailyAssessment, DailySelfAssessment,
+  DailyTaskReflectionInput, EconomyEventRecord, EconomyEventKind, EconomyEventSource,
 } from '../gameRules';
 import type {
   LearningEvidenceInput,
@@ -15,7 +17,9 @@ export type {
   WorldBoss, PenaltyStatus, DisciplineRecord, PointAdjustmentRecord, DailyProgress,
   PointAdjustmentSource, BossRewardTier, BossContributionStanding,
   BossRewardRecord, LearningCompetency, ClassGoal, BossAttackMode, BossReward,
+  BossRecoveryStatus,
   DailyReflection, MentorDailyFeedbackInput, DailyAssessment, DailySelfAssessment,
+  DailyTaskReflectionInput, EconomyEventRecord, EconomyEventKind, EconomyEventSource,
   LearningEvidenceInput, LearningEvidenceLevel, LearningEvidenceRecord, LearningEvidenceType,
 };
 
@@ -46,8 +50,10 @@ export type Student = {
   penaltyStatus?: PenaltyStatus;
   disciplineRecords?: DisciplineRecord[];
   pointAdjustmentRecords?: PointAdjustmentRecord[];
+  economyEventRecords?: EconomyEventRecord[];
   bossRewardRecords?: BossRewardRecord[];
   dailyProgress?: DailyProgress;
+  bossRecovery?: BossRecoveryStatus;
   lastBossDamage?: number;
   lastBossFairScore?: number;
   teamId?: string;
@@ -111,6 +117,10 @@ export type AppData = {
     decayType: 'hourly' | 'daily';
     inclusiveMode?: boolean;
     pauseDecayOnWeekends?: boolean;
+    schoolTimeZone?: string;
+    schoolWeekdays?: number[];
+    schoolHolidayDates?: string[];
+    dailyTaskMakeupWindowDays?: number;
     petCareMode?: PetCareMode;
     publicNameMode?: PublicNameMode;
     publicLeaderboardMode?: PublicLeaderboardMode;
@@ -140,10 +150,19 @@ export type AppData = {
     bossAttackMaxTargets?: number;
     bossAttackDamage?: number;
     bossAttackMode?: BossAttackMode;
+    bossRecoveryMinutes?: number;
     pointReasonOptions?: PointReasonOption[];
     pinnedReasonIds?: string[];
     recentReasonIds?: string[];
-    feedbackReasonHistory?: string[];
+    feedbackReasonHistory?: FeedbackReasonHistoryEntry[];
+    pointGuardrailsEnabled?: boolean;
+    dailyPositivePointLimit?: number;
+    dailyNegativePointLimit?: number;
+    positiveFeedbackRatioTarget?: number;
+    participationSupportEnabled?: boolean;
+    minimumDailyParticipationPoints?: number;
+    catchUpGapThreshold?: number;
+    dailyCatchUpBonus?: number;
     enableSeasonResetRewards?: boolean;
     seasonResetRewards?: { diamond: number, platinum: number, gold: number, silver: number, bronze: number };
     reviveCost?: number;
@@ -154,6 +173,11 @@ export type PointReasonOption = {
   id: string;
   amount: number;
   labels: Record<Language, string>;
+  competency: LearningCompetency;
+};
+
+export type FeedbackReasonHistoryEntry = {
+  label: string;
   competency: LearningCompetency;
 };
 

@@ -4,7 +4,8 @@ import {
   AppData, Student, ClassData, UpgradeRewardState, PetAnimationMode,
   PointAdjustmentSource, BattleMode, Language, BossRewardTier, BossVictoryResult,
   ClassGoal, LearningCompetency, BossReward, BossAttackMode, MentorDailyFeedbackInput,
-  PointReasonOption, LearningEvidenceInput, ExamRecord,
+  PointReasonOption, FeedbackReasonHistoryEntry, LearningEvidenceInput, ExamRecord,
+  DailyTaskReflectionInput,
 } from './types';
 import { createLearningEvidenceRecord } from '../../shared/education';
 import { 
@@ -23,10 +24,12 @@ import {
   applyFeedToStudent, applyPlayWithPet, claimDailyTaskForStudent,
   saveMentorDailyFeedbackForStudent,
   reviveStudentPet, applyPointAdjustmentToStudent, createPointAdjustmentRecord,
+  createEconomyEventRecord, appendEconomyEventToStudent,
   applyPenaltyToStudent, createDisciplineRecord, getNextUpgradeGachaLevel,
   applySafetyActionReversal, createSafetyActionEffect, appendRecord, isPenaltyActive,
   getUpcomingUpgradeGachaLevel, resolveBattle, resolveTeamBattle,
   isBattleReady, attackWorldBoss, applyBossContributionRewards, resolveBossAttack, resolveSharedBossAttack,
+  resolveRecoverableBossAttack,
   clamp, toFiniteNumber,
   BOSS_ATTACK_FULLNESS_COST, DIRECT_DISCIPLINE_PENALTY, WARNING_THRESHOLD,
   WARNING_AUTO_PENALTY, MAX_ACTIVITY_RECORDS, UPGRADE_REWARD_LEVEL,
@@ -36,8 +39,18 @@ import {
   TEAM_BATTLE_ATTACKER_FULLNESS_COST, TEAM_BATTLE_ATTACKER_TEAMMATE_FULLNESS_COST,
   TEAM_BATTLE_DEFENDER_FULLNESS_COST, TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST,
   DEFAULT_BOSS_ATTACK_MAX_TARGETS, DEFAULT_BOSS_ATTACK_DAMAGE,
+  DEFAULT_BOSS_RECOVERY_MINUTES, MAX_BOSS_RECOVERY_MINUTES,
   DEFAULT_BOSS_PARTICIPATION_REWARD, DEFAULT_BOSS_IMPROVEMENT_REWARD,
+  DEFAULT_DAILY_POSITIVE_POINT_LIMIT, DEFAULT_DAILY_NEGATIVE_POINT_LIMIT,
+  DEFAULT_POSITIVE_FEEDBACK_RATIO_TARGET, applyPointGuardrail,
+  DEFAULT_MINIMUM_DAILY_PARTICIPATION_POINTS, DEFAULT_CATCH_UP_GAP_THRESHOLD,
+  DEFAULT_DAILY_CATCH_UP_BONUS, applyParticipationSupportToStudent,
   getDateKey, hasActiveLevelDecreaseCooldown, type SafetyActionKind,
+  normalizeDateKeyList, normalizeSchoolTimeZone, normalizeSchoolWeekdays,
+  normalizeDailyTaskMakeupWindowDays, isDateKey,
+  isLearningCompetency, getActiveClassGoals, getWeekStartDate,
+  type PointGuardrailOptions, type PointGuardrailOutcome,
+  type ParticipationSupportOptions,
 } from '../gameRules';
 
 type PointAdjustmentReason = {
@@ -60,6 +73,15 @@ type PointUndoAction = {
   entries: PointUndoEntry[];
 };
 
+type PointGuardrailApplication = {
+  studentId: string;
+  requestedAmount: number;
+  appliedAmount: number;
+  outcome: PointGuardrailOutcome;
+  participationTopUp: number;
+  catchUpBonus: number;
+};
+
 type SafetyUndoAction = {
   id: string;
   classId: string;
@@ -77,7 +99,13 @@ type StoreState = {
   toast: { message: string; type: 'success' | 'error' } | null;
   upgradeReward: UpgradeRewardState | null;
   bossHitFeedback: { damage: number; id: number } | null;
-  bossAttackFeedback: { targetNames: string[]; damage: number; id: number } | null;
+  bossAttackFeedback: {
+    targetNames: string[];
+    damage: number;
+    id: number;
+    mode?: BossAttackMode;
+    recoverAt?: number;
+  } | null;
   showBossVictory: boolean;
   bossVictoryResult: BossVictoryResult | null;
   undoAction: PointUndoAction | null;
@@ -136,7 +164,8 @@ type StoreState = {
   // Interactions
   feedPet: (studentId: string) => void;
   playWithPet: (studentId: string) => void;
-  claimDailyTask: (studentId: string) => void;
+  claimDailyTask: (studentId: string, reflection: DailyTaskReflectionInput) => boolean;
+  setDailyTaskExcusedDate: (studentId: string, date: string, excused: boolean) => void;
   saveMentorDailyFeedback: (studentId: string, feedback: MentorDailyFeedbackInput) => void;
   addLearningEvidence: (studentId: string, evidence: LearningEvidenceInput) => void;
   revivePet: (studentId: string) => void;
@@ -160,6 +189,7 @@ type StoreState = {
   removeBoss: () => void;
   executeAttackBoss: (studentId: string) => Promise<void>;
   executeBossAttack: () => void;
+  clearBossRecovery: () => void;
   dismissBossVictory: () => void;
 
   // Lifecycle
@@ -195,8 +225,10 @@ const createNewStudent = (student: Student): Student => ({
   penaltyStatus: undefined,
   disciplineRecords: [],
   pointAdjustmentRecords: [],
+  economyEventRecords: [],
   bossRewardRecords: [],
   dailyProgress: { streak: 0 },
+  bossRecovery: undefined,
   teamId: undefined,
   badges: [],
 });
@@ -230,22 +262,163 @@ const applyPointAdjustments = (
   reason: PointAdjustmentReason | undefined,
   now: number,
   maxPoints: number,
+  guardrailOptions: PointGuardrailOptions,
+  participationSupportOptions: ParticipationSupportOptions,
 ) => {
   const entries: PointUndoEntry[] = [];
-  const nextStudents = students.map((student) => {
+  const applications: PointGuardrailApplication[] = [];
+  const actualDeltaByStudentId = new Map<string, number>();
+  const boundReason: PointAdjustmentReason = {
+    ...reason,
+    competency: isLearningCompetency(reason?.competency)
+      ? reason.competency
+      : source === 'dailyTask'
+        ? 'assignmentQuality'
+        : 'participation',
+  };
+  const baseStudents = students.map((student) => {
     if (!studentIds.has(student.id)) return student;
 
-    const record = createPointAdjustmentRecord(amount, source, reason, now);
-    const updatedStudent = applyPointAdjustmentToStudent(student, amount, record, maxPoints);
-    entries.push({
+    const guardrail = applyPointGuardrail(
+      student,
+      amount,
+      now,
+      source === 'dailyTask' || source === 'participationTopUp' || source === 'catchUpBonus'
+        ? { ...guardrailOptions, enabled: false }
+        : guardrailOptions,
+    );
+    const record = createPointAdjustmentRecord(
+      guardrail.appliedAmount,
+      source,
+      boundReason,
+      now,
+      guardrail.outcome === 'applied'
+        ? undefined
+        : {
+            requestedAmount: guardrail.requestedAmount,
+            guardrailOutcome: guardrail.outcome,
+            guardrailReason: guardrail.reason,
+          },
+    );
+    const updatedStudent = applyPointAdjustmentToStudent(
+      student,
+      guardrail.appliedAmount,
+      record,
+      maxPoints,
+    );
+    applications.push({
       studentId: student.id,
-      recordId: record.id,
-      actualDelta: updatedStudent.points - student.points,
+      requestedAmount: guardrail.requestedAmount,
+      appliedAmount: guardrail.appliedAmount,
+      outcome: guardrail.outcome,
+      participationTopUp: 0,
+      catchUpBonus: 0,
     });
+    const actualDelta = updatedStudent.points - student.points;
+    actualDeltaByStudentId.set(student.id, actualDelta);
+    if (guardrail.outcome !== 'blocked') {
+      entries.push({
+        studentId: student.id,
+        recordId: record.id,
+        actualDelta,
+      });
+    }
     return updatedStudent;
   });
 
-  return { entries, students: nextStudents };
+  const applicationByStudentId = new Map(
+    applications.map((application) => [application.studentId, application] as const),
+  );
+  const nextStudents = baseStudents.map((student) => {
+    if (!studentIds.has(student.id) || (actualDeltaByStudentId.get(student.id) ?? 0) <= 0) {
+      return student;
+    }
+    const support = applyParticipationSupportToStudent(
+      student,
+      baseStudents,
+      now,
+      maxPoints,
+      participationSupportOptions,
+    );
+    const application = applicationByStudentId.get(student.id);
+    if (application) {
+      application.participationTopUp = support.participationTopUp;
+      application.catchUpBonus = support.catchUpBonus;
+    }
+    support.records.forEach((record) => {
+      entries.push({
+        studentId: student.id,
+        recordId: record.id,
+        actualDelta: record.amount,
+      });
+    });
+    return support.student;
+  });
+
+  return { applications, entries, students: nextStudents };
+};
+
+const getPointGuardrailOptions = (
+  settings: AppData['settings'],
+): PointGuardrailOptions => ({
+  enabled: settings?.pointGuardrailsEnabled !== false,
+  timeZone: settings?.schoolTimeZone,
+  dailyPositiveLimit: settings?.dailyPositivePointLimit,
+  dailyNegativeLimit: settings?.dailyNegativePointLimit,
+});
+
+const getParticipationSupportOptions = (
+  settings: AppData['settings'],
+): ParticipationSupportOptions => ({
+  enabled: settings?.participationSupportEnabled !== false,
+  timeZone: settings?.schoolTimeZone,
+  minimumDailyParticipationPoints: settings?.minimumDailyParticipationPoints,
+  catchUpGapThreshold: settings?.catchUpGapThreshold,
+  dailyCatchUpBonus: settings?.dailyCatchUpBonus,
+});
+
+const getPointGuardrailCounts = (applications: PointGuardrailApplication[]) => ({
+  blocked: applications.filter((application) => application.outcome === 'blocked').length,
+  clamped: applications.filter((application) => application.outcome === 'clamped').length,
+});
+
+const getPointGuardrailNotice = (
+  lang: Language,
+  applications: PointGuardrailApplication[],
+) => {
+  const counts = getPointGuardrailCounts(applications);
+  if (counts.blocked === 0 && counts.clamped === 0) return '';
+  if (counts.blocked === applications.length) {
+    return translations[lang].pointGuardrailBlocked.replace(
+      '{count}',
+      counts.blocked.toString(),
+    );
+  }
+  return translations[lang].pointGuardrailAdjusted
+    .replace('{clamped}', counts.clamped.toString())
+    .replace('{blocked}', counts.blocked.toString());
+};
+
+const getParticipationSupportNotice = (
+  lang: Language,
+  applications: PointGuardrailApplication[],
+) => {
+  const supportedStudents = applications.filter(
+    (application) => application.participationTopUp > 0 || application.catchUpBonus > 0,
+  );
+  if (supportedStudents.length === 0) return '';
+  const participationTopUp = supportedStudents.reduce(
+    (total, application) => total + application.participationTopUp,
+    0,
+  );
+  const catchUpBonus = supportedStudents.reduce(
+    (total, application) => total + application.catchUpBonus,
+    0,
+  );
+  return translations[lang].participationSupportApplied
+    .replace('{count}', supportedStudents.length.toString())
+    .replace('{topUp}', participationTopUp.toString())
+    .replace('{catchUp}', catchUpBonus.toString());
 };
 
 const schedulePointUndoExpiry = (
@@ -272,13 +445,20 @@ const scheduleSafetyUndoExpiry = (
 
 const normalizeSafetyReason = (reason: string) => reason.trim().slice(0, 240);
 
-const prependFeedbackReason = (history: string[] | undefined, label: string | undefined) => {
+const prependFeedbackReason = (
+  history: FeedbackReasonHistoryEntry[] | undefined,
+  label: string | undefined,
+  competency: LearningCompetency | undefined,
+) => {
   const normalizedLabel = label?.trim().slice(0, 120);
   if (!normalizedLabel) return history ?? [];
   const normalizedKey = normalizedLabel.toLocaleLowerCase();
   return [
-    normalizedLabel,
-    ...(history ?? []).filter((item) => item.toLocaleLowerCase() !== normalizedKey),
+    {
+      label: normalizedLabel,
+      competency: isLearningCompetency(competency) ? competency : 'participation' as const,
+    },
+    ...(history ?? []).filter((item) => item.label.toLocaleLowerCase() !== normalizedKey),
   ].slice(0, 20);
 };
 
@@ -407,6 +587,12 @@ export const useStore = create<StoreState>()(
             decayAmount: Math.max(0, toFiniteNumber(merged.decayAmount, 2)),
             inclusiveMode,
             pauseDecayOnWeekends: inclusiveMode || merged.pauseDecayOnWeekends !== false,
+            schoolTimeZone: normalizeSchoolTimeZone(merged.schoolTimeZone),
+            schoolWeekdays: normalizeSchoolWeekdays(merged.schoolWeekdays),
+            schoolHolidayDates: normalizeDateKeyList(merged.schoolHolidayDates),
+            dailyTaskMakeupWindowDays: normalizeDailyTaskMakeupWindowDays(
+              merged.dailyTaskMakeupWindowDays,
+            ),
             petCareMode: safePetCareMode,
             publicNameMode: safePublicNameMode,
             publicLeaderboardMode: safePublicLeaderboardMode,
@@ -464,8 +650,69 @@ export const useStore = create<StoreState>()(
               Math.floor(toFiniteNumber(merged.bossAttackDamage, DEFAULT_BOSS_ATTACK_DAMAGE)),
             ),
             bossAttackMode: (
-              inclusiveMode ? 'shared' : merged.bossAttackMode === 'random' ? 'random' : 'shared'
+              inclusiveMode
+                ? 'recoverable'
+                : merged.bossAttackMode === 'random'
+                  ? 'random'
+                  : merged.bossAttackMode === 'shared'
+                    ? 'shared'
+                    : 'recoverable'
             ) as BossAttackMode,
+            bossRecoveryMinutes: clamp(
+              Math.floor(toFiniteNumber(merged.bossRecoveryMinutes, DEFAULT_BOSS_RECOVERY_MINUTES)),
+              1,
+              MAX_BOSS_RECOVERY_MINUTES,
+            ),
+            pointGuardrailsEnabled: merged.pointGuardrailsEnabled !== false,
+            dailyPositivePointLimit: clamp(
+              Math.floor(toFiniteNumber(
+                merged.dailyPositivePointLimit,
+                DEFAULT_DAILY_POSITIVE_POINT_LIMIT,
+              )),
+              0,
+              10_000,
+            ),
+            dailyNegativePointLimit: clamp(
+              Math.floor(toFiniteNumber(
+                merged.dailyNegativePointLimit,
+                DEFAULT_DAILY_NEGATIVE_POINT_LIMIT,
+              )),
+              0,
+              10_000,
+            ),
+            positiveFeedbackRatioTarget: clamp(
+              toFiniteNumber(
+                merged.positiveFeedbackRatioTarget,
+                DEFAULT_POSITIVE_FEEDBACK_RATIO_TARGET,
+              ),
+              1,
+              10,
+            ),
+            participationSupportEnabled: merged.participationSupportEnabled !== false,
+            minimumDailyParticipationPoints: clamp(
+              Math.floor(toFiniteNumber(
+                merged.minimumDailyParticipationPoints,
+                DEFAULT_MINIMUM_DAILY_PARTICIPATION_POINTS,
+              )),
+              0,
+              1_000,
+            ),
+            catchUpGapThreshold: clamp(
+              Math.floor(toFiniteNumber(
+                merged.catchUpGapThreshold,
+                DEFAULT_CATCH_UP_GAP_THRESHOLD,
+              )),
+              0,
+              10_000,
+            ),
+            dailyCatchUpBonus: clamp(
+              Math.floor(toFiniteNumber(
+                merged.dailyCatchUpBonus,
+                DEFAULT_DAILY_CATCH_UP_BONUS,
+              )),
+              0,
+              1_000,
+            ),
           }
         };
         get().showToast(translations[newData.settings.language || 'zh'].settingsSaved, 'success');
@@ -499,6 +746,9 @@ export const useStore = create<StoreState>()(
         const now = Date.now();
         const nextClasses = [...state.data.classes];
         const currentGoals = nextClasses[currentClassIndex].classGoals ?? [];
+        const schoolTimeZone = state.data.settings?.schoolTimeZone;
+        const currentWeekStart = getWeekStartDate(now, schoolTimeZone);
+        const activeGoals = getActiveClassGoals(currentGoals, now, schoolTimeZone);
         const currentGoal = goalId
           ? currentGoals.find((existingGoal) => existingGoal.id === goalId)
           : undefined;
@@ -508,7 +758,7 @@ export const useStore = create<StoreState>()(
         if (!goal) {
           nextGoals = goalId
             ? currentGoals.filter((existingGoal) => existingGoal.id !== goalId)
-            : [];
+            : currentGoals.filter((existingGoal) => !activeGoals.includes(existingGoal));
         } else {
           const nextGoal: ClassGoal = {
             id: currentGoal?.id ?? `goal-${now}-${currentGoals.length}`,
@@ -516,6 +766,7 @@ export const useStore = create<StoreState>()(
             competency: goal.competency,
             targetCount: Math.max(1, Math.floor(toFiniteNumber(goal.targetCount, 10))),
             createdAt: canKeepProgress && currentGoal ? currentGoal.createdAt : now,
+            weekStartDate: currentGoal?.weekStartDate ?? currentWeekStart,
           };
 
           if (currentGoal) {
@@ -523,14 +774,14 @@ export const useStore = create<StoreState>()(
               existingGoal.id === currentGoal.id ? nextGoal : existingGoal,
             );
           } else {
-            if (currentGoals.length >= 3) {
+            if (activeGoals.length >= 3) {
               get().showToast(
                 translations[state.data.settings?.language || 'zh'].classGoalLimitReached,
                 'error',
               );
               return state;
             }
-            nextGoals = [...currentGoals, nextGoal];
+            nextGoals = [...currentGoals, nextGoal].slice(-156);
           }
         }
 
@@ -726,6 +977,8 @@ export const useStore = create<StoreState>()(
 
       addPoints: (studentId, pointsToAdd, source = 'quick', reason) => {
         let createdUndoId = '';
+        let adjustmentNotice = '';
+        let adjustmentNoticeType: 'success' | 'error' = 'success';
         set((state) => {
           const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
           if (currentClassIndex === -1) return state;
@@ -745,10 +998,20 @@ export const useStore = create<StoreState>()(
             reason,
             now,
             state.data.settings?.maxPoints ?? 700,
+            getPointGuardrailOptions(state.data.settings),
+            getParticipationSupportOptions(state.data.settings),
           );
-          const undoId = `undo-points-${now}-${Math.random().toString(36).slice(2, 8)}`;
-          createdUndoId = undoId;
           const lang = state.data.settings?.language || 'zh';
+          const guardrailNotice = getPointGuardrailNotice(lang, result.applications);
+          adjustmentNotice = [
+            guardrailNotice,
+            getParticipationSupportNotice(lang, result.applications),
+          ].filter(Boolean).join(' ');
+          adjustmentNoticeType = guardrailNotice ? 'error' : 'success';
+          const undoId = result.entries.length > 0
+            ? `undo-points-${now}-${Math.random().toString(36).slice(2, 8)}`
+            : '';
+          createdUndoId = undoId;
           const nextClasses = [...state.data.classes];
           nextClasses[currentClassIndex] = { ...currentClass, students: result.students };
           const recentReasonIds = reason?.id
@@ -760,17 +1023,20 @@ export const useStore = create<StoreState>()(
           const feedbackReasonHistory = prependFeedbackReason(
             state.data.settings?.feedbackReasonHistory,
             reason?.label,
+            reason?.competency,
           );
           const shouldUpdateReasonSettings = Boolean(reason?.id || reason?.label?.trim());
 
           return {
-            undoAction: {
-              id: undoId,
-              classId: currentClass.id,
-              label: translations[lang].undoSingleAdjustment.replace('{name}', targetStudent.name),
-              expiresAt: now + POINT_UNDO_WINDOW_MS,
-              entries: result.entries,
-            },
+            undoAction: undoId
+              ? {
+                  id: undoId,
+                  classId: currentClass.id,
+                  label: translations[lang].undoSingleAdjustment.replace('{name}', targetStudent.name),
+                  expiresAt: now + POINT_UNDO_WINDOW_MS,
+                  entries: result.entries,
+                }
+              : state.undoAction,
             data: {
               ...state.data,
               classes: nextClasses,
@@ -785,10 +1051,13 @@ export const useStore = create<StoreState>()(
             set((state) => state.undoAction?.id === undoId ? { undoAction: null } : {});
           });
         }
+        if (adjustmentNotice) get().showToast(adjustmentNotice, adjustmentNoticeType);
       },
 
       adjustPointsForStudents: (studentIds, pointsToAdd, source = 'manual', reason) => {
         let createdUndoId = '';
+        let toastMessage = '';
+        let toastType: 'success' | 'error' = 'success';
         set((state) => {
           const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
           if (currentClassIndex === -1) return state;
@@ -807,37 +1076,51 @@ export const useStore = create<StoreState>()(
             reason,
             now,
             state.data.settings?.maxPoints ?? 700,
+            getPointGuardrailOptions(state.data.settings),
+            getParticipationSupportOptions(state.data.settings),
           );
-          if (result.entries.length === 0) return state;
+          if (result.applications.length === 0) return state;
 
-          const undoId = `undo-batch-${now}-${Math.random().toString(36).slice(2, 8)}`;
+          const undoId = result.entries.length > 0
+            ? `undo-batch-${now}-${Math.random().toString(36).slice(2, 8)}`
+            : '';
           createdUndoId = undoId;
           const lang = state.data.settings?.language || 'zh';
           const signedAmount = `${amount > 0 ? '+' : ''}${amount}`;
+          const adjustedStudentCount = result.applications.filter(
+            (application) => application.outcome !== 'blocked',
+          ).length;
           const nextClasses = [...state.data.classes];
           nextClasses[currentClassIndex] = { ...currentClass, students: result.students };
-          get().showToast(
+          const guardrailNotice = getPointGuardrailNotice(lang, result.applications);
+          const supportNotice = getParticipationSupportNotice(lang, result.applications);
+          toastMessage = [guardrailNotice, supportNotice].filter(Boolean).join(' ') ||
             translations[lang].batchAdjustmentApplied
-              .replace('{count}', result.entries.length.toString())
-              .replace('{amount}', signedAmount),
-            amount > 0 ? 'success' : 'error',
-          );
+              .replace('{count}', adjustedStudentCount.toString())
+              .replace('{amount}', signedAmount);
+          const guardrailCounts = getPointGuardrailCounts(result.applications);
+          toastType = guardrailCounts.blocked > 0 || guardrailCounts.clamped > 0 || amount < 0
+            ? 'error'
+            : 'success';
           const feedbackReasonHistory = prependFeedbackReason(
             state.data.settings?.feedbackReasonHistory,
             reason?.label,
+            reason?.competency,
           );
 
           return {
-            undoAction: {
-              id: undoId,
-              classId: currentClass.id,
-              label: translations[lang].undoBatchAdjustment.replace(
-                '{count}',
-                result.entries.length.toString(),
-              ),
-              expiresAt: now + POINT_UNDO_WINDOW_MS,
-              entries: result.entries,
-            },
+            undoAction: undoId
+              ? {
+                  id: undoId,
+                  classId: currentClass.id,
+                  label: translations[lang].undoBatchAdjustment.replace(
+                    '{count}',
+                    adjustedStudentCount.toString(),
+                  ),
+                  expiresAt: now + POINT_UNDO_WINDOW_MS,
+                  entries: result.entries,
+                }
+              : state.undoAction,
             data: {
               ...state.data,
               classes: nextClasses,
@@ -852,10 +1135,13 @@ export const useStore = create<StoreState>()(
             set((state) => state.undoAction?.id === undoId ? { undoAction: null } : {});
           });
         }
+        if (toastMessage) get().showToast(toastMessage, toastType);
       },
 
       airdropPoints: (pointsToAdd, reasonLabel, competency) => {
         let createdUndoId = '';
+        let toastMessage = '';
+        let toastType: 'success' | 'error' = 'success';
         set((state) => {
           const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
           if (currentClassIndex === -1) return state;
@@ -875,34 +1161,46 @@ export const useStore = create<StoreState>()(
               : undefined,
             now,
             state.data.settings?.maxPoints ?? 700,
+            getPointGuardrailOptions(state.data.settings),
+            getParticipationSupportOptions(state.data.settings),
           );
-          if (result.entries.length === 0) return state;
+          if (result.applications.length === 0) return state;
 
-          const undoId = `undo-airdrop-${now}-${Math.random().toString(36).slice(2, 8)}`;
+          const undoId = result.entries.length > 0
+            ? `undo-airdrop-${now}-${Math.random().toString(36).slice(2, 8)}`
+            : '';
           createdUndoId = undoId;
           const nextClasses = [...state.data.classes];
           nextClasses[currentClassIndex] = { ...currentClass, students: result.students };
           const lang = state.data.settings?.language || 'zh';
           const signedAmount = `${amount > 0 ? '+' : ''}${amount}`;
-          get().showToast(
+          const guardrailNotice = getPointGuardrailNotice(lang, result.applications);
+          const supportNotice = getParticipationSupportNotice(lang, result.applications);
+          toastMessage = [guardrailNotice, supportNotice].filter(Boolean).join(' ') || (
             lang === 'en'
               ? `Airdropped ${signedAmount} points to ${currentClass.students.length} students.`
-              : `已向 ${currentClass.students.length} 位學生空投 ${signedAmount} 積分。`,
-            amount > 0 ? 'success' : 'error',
+              : `已向 ${currentClass.students.length} 位學生空投 ${signedAmount} 積分。`
           );
+          const guardrailCounts = getPointGuardrailCounts(result.applications);
+          toastType = guardrailCounts.blocked > 0 || guardrailCounts.clamped > 0 || amount < 0
+            ? 'error'
+            : 'success';
           const feedbackReasonHistory = prependFeedbackReason(
             state.data.settings?.feedbackReasonHistory,
             reasonLabel,
+            competency,
           );
 
           return {
-            undoAction: {
-              id: undoId,
-              classId: currentClass.id,
-              label: translations[lang].undoClassAdjustment,
-              expiresAt: now + POINT_UNDO_WINDOW_MS,
-              entries: result.entries,
-            },
+            undoAction: undoId
+              ? {
+                  id: undoId,
+                  classId: currentClass.id,
+                  label: translations[lang].undoClassAdjustment,
+                  expiresAt: now + POINT_UNDO_WINDOW_MS,
+                  entries: result.entries,
+                }
+              : state.undoAction,
             data: {
               ...state.data,
               classes: nextClasses,
@@ -917,6 +1215,7 @@ export const useStore = create<StoreState>()(
             set((state) => state.undoAction?.id === undoId ? { undoAction: null } : {});
           });
         }
+        if (toastMessage) get().showToast(toastMessage, toastType);
       },
 
       replacePointReasons: (reasons) => {
@@ -980,25 +1279,35 @@ export const useStore = create<StoreState>()(
             (classData) => classData.id === undoAction.classId,
           );
           if (classIndex === -1) return { undoAction: null };
-          const entryByStudentId = new Map(
-            undoAction.entries.map((entry) => [entry.studentId, entry] as const),
-          );
+          const entriesByStudentId = new Map<string, PointUndoEntry[]>();
+          undoAction.entries.forEach((entry) => {
+            const studentEntries = entriesByStudentId.get(entry.studentId) ?? [];
+            studentEntries.push(entry);
+            entriesByStudentId.set(entry.studentId, studentEntries);
+          });
           const nextClasses = [...state.data.classes];
           nextClasses[classIndex] = {
             ...nextClasses[classIndex],
             students: nextClasses[classIndex].students.map((student) => {
-              const entry = entryByStudentId.get(student.id);
+              const studentEntries = entriesByStudentId.get(student.id) ?? [];
               const records = student.pointAdjustmentRecords ?? [];
-              if (!entry || !records.some((record) => record.id === entry.recordId)) return student;
+              const recordIds = new Set(studentEntries.map((entry) => entry.recordId));
+              const appliedEntries = studentEntries.filter((entry) =>
+                records.some((record) => record.id === entry.recordId),
+              );
+              if (appliedEntries.length === 0) return student;
               didUndo = true;
               return {
                 ...student,
                 points: clamp(
-                  student.points - entry.actualDelta,
+                  student.points - appliedEntries.reduce(
+                    (total, entry) => total + entry.actualDelta,
+                    0,
+                  ),
                   0,
                   state.data.settings?.maxPoints ?? 700,
                 ),
-                pointAdjustmentRecords: records.filter((record) => record.id !== entry.recordId),
+                pointAdjustmentRecords: records.filter((record) => !recordIds.has(record.id)),
               };
             }),
           };
@@ -1376,7 +1685,12 @@ export const useStore = create<StoreState>()(
                 nextStudent = applyPointAdjustmentToStudent(
                   nextStudent, 
                   rewardAmount, 
-                  createPointAdjustmentRecord(rewardAmount, 'manual', { id: 'season-reset', label: '賽季結算獎勵' }, now), 
+                  createPointAdjustmentRecord(
+                    rewardAmount,
+                    'manual',
+                    { id: 'season-reset', label: '賽季結算獎勵', competency: 'growth' },
+                    now,
+                  ),
                   maxPoints
                 );
               }
@@ -1404,13 +1718,14 @@ export const useStore = create<StoreState>()(
         if (!student || student.points < feedCost) return state;
 
         get().triggerPetAnimation(studentId, 'feed', 1000);
-        
+        const now = Date.now();
+
         const nextClasses = [...state.data.classes];
         nextClasses[currentClassIndex] = {
           ...nextClasses[currentClassIndex],
           students: nextClasses[currentClassIndex].students.map(s => 
             s.id === studentId 
-              ? applyFeedToStudent(s, feedCost, state.data.settings?.feedGain ?? 20, Date.now(), state.data.settings?.maxPoints ?? 700) 
+              ? applyFeedToStudent(s, feedCost, state.data.settings?.feedGain ?? 20, now, state.data.settings?.maxPoints ?? 700)
               : s
           )
         };
@@ -1426,50 +1741,140 @@ export const useStore = create<StoreState>()(
         if (!student || student.points < playCost) return state;
 
         get().triggerPetAnimation(studentId, 'play', 1000);
-        
+        const now = Date.now();
+
         const nextClasses = [...state.data.classes];
         nextClasses[currentClassIndex] = {
           ...nextClasses[currentClassIndex],
           students: nextClasses[currentClassIndex].students.map(s => 
             s.id === studentId 
-              ? applyPlayWithPet(s, playCost, state.data.settings?.playGain ?? 15, Date.now(), state.data.settings?.maxPoints ?? 700) 
+              ? applyPlayWithPet(s, playCost, state.data.settings?.playGain ?? 15, now, state.data.settings?.maxPoints ?? 700)
               : s
           )
         };
         return { data: { ...state.data, classes: nextClasses } };
       }),
 
-      claimDailyTask: (studentId) => set((state) => {
+      claimDailyTask: (studentId, reflection) => {
+        let claimed = false;
+        set((state) => {
         const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
         if (currentClassIndex === -1) return state;
         const targetStudent = state.data.classes[currentClassIndex].students.find(s => s.id === studentId);
         if (!targetStudent) return state;
 
         const tLang = translations[state.data.settings?.language || 'zh'];
+        const now = Date.now();
         const result = claimDailyTaskForStudent(
           targetStudent,
-          Date.now(),
+          now,
           state.data.settings?.maxPoints ?? 700,
           tLang.dailyTaskRecord,
+          {
+            timeZone: state.data.settings?.schoolTimeZone,
+            schoolWeekdays: state.data.settings?.schoolWeekdays,
+            holidayDates: state.data.settings?.schoolHolidayDates,
+            excusedDates: targetStudent.dailyProgress?.excusedDates,
+            makeupWindowDays: state.data.settings?.dailyTaskMakeupWindowDays,
+          },
+          reflection,
         );
 
         if (!result.claimed) {
-          get().showToast(tLang.dailyTaskDone ?? '今日已完成', 'error');
+          get().showToast(
+            result.frozen
+              ? (tLang.dailyTaskFrozen ?? '今天不是上課日，連續紀錄已凍結')
+              : result.reflectionRequired
+                ? (tLang.dailyTaskReflectionRequired ?? '請先完成一句反思與自評')
+              : (tLang.dailyTaskDone ?? '今日已完成'),
+            result.frozen ? 'success' : 'error',
+          );
           return state;
         }
 
+        const currentClass = state.data.classes[currentClassIndex];
+        const projectedStudents = currentClass.students.map((student) =>
+          student.id === studentId ? result.student : student,
+        );
+        const support = applyParticipationSupportToStudent(
+          result.student,
+          projectedStudents,
+          now,
+          state.data.settings?.maxPoints ?? 700,
+          getParticipationSupportOptions(state.data.settings),
+        );
         const nextClasses = [...state.data.classes];
         nextClasses[currentClassIndex] = {
-          ...nextClasses[currentClassIndex],
-          students: nextClasses[currentClassIndex].students.map(s => s.id === studentId ? result.student : s)
+          ...currentClass,
+          students: currentClass.students.map((student) =>
+            student.id === studentId ? support.student : student,
+          ),
         };
 
+        const supportNotice = getParticipationSupportNotice(
+          state.data.settings?.language || 'zh',
+          [{
+            studentId,
+            requestedAmount: result.rewardPoints,
+            appliedAmount: result.rewardPoints,
+            outcome: 'applied',
+            participationTopUp: support.participationTopUp,
+            catchUpBonus: support.catchUpBonus,
+          }],
+        );
         get().showToast(
-          (tLang.dailyTaskReward ?? '完成每日任務，獲得 {points} 積分與 {happiness} 心情')
-            .replace('{points}', String(result.rewardPoints))
-            .replace('{happiness}', String(DAILY_TASK_REWARD_HAPPINESS)),
+          [
+            (result.claimKind === 'makeup'
+            ? (tLang.dailyTaskMakeupReward ?? '已補簽 {date} 的每日任務！')
+            : (tLang.dailyTaskReward ?? '完成每日任務，獲得 {points} 積分與 {happiness} 心情'))
+              .replace('{points}', String(result.rewardPoints))
+              .replace('{happiness}', String(DAILY_TASK_REWARD_HAPPINESS))
+              .replace('{date}', result.effectiveDate),
+            supportNotice,
+          ].filter(Boolean).join(' '),
           'success'
         );
+        claimed = true;
+        return { data: { ...state.data, classes: nextClasses } };
+        });
+        return claimed;
+      },
+
+      setDailyTaskExcusedDate: (studentId, date, excused) => set((state) => {
+        if (!isDateKey(date)) return state;
+        const currentClassIndex = state.data.classes.findIndex(
+          (classData) => classData.id === state.data.currentClassId,
+        );
+        if (currentClassIndex === -1) return state;
+        const nextClasses = [...state.data.classes];
+        let changed = false;
+        nextClasses[currentClassIndex] = {
+          ...nextClasses[currentClassIndex],
+          students: nextClasses[currentClassIndex].students.map((student) => {
+            if (student.id !== studentId) return student;
+            const currentDates = normalizeDateKeyList(student.dailyProgress?.excusedDates, 120);
+            const nextDates = excused
+              ? normalizeDateKeyList([...currentDates, date], 120)
+              : currentDates.filter((item) => item !== date);
+            if (nextDates.length === currentDates.length &&
+                nextDates.every((item, index) => item === currentDates[index])) {
+              return student;
+            }
+            changed = true;
+            return {
+              ...student,
+              dailyProgress: {
+                lastClaimDate: student.dailyProgress?.lastClaimDate,
+                streak: student.dailyProgress?.streak ?? 0,
+                reflections: student.dailyProgress?.reflections,
+                excusedDates: nextDates,
+              },
+            };
+          }),
+        };
+        if (!changed) return state;
+        const tLang = translations[state.data.settings?.language || 'zh'];
+        get().showToast(tLang.dailyTaskExcusedUpdated ?? '學生請假日已更新', 'success');
         return { data: { ...state.data, classes: nextClasses } };
       }),
 
@@ -1481,12 +1886,18 @@ export const useStore = create<StoreState>()(
         if (!targetStudent) return state;
 
         const now = Date.now();
-        const result = saveMentorDailyFeedbackForStudent(targetStudent, feedback, now);
+        const timeZone = state.data.settings?.schoolTimeZone;
+        const result = saveMentorDailyFeedbackForStudent(
+          targetStudent,
+          feedback,
+          now,
+          timeZone,
+        );
         if (!result.saved) return state;
         const savedReflection = result.student.dailyProgress?.reflections?.find(
           (reflection) =>
             reflection.author === 'mentor' &&
-            reflection.date === getDateKey(now),
+            reflection.date === getDateKey(now, timeZone),
         );
         const currentEvidence = currentClass.learningEvidenceRecords ?? [];
         const previousRevision = savedReflection
@@ -1593,10 +2004,11 @@ export const useStore = create<StoreState>()(
           return state;
         }
 
+        const now = Date.now();
         const nextClasses = [...state.data.classes];
         nextClasses[currentClassIndex] = {
           ...nextClasses[currentClassIndex],
-          students: nextClasses[currentClassIndex].students.map(s => s.id === studentId ? reviveStudentPet(s, reviveCost, state.data.settings?.maxPoints ?? 700) : s)
+          students: nextClasses[currentClassIndex].students.map(s => s.id === studentId ? reviveStudentPet(s, reviveCost, state.data.settings?.maxPoints ?? 700, now) : s)
         };
 
         const publicName = getPublicStudentName(
@@ -1625,11 +2037,17 @@ export const useStore = create<StoreState>()(
         }
 
         const nextLevel = currentLevel + 1;
+        const now = Date.now();
         const nextClasses = [...state.data.classes];
         nextClasses[currentClassIndex] = {
           ...nextClasses[currentClassIndex],
-          students: nextClasses[currentClassIndex].students.map(s => 
-            s.id === studentId ? { ...s, points: s.points - upgradeCost, pet: { ...s.pet, level: nextLevel } } : s
+          students: nextClasses[currentClassIndex].students.map(s =>
+            s.id === studentId
+              ? appendEconomyEventToStudent(
+                  { ...s, points: s.points - upgradeCost, pet: { ...s.pet, level: nextLevel } },
+                  createEconomyEventRecord('spend', 'upgrade', -upgradeCost, now),
+                )
+              : s
           )
         };
 
@@ -1655,13 +2073,22 @@ export const useStore = create<StoreState>()(
         if (!student || student.points < 200) return state;
 
         const newPetType = getRandomPetType(true);
+        const now = Date.now();
         get().triggerPetAnimation(studentId, 'gacha', 1500);
 
         const nextClasses = [...state.data.classes];
         nextClasses[currentClassIndex] = {
           ...nextClasses[currentClassIndex],
-          students: nextClasses[currentClassIndex].students.map(s => 
-            s.id === studentId ? { ...s, points: s.points - 200, pet: { ...s.pet, type: newPetType } } : s
+          students: nextClasses[currentClassIndex].students.map(s =>
+            s.id === studentId
+              ? appendEconomyEventToStudent(
+                  { ...s, points: s.points - 200, pet: { ...s.pet, type: newPetType } },
+                  createEconomyEventRecord('spend', 'gacha', -200, now, {
+                    previousPetType: s.pet.type,
+                    newPetType,
+                  }),
+                )
+              : s
           )
         };
         const lang = state.data.settings?.language || 'zh';
@@ -1674,17 +2101,26 @@ export const useStore = create<StoreState>()(
         if (currentClassIndex === -1) return state;
 
         const newPetType = getRandomPetType(true);
+        const now = Date.now();
         get().triggerPetAnimation(studentId, 'reroll', 1800);
 
         const nextClasses = [...state.data.classes];
         nextClasses[currentClassIndex] = {
           ...nextClasses[currentClassIndex],
-          students: nextClasses[currentClassIndex].students.map(s => 
-            s.id === studentId ? {
-              ...s,
-              pet: { ...s.pet, type: newPetType, level: UPGRADE_REWARD_LEVEL, fullness: UPGRADE_REWARD_FULLNESS, happiness: UPGRADE_REWARD_HAPPINESS },
-              nextUpgradeGachaLevel: getNextUpgradeGachaLevel(claimedLevel)
-            } : s
+          students: nextClasses[currentClassIndex].students.map(s =>
+            s.id === studentId
+              ? appendEconomyEventToStudent(
+                  {
+                    ...s,
+                    pet: { ...s.pet, type: newPetType, level: UPGRADE_REWARD_LEVEL, fullness: UPGRADE_REWARD_FULLNESS, happiness: UPGRADE_REWARD_HAPPINESS },
+                    nextUpgradeGachaLevel: getNextUpgradeGachaLevel(claimedLevel),
+                  },
+                  createEconomyEventRecord('petChange', 'upgradeReroll', 0, now, {
+                    previousPetType: s.pet.type,
+                    newPetType,
+                  }),
+                )
+              : s
           )
         };
         const targetStudent = nextClasses[currentClassIndex].students.find(s => s.id === studentId);
@@ -1966,27 +2402,45 @@ export const useStore = create<StoreState>()(
         if (!currentClass.activeBoss?.isActive) return state;
 
         const members = currentClass.students.map((student) => ({ id: student.id, student }));
-        const isSharedAttack = state.data.settings?.bossAttackMode !== 'random';
-        const result = isSharedAttack
-          ? resolveSharedBossAttack(
+        const now = Date.now();
+        const attackMode = state.data.settings?.bossAttackMode ?? 'recoverable';
+        const result = attackMode === 'recoverable'
+          ? resolveRecoverableBossAttack(
               members,
               state.data.settings?.bossAttackDamage ?? DEFAULT_BOSS_ATTACK_DAMAGE,
-              Date.now(),
+              state.data.settings?.bossRecoveryMinutes ?? DEFAULT_BOSS_RECOVERY_MINUTES,
+              now,
             )
-          : resolveBossAttack(
+          : attackMode === 'shared'
+            ? resolveSharedBossAttack(
               members,
-              state.data.settings?.bossAttackMaxTargets ?? DEFAULT_BOSS_ATTACK_MAX_TARGETS,
               state.data.settings?.bossAttackDamage ?? DEFAULT_BOSS_ATTACK_DAMAGE,
-              Math.random,
-              Date.now(),
-            );
+              now,
+            )
+            : resolveBossAttack(
+                members,
+                state.data.settings?.bossAttackMaxTargets ?? DEFAULT_BOSS_ATTACK_MAX_TARGETS,
+                state.data.settings?.bossAttackDamage ?? DEFAULT_BOSS_ATTACK_DAMAGE,
+                Math.random,
+                now,
+              );
         const targetIdSet = new Set(result.targetIds);
         const publicNameMode =
           state.data.settings?.publicNameMode === 'full' ? 'full' : 'masked';
         const targetNames = currentClass.students
           .filter((student) => targetIdSet.has(student.id))
           .map((student) => getPublicStudentName(student.name, publicNameMode));
-        const feedback = { targetNames, damage: result.damage, id: Date.now() };
+        const feedback = {
+          targetNames,
+          damage: result.damage,
+          id: now,
+          mode: attackMode,
+          recoverAt: attackMode === 'recoverable' &&
+            'recoverAt' in result &&
+            typeof result.recoverAt === 'number'
+              ? result.recoverAt
+              : undefined,
+        };
         const nextClasses = [...state.data.classes];
         nextClasses[currentClassIndex] = {
           ...currentClass,
@@ -1998,14 +2452,22 @@ export const useStore = create<StoreState>()(
         get().showToast(
           targetNames.length === 0
             ? (lang === 'en' ? 'The boss attack missed every pet.' : '魔王本次攻擊沒有命中任何寵物。')
-            : isSharedAttack
+            : attackMode === 'recoverable'
+              ? tLang.bossAttackRecoverableResult
+                  .replace('{count}', targetNames.length.toString())
+                  .replace('{impact}', result.damage.toString())
+                  .replace(
+                    '{minutes}',
+                    String(state.data.settings?.bossRecoveryMinutes ?? DEFAULT_BOSS_RECOVERY_MINUTES),
+                  )
+              : attackMode === 'shared'
               ? tLang.bossAttackSharedResult
                   .replace('{count}', targetNames.length.toString())
                   .replace('{damage}', result.damage.toString())
               : (lang === 'en'
                   ? `Boss hit ${targetNames.join(', ')} for ${result.damage} fullness.`
                   : `魔王攻擊 ${targetNames.join('、')}，各造成 ${result.damage} 點飽食度傷害。`),
-          targetNames.length === 0 ? 'success' : 'error',
+          targetNames.length === 0 || attackMode === 'recoverable' ? 'success' : 'error',
         );
         if (bossAttackFeedbackTimer) clearTimeout(bossAttackFeedbackTimer);
         bossAttackFeedbackTimer = setTimeout(() => {
@@ -2017,6 +2479,26 @@ export const useStore = create<StoreState>()(
           bossAttackFeedback: feedback,
           data: { ...state.data, classes: nextClasses },
         };
+      }),
+
+      clearBossRecovery: () => set((state) => {
+        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+        if (currentClassIndex === -1) return state;
+        const currentClass = state.data.classes[currentClassIndex];
+        if (!currentClass.students.some((student) => student.bossRecovery)) return state;
+        const nextClasses = [...state.data.classes];
+        nextClasses[currentClassIndex] = {
+          ...currentClass,
+          students: currentClass.students.map((student) => (
+            student.bossRecovery ? { ...student, bossRecovery: undefined } : student
+          )),
+        };
+        const lang = state.data.settings?.language || 'zh';
+        get().showToast(
+          lang === 'en' ? 'The class regroup is complete.' : '全班已完成整隊，護盾休整狀態已解除。',
+          'success',
+        );
+        return { data: { ...state.data, classes: nextClasses } };
       }),
 
       executeAttackBoss: async (studentId) => {

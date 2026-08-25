@@ -20,17 +20,31 @@ import {
   TEAM_BATTLE_ATTACKER_FULLNESS_COST, TEAM_BATTLE_ATTACKER_TEAMMATE_FULLNESS_COST,
   TEAM_BATTLE_DEFENDER_FULLNESS_COST, TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST,
   DEFAULT_BOSS_ATTACK_MAX_TARGETS, DEFAULT_BOSS_ATTACK_DAMAGE, DEFAULT_BOSS_REWARD_TIERS,
+  DEFAULT_BOSS_RECOVERY_MINUTES,
   DEFAULT_BOSS_PARTICIPATION_REWARD, DEFAULT_BOSS_IMPROVEMENT_REWARD,
-  hasActiveLevelDecreaseCooldown,
+  hasActiveLevelDecreaseCooldown, DEFAULT_SCHOOL_TIME_ZONE, DEFAULT_SCHOOL_WEEKDAYS,
+  DEFAULT_DAILY_TASK_MAKEUP_WINDOW_DAYS,
+  DEFAULT_DAILY_POSITIVE_POINT_LIMIT, DEFAULT_DAILY_NEGATIVE_POINT_LIMIT,
+  DEFAULT_POSITIVE_FEEDBACK_RATIO_TARGET,
+  DEFAULT_MINIMUM_DAILY_PARTICIPATION_POINTS, DEFAULT_CATCH_UP_GAP_THRESHOLD,
+  DEFAULT_DAILY_CATCH_UP_BONUS,
+  getActiveClassGoals, getWeekStartDate, getWeekEndDate,
 } from '../gameRules';
 import {
-  getClassGoalCoverage, getClassGoalProgress, getWeeklyEducationInsights,
+  getClassGoalCoverage, getClassGoalProgress, getDailyPointFairnessInsights,
+  getWeeklyEducationInsights,
 } from '../educationInsights';
 import { BossRewardSettings } from './dashboard/BossRewardSettings';
 import { PointReasonSettings } from './dashboard/PointReasonSettings';
 import { RosterImportPanel } from './dashboard/RosterImportPanel';
 import { WorkspaceAccessPanel } from './dashboard/WorkspaceAccessPanel';
 import { DashboardRecordsPanel } from './dashboard/DashboardRecordsPanel';
+import { DailyTaskCalendarSettings } from './dashboard/DailyTaskCalendarSettings';
+import {
+  PointFairnessSummary,
+  PointGuardrailSettings,
+  ParticipationSupportSettings,
+} from './dashboard/PointGuardrailPanel';
 import {
   AddClassDialog,
   DeleteConfirmationDialog,
@@ -87,6 +101,7 @@ const READ_ONLY_MUTATION_ACTIONS = new Set([
   'replacePointReasons',
   'resetSeason',
   'saveMentorDailyFeedback',
+  'setDailyTaskExcusedDate',
   'setClassGoal',
   'summonBoss',
   'switchClass',
@@ -124,6 +139,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       replacePointReasons: state.replacePointReasons,
       resetSeason: state.resetSeason,
       saveMentorDailyFeedback: state.saveMentorDailyFeedback,
+      setDailyTaskExcusedDate: state.setDailyTaskExcusedDate,
       setClassGoal: state.setClassGoal,
       showToast: state.showToast,
       summonBoss: state.summonBoss,
@@ -179,6 +195,42 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [inclusiveMode, setInclusiveMode] = useState(data.settings?.inclusiveMode !== false);
   const [pauseDecayOnWeekends, setPauseDecayOnWeekends] = useState(
     data.settings?.pauseDecayOnWeekends !== false,
+  );
+  const [schoolTimeZone, setSchoolTimeZone] = useState(
+    data.settings?.schoolTimeZone ?? DEFAULT_SCHOOL_TIME_ZONE,
+  );
+  const [schoolWeekdays, setSchoolWeekdays] = useState<number[]>(
+    data.settings?.schoolWeekdays ?? [...DEFAULT_SCHOOL_WEEKDAYS],
+  );
+  const [schoolHolidayDatesText, setSchoolHolidayDatesText] = useState(
+    (data.settings?.schoolHolidayDates ?? []).join('\n'),
+  );
+  const [dailyTaskMakeupWindowDays, setDailyTaskMakeupWindowDays] = useState(
+    data.settings?.dailyTaskMakeupWindowDays ?? DEFAULT_DAILY_TASK_MAKEUP_WINDOW_DAYS,
+  );
+  const [pointGuardrailsEnabled, setPointGuardrailsEnabled] = useState(
+    data.settings?.pointGuardrailsEnabled !== false,
+  );
+  const [dailyPositivePointLimit, setDailyPositivePointLimit] = useState(
+    data.settings?.dailyPositivePointLimit ?? DEFAULT_DAILY_POSITIVE_POINT_LIMIT,
+  );
+  const [dailyNegativePointLimit, setDailyNegativePointLimit] = useState(
+    data.settings?.dailyNegativePointLimit ?? DEFAULT_DAILY_NEGATIVE_POINT_LIMIT,
+  );
+  const [positiveFeedbackRatioTarget, setPositiveFeedbackRatioTarget] = useState(
+    data.settings?.positiveFeedbackRatioTarget ?? DEFAULT_POSITIVE_FEEDBACK_RATIO_TARGET,
+  );
+  const [participationSupportEnabled, setParticipationSupportEnabled] = useState(
+    data.settings?.participationSupportEnabled !== false,
+  );
+  const [minimumDailyParticipationPoints, setMinimumDailyParticipationPoints] = useState(
+    data.settings?.minimumDailyParticipationPoints ?? DEFAULT_MINIMUM_DAILY_PARTICIPATION_POINTS,
+  );
+  const [catchUpGapThreshold, setCatchUpGapThreshold] = useState(
+    data.settings?.catchUpGapThreshold ?? DEFAULT_CATCH_UP_GAP_THRESHOLD,
+  );
+  const [dailyCatchUpBonus, setDailyCatchUpBonus] = useState(
+    data.settings?.dailyCatchUpBonus ?? DEFAULT_DAILY_CATCH_UP_BONUS,
   );
   const [petCareMode, setPetCareMode] = useState<PetCareMode>(
     data.settings?.petCareMode === 'death' ? 'death' : 'rest',
@@ -246,7 +298,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     data.settings?.bossAttackDamage ?? DEFAULT_BOSS_ATTACK_DAMAGE,
   );
   const [bossAttackMode, setBossAttackMode] = useState<BossAttackMode>(
-    data.settings?.bossAttackMode ?? 'shared',
+    data.settings?.bossAttackMode ?? 'recoverable',
+  );
+  const [bossRecoveryMinutes, setBossRecoveryMinutes] = useState(
+    data.settings?.bossRecoveryMinutes ?? DEFAULT_BOSS_RECOVERY_MINUTES,
   );
   const [enableSeasonResetRewards, setEnableSeasonResetRewards] = useState(data.settings?.enableSeasonResetRewards ?? false);
 
@@ -309,6 +364,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     ),
     [currentClass?.learningEvidenceRecords, currentStudents],
   );
+  const dailyPointFairness = useMemo(
+    () => getDailyPointFairnessInsights(
+      currentStudents,
+      Date.now(),
+      data.settings?.schoolTimeZone ?? DEFAULT_SCHOOL_TIME_ZONE,
+      data.settings?.positiveFeedbackRatioTarget ?? DEFAULT_POSITIVE_FEEDBACK_RATIO_TARGET,
+      data.settings?.catchUpGapThreshold ?? DEFAULT_CATCH_UP_GAP_THRESHOLD,
+      data.settings?.dailyCatchUpBonus ?? DEFAULT_DAILY_CATCH_UP_BONUS,
+    ),
+    [
+      currentStudents,
+      data.settings?.positiveFeedbackRatioTarget,
+      data.settings?.catchUpGapThreshold,
+      data.settings?.dailyCatchUpBonus,
+      data.settings?.schoolTimeZone,
+    ],
+  );
   const currentStudentIds = useMemo(
     () => new Set(currentStudents.map((student: Student) => student.id)),
     [currentStudents],
@@ -325,8 +397,37 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     currentStudents.length > 0 && selectedStudentIdsInClass.length === currentStudents.length;
   const someStudentsSelected =
     selectedStudentIdsInClass.length > 0 && !allStudentsSelected;
+  const classGoalNow = useMemo(() => Date.now(), [currentClass?.id]);
+  const classGoalWeekStart = getWeekStartDate(
+    classGoalNow,
+    data.settings?.schoolTimeZone,
+  );
+  const classGoalWeekEnd = getWeekEndDate(
+    classGoalNow,
+    data.settings?.schoolTimeZone,
+  );
+  const activeClassGoals = useMemo(
+    () => getActiveClassGoals(
+      currentClass?.classGoals,
+      classGoalNow,
+      data.settings?.schoolTimeZone,
+    ),
+    [classGoalNow, currentClass?.classGoals, data.settings?.schoolTimeZone],
+  );
+  const formatGoalWeekDate = (dateKey: string) =>
+    new Date(`${dateKey}T00:00:00.000Z`).toLocaleDateString(
+      lang === 'en' ? 'en-US' : 'zh-TW',
+      { month: 'numeric', day: 'numeric', timeZone: 'UTC' },
+    );
+  const classGoalWeekLabel = tLang.classGoalWeekRange
+    .replace('{start}', formatGoalWeekDate(classGoalWeekStart))
+    .replace('{end}', formatGoalWeekDate(classGoalWeekEnd));
+  const archivedClassGoalCount = Math.max(
+    0,
+    (currentClass?.classGoals?.length ?? 0) - activeClassGoals.length,
+  );
   const classGoalMetrics = useMemo(
-    () => (currentClass?.classGoals ?? []).map((goal: ClassGoal) => ({
+    () => activeClassGoals.map((goal: ClassGoal) => ({
       goal,
       progress: getClassGoalProgress(
         currentStudents,
@@ -339,7 +440,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         currentClass?.learningEvidenceRecords ?? [],
       ),
     })),
-    [currentClass?.classGoals, currentClass?.learningEvidenceRecords, currentStudents],
+    [activeClassGoals, currentClass?.learningEvidenceRecords, currentStudents],
   );
   const settingsPreviewNow = useMemo(() => Date.now(), [currentClass?.id]);
   const settingsImpactPreview = useMemo(
@@ -516,6 +617,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       decayType,
       inclusiveMode,
       pauseDecayOnWeekends,
+      schoolTimeZone,
+      schoolWeekdays,
+      schoolHolidayDates: schoolHolidayDatesText.split(/[\s,]+/).filter(Boolean),
+      dailyTaskMakeupWindowDays: Number(dailyTaskMakeupWindowDays),
+      pointGuardrailsEnabled,
+      dailyPositivePointLimit: Number(dailyPositivePointLimit),
+      dailyNegativePointLimit: Number(dailyNegativePointLimit),
+      positiveFeedbackRatioTarget: Number(positiveFeedbackRatioTarget),
+      participationSupportEnabled,
+      minimumDailyParticipationPoints: Number(minimumDailyParticipationPoints),
+      catchUpGapThreshold: Number(catchUpGapThreshold),
+      dailyCatchUpBonus: Number(dailyCatchUpBonus),
       petCareMode,
       publicNameMode,
       publicLeaderboardMode,
@@ -550,6 +663,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       bossAttackMaxTargets: Number(bossAttackMaxTargets),
       bossAttackDamage: Number(bossAttackDamage),
       bossAttackMode,
+      bossRecoveryMinutes: Number(bossRecoveryMinutes),
       enableSeasonResetRewards,
       seasonResetRewards: {
         diamond: Number(rewardDiamond),
@@ -651,7 +765,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       setBattleRankPointsLoss(0);
       setSoloBattleWinPoints(30);
       setSoloBattleLossPoints(0);
-      setBossAttackMode('shared');
+      setBossAttackMode('recoverable');
       setBossAttackDamage(12);
       setDecayType('daily');
       setDecayAmount(2);
@@ -670,7 +784,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       setTeamBattleAttackerTeammateFullnessCost(8);
       setTeamBattleDefenderFullnessCost(10);
       setTeamBattleDefenderTeammateFullnessCost(8);
-      setBossAttackMode('shared');
+      setBossAttackMode('recoverable');
       setBossAttackDamage(16);
       setPauseDecayOnWeekends(true);
       setPetCareMode('rest');
@@ -686,13 +800,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       setPlayCost(4);
       setPlayGain(20);
       setBattleMode('both');
-      setBossAttackMode('shared');
+      setBossAttackMode('recoverable');
       setBossAttackDamage(20);
       setPauseDecayOnWeekends(true);
       setPetCareMode('rest');
       setPublicNameMode('masked');
       setPublicLeaderboardMode('growth');
     }
+
+    setParticipationSupportEnabled(true);
+    setMinimumDailyParticipationPoints(20);
+    setCatchUpGapThreshold(preset === 'lowCompetition' ? 75 : 100);
+    setDailyCatchUpBonus(preset === 'lowCompetition' ? 15 : 10);
 
     store.showToast(tLang.presetApplied.replace('{name}', name), 'success');
   };
@@ -734,7 +853,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         setPetCareMode('rest');
         setPublicNameMode('masked');
         setPublicLeaderboardMode('growth');
-        setBossAttackMode('shared');
+        setBossAttackMode('recoverable');
       }
       return nextEnabled;
     });
@@ -1028,6 +1147,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             {tLang.airdropAll}
           </button>
         </div>
+        <PointFairnessSummary
+          lang={lang}
+          insights={dailyPointFairness}
+          guardrailsEnabled={data.settings?.pointGuardrailsEnabled !== false}
+          participationSupportEnabled={data.settings?.participationSupportEnabled !== false}
+        />
         <PointReasonSettings
           options={pointReasonOptions}
           configuredReasons={configuredPointReasons}
@@ -1345,11 +1470,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         classId={currentClass?.id}
         competencyLabels={competencyLabels}
         lang={lang}
+        learningEvidence={currentClass?.learningEvidenceRecords ?? []}
         onSaveMentorDailyFeedback={store.saveMentorDailyFeedback}
+        schoolTimeZone={data.settings?.schoolTimeZone}
         students={currentStudents}
         tLang={tLang}
         visible={dashboardSection === 'records'}
-        weeklyInsights={weeklyInsights}
       />
 
       <section className={`${dashboardSection === 'activities' ? '' : 'hidden'} border border-emerald-200 bg-white p-5 shadow-sm`}>
@@ -1362,9 +1488,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <p className="mt-1 text-sm text-slate-500">{tLang.classGoalHint}</p>
           </div>
           <div className="text-sm font-bold text-emerald-700">
-            {tLang.classGoalCount.replace('{current}', classGoalMetrics.length.toString())}
+            <p>{classGoalWeekLabel}</p>
+            <p className="mt-1 text-xs font-medium text-emerald-600">
+              {tLang.classGoalCount.replace('{current}', classGoalMetrics.length.toString())}
+            </p>
           </div>
         </div>
+
+        {classGoalMetrics.length === 0 && (
+          <div className="mb-5 border-l-4 border-amber-400 bg-amber-50 px-4 py-3 text-sm text-amber-950" role="status">
+            <p className="font-bold">{tLang.classGoalNoGoal}</p>
+            <p className="mt-1 text-xs text-amber-800">{classGoalWeekLabel}</p>
+          </div>
+        )}
+
+        {archivedClassGoalCount > 0 && (
+          <p className="mb-4 text-xs text-slate-500">
+            {tLang.classGoalArchivedCount.replace('{count}', archivedClassGoalCount.toString())}
+          </p>
+        )}
 
         {classGoalMetrics.length > 0 && (
           <div className="mb-5 divide-y divide-emerald-100 border-y border-emerald-100">
@@ -1714,6 +1856,44 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           />
         )}
 
+        <DailyTaskCalendarSettings
+          lang={lang}
+          timeZone={schoolTimeZone}
+          onTimeZoneChange={setSchoolTimeZone}
+          schoolWeekdays={schoolWeekdays}
+          onSchoolWeekdaysChange={setSchoolWeekdays}
+          holidayDatesText={schoolHolidayDatesText}
+          onHolidayDatesTextChange={setSchoolHolidayDatesText}
+          makeupWindowDays={dailyTaskMakeupWindowDays}
+          onMakeupWindowDaysChange={setDailyTaskMakeupWindowDays}
+          students={currentStudents}
+          onSetExcusedDate={store.setDailyTaskExcusedDate}
+        />
+
+        <PointGuardrailSettings
+          lang={lang}
+          enabled={pointGuardrailsEnabled}
+          onEnabledChange={setPointGuardrailsEnabled}
+          dailyPositiveLimit={dailyPositivePointLimit}
+          onDailyPositiveLimitChange={setDailyPositivePointLimit}
+          dailyNegativeLimit={dailyNegativePointLimit}
+          onDailyNegativeLimitChange={setDailyNegativePointLimit}
+          positiveRatioTarget={positiveFeedbackRatioTarget}
+          onPositiveRatioTargetChange={setPositiveFeedbackRatioTarget}
+        />
+
+        <ParticipationSupportSettings
+          lang={lang}
+          enabled={participationSupportEnabled}
+          onEnabledChange={setParticipationSupportEnabled}
+          minimumDailyParticipationPoints={minimumDailyParticipationPoints}
+          onMinimumDailyParticipationPointsChange={setMinimumDailyParticipationPoints}
+          catchUpGapThreshold={catchUpGapThreshold}
+          onCatchUpGapThresholdChange={setCatchUpGapThreshold}
+          dailyCatchUpBonus={dailyCatchUpBonus}
+          onDailyCatchUpBonusChange={setDailyCatchUpBonus}
+        />
+
         <div className="mb-6 grid gap-5 border-y border-slate-200 py-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(300px,1fr)]">
           <div>
             <h4 className="text-sm font-bold text-slate-800">{tLang.settingsPresets}</h4>
@@ -1998,11 +2178,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 disabled={inclusiveMode}
                 className="w-full rounded-md border border-slate-300 bg-white p-2 text-sm shadow-sm focus:border-rose-500 focus:ring-rose-500 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
               >
+                <option value="recoverable">{tLang.bossAttackRecoverable}</option>
                 <option value="shared">{tLang.bossAttackShared}</option>
                 <option value="random">{tLang.bossAttackRandom}</option>
               </select>
               <p className="text-xs text-slate-500">
-                {bossAttackMode === 'shared' ? tLang.bossAttackSharedHint : tLang.bossAttackRandomHint}
+                {bossAttackMode === 'recoverable'
+                  ? tLang.bossAttackRecoverableHint
+                  : bossAttackMode === 'shared'
+                    ? tLang.bossAttackSharedHint
+                    : tLang.bossAttackRandomHint}
               </p>
             </div>
             {bossAttackMode === 'random' && (
@@ -2023,7 +2208,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             )}
             <div className="flex flex-col gap-1">
               <label htmlFor="bossAttackDamage" className="text-sm font-medium text-slate-700">
-                {bossAttackMode === 'shared' ? tLang.bossSharedDamage : tLang.bossAttackDamage}
+                {bossAttackMode === 'recoverable'
+                  ? tLang.bossShieldImpact
+                  : bossAttackMode === 'shared'
+                    ? tLang.bossSharedDamage
+                    : tLang.bossAttackDamage}
               </label>
               <input
                 type="number"
@@ -2034,9 +2223,34 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 className="w-full rounded-md border border-slate-300 bg-white p-2 text-sm shadow-sm focus:border-rose-500 focus:ring-rose-500"
               />
               <p className="text-xs text-slate-500">
-                {bossAttackMode === 'shared' ? tLang.bossAttackSharedHint : tLang.bossAttackDamageHint}
+                {bossAttackMode === 'recoverable'
+                  ? tLang.bossAttackRecoverableHint
+                  : bossAttackMode === 'shared'
+                    ? tLang.bossAttackSharedHint
+                    : tLang.bossAttackDamageHint}
               </p>
             </div>
+            {bossAttackMode === 'recoverable' ? (
+              <div className="flex flex-col gap-1">
+                <label htmlFor="bossRecoveryMinutes" className="text-sm font-medium text-slate-700">
+                  {tLang.bossRecoveryMinutes}
+                </label>
+                <input
+                  type="number"
+                  id="bossRecoveryMinutes"
+                  min="1"
+                  max="120"
+                  value={bossRecoveryMinutes}
+                  onChange={(event) => setBossRecoveryMinutes(Number(event.target.value))}
+                  className="w-full rounded-md border border-sky-200 bg-white p-2 text-sm shadow-sm focus:border-sky-500 focus:ring-sky-500"
+                />
+                <p className="text-xs text-sky-700">{tLang.bossRecoveryMinutesHint}</p>
+              </div>
+            ) : (
+              <p className="border-l-4 border-amber-400 bg-amber-50 p-3 text-xs font-medium text-amber-800">
+                {tLang.bossPersistentImpactWarning}
+              </p>
+            )}
           </div>
 
           {/* 對戰設定 */}

@@ -13,7 +13,8 @@ import {
   SOLO_BATTLE_WIN_POINTS, SOLO_BATTLE_LOSS_POINTS, TEAM_BATTLE_MIN_FULLNESS,
   TEAM_BATTLE_MIN_FULLNESS_ENABLED, TEAM_BATTLE_ATTACKER_FULLNESS_COST,
   TEAM_BATTLE_ATTACKER_TEAMMATE_FULLNESS_COST, TEAM_BATTLE_DEFENDER_FULLNESS_COST,
-  TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST, getBossContributionStandings
+  TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST, getBossContributionStandings,
+  isBossRecoveryActive, getActiveClassGoals, getWeekStartDate, getWeekEndDate,
 } from '../gameRules';
 import {
   getClassGoalCoverage,
@@ -35,6 +36,7 @@ export const ClassroomView: React.FC = () => {
     setTeammate,
     dismissBossVictory,
     executeBossAttack,
+    clearBossRecovery,
   } = useStore(
     useShallow((state) => ({
       currentClass: state.data.classes.find((classroom) => classroom.id === state.data.currentClassId),
@@ -47,6 +49,7 @@ export const ClassroomView: React.FC = () => {
       setTeammate: state.setTeammate,
       dismissBossVictory: state.dismissBossVictory,
       executeBossAttack: state.executeBossAttack,
+      clearBossRecovery: state.clearBossRecovery,
     })),
   );
   const lang = settings?.language || 'zh';
@@ -58,10 +61,29 @@ export const ClassroomView: React.FC = () => {
   const [teamModalStudentId, setTeamModalStudentId] = useState<string | null>(null);
   const [selectedTeammateIds, setSelectedTeammateIds] = useState<string[]>([]);
   const [viewMode, setViewMode] = useState<'grid' | 'leaderboard' | 'teams'>('grid');
+  const [recoveryNow, setRecoveryNow] = useState(Date.now());
 
   const students = useMemo(() => currentClass?.students || [], [currentClass]);
+  const activeBossRecoveryCount = useMemo(
+    () => students.filter((student) => isBossRecoveryActive(student.bossRecovery, recoveryNow)).length,
+    [recoveryNow, students],
+  );
+  useEffect(() => {
+    if (!students.some((student) => isBossRecoveryActive(student.bossRecovery, Date.now()))) return;
+    setRecoveryNow(Date.now());
+    const timer = window.setInterval(() => setRecoveryNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, [students]);
+  const activeClassGoals = useMemo(
+    () => getActiveClassGoals(
+      currentClass?.classGoals,
+      recoveryNow,
+      settings?.schoolTimeZone,
+    ),
+    [currentClass?.classGoals, recoveryNow, settings?.schoolTimeZone],
+  );
   const classGoalMetrics = useMemo(
-    () => (currentClass?.classGoals ?? []).map((goal) => ({
+    () => activeClassGoals.map((goal) => ({
       goal,
       progress: getClassGoalProgress(
         students,
@@ -74,8 +96,19 @@ export const ClassroomView: React.FC = () => {
         currentClass?.learningEvidenceRecords ?? [],
       ),
     })),
-    [currentClass?.classGoals, currentClass?.learningEvidenceRecords, students],
+    [activeClassGoals, currentClass?.learningEvidenceRecords, students],
   );
+  const classGoalWeekLabel = useMemo(() => {
+    const format = (dateKey: string) => new Date(`${dateKey}T00:00:00.000Z`)
+      .toLocaleDateString(lang === 'en' ? 'en-US' : 'zh-TW', {
+        month: 'numeric',
+        day: 'numeric',
+        timeZone: 'UTC',
+      });
+    return tLang.classGoalWeekRange
+      .replace('{start}', format(getWeekStartDate(recoveryNow, settings?.schoolTimeZone)))
+      .replace('{end}', format(getWeekEndDate(recoveryNow, settings?.schoolTimeZone)));
+  }, [lang, recoveryNow, settings?.schoolTimeZone, tLang.classGoalWeekRange]);
   const weeklyStudentGrowth = useMemo(
     () => getWeeklyStudentGrowth(
       students,
@@ -421,6 +454,9 @@ export const ClassroomView: React.FC = () => {
             <div className="mb-3 flex items-center gap-2 text-xs font-bold uppercase text-emerald-700">
               <Target className="h-4 w-4" />
               {tLang.classGoal}
+              <span className="ml-auto font-medium normal-case text-emerald-600">
+                {classGoalWeekLabel}
+              </span>
             </div>
             <div className="divide-y divide-emerald-200">
               {classGoalMetrics.map(({ goal, progress, coverage }) => {
@@ -503,12 +539,37 @@ export const ClassroomView: React.FC = () => {
                   </button>
                   {bossAttackFeedback && (
                     <p className="min-w-0 text-sm text-rose-200">
-                      {bossAttackFeedback.targetNames.length > 0
+                      {bossAttackFeedback.mode === 'recoverable' && bossAttackFeedback.targetNames.length > 0
+                        ? tLang.bossAttackRecoverableResult
+                            .replace('{count}', bossAttackFeedback.targetNames.length.toString())
+                            .replace('{impact}', bossAttackFeedback.damage.toString())
+                            .replace(
+                              '{minutes}',
+                              String(settings?.bossRecoveryMinutes ?? 15),
+                            )
+                        : bossAttackFeedback.targetNames.length > 0
                         ? `${bossAttackFeedback.targetNames.join(lang === 'en' ? ', ' : '、')} (-${bossAttackFeedback.damage})`
                         : tLang.bossAttackMissed}
                     </p>
                   )}
                 </div>
+                {settings?.bossAttackMode === 'recoverable' && (
+                  <div className="mt-3 flex flex-col gap-2 border-l-4 border-sky-400 bg-sky-950/50 p-3 text-xs text-sky-100 sm:flex-row sm:items-center sm:justify-between">
+                    <span>
+                      {tLang.bossAttackRecoverableHint}
+                      {activeBossRecoveryCount > 0 && ` (${activeBossRecoveryCount}/${students.length})`}
+                    </span>
+                    {activeBossRecoveryCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={clearBossRecovery}
+                        className="shrink-0 rounded-md border border-sky-600 bg-sky-900 px-3 py-1.5 font-bold text-sky-100 hover:bg-sky-800"
+                      >
+                        {tLang.clearBossRecovery}
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="rounded-lg border border-slate-700 bg-slate-950/50 p-3">

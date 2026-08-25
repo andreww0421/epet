@@ -5,14 +5,24 @@ import {
   TEAM_BATTLE_ATTACKER_FULLNESS_COST, TEAM_BATTLE_ATTACKER_TEAMMATE_FULLNESS_COST,
   TEAM_BATTLE_DEFENDER_FULLNESS_COST, TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST,
   DEFAULT_BOSS_ATTACK_MAX_TARGETS, DEFAULT_BOSS_ATTACK_DAMAGE, DEFAULT_BOSS_REWARD_TIERS,
+  DEFAULT_BOSS_RECOVERY_MINUTES, MAX_BOSS_RECOVERY_MINUTES,
   DEFAULT_BOSS_PARTICIPATION_REWARD, DEFAULT_BOSS_IMPROVEMENT_REWARD, isLearningCompetency,
   MAX_ACTIVITY_RECORDS, MAX_POINT_ADJUSTMENT_RECORDS, MAX_BOSS_REWARD_RECORDS,
+  MAX_ECONOMY_EVENT_RECORDS, isEconomyEventKind, isEconomyEventSource,
   MAX_DAILY_REFLECTIONS, type BossRewardTier, type BossReward, type BossRewardRecord,
   type SafetyActionEffect, type SafetyActionSnapshot,
+  DEFAULT_SCHOOL_TIME_ZONE, DEFAULT_SCHOOL_WEEKDAYS, DEFAULT_DAILY_TASK_MAKEUP_WINDOW_DAYS,
+  DEFAULT_DAILY_POSITIVE_POINT_LIMIT, DEFAULT_DAILY_NEGATIVE_POINT_LIMIT,
+  DEFAULT_POSITIVE_FEEDBACK_RATIO_TARGET,
+  DEFAULT_MINIMUM_DAILY_PARTICIPATION_POINTS, DEFAULT_CATCH_UP_GAP_THRESHOLD,
+  DEFAULT_DAILY_CATCH_UP_BONUS,
+  isDateKey, normalizeDateKeyList, normalizeSchoolTimeZone, normalizeSchoolWeekdays,
+  normalizeDailyTaskMakeupWindowDays, getWeekStartDate, getWeekStartDateFromDateKey,
 } from '../gameRules';
 import {
   AppData, Student, DisciplineRecord, PointAdjustmentRecord, WorldBoss, ClassGoal,
-  PointReasonOption, LearningEvidenceRecord,
+  PointReasonOption, FeedbackReasonHistoryEntry, LearningCompetency, LearningEvidenceRecord,
+  EconomyEventRecord,
 } from './types';
 import { normalizeExamRecords } from '../examAnalytics';
 import {
@@ -299,15 +309,41 @@ export const normalizePointReasonOptions = (value: unknown): PointReasonOption[]
   return normalized.length > 0 ? normalized : cloneDefaultPointReasons();
 };
 
-export const normalizeFeedbackReasonHistory = (value: unknown) => {
+export const normalizeFeedbackReasonHistory = (
+  value: unknown,
+  pointReasonOptions: PointReasonOption[] = cloneDefaultPointReasons(),
+): FeedbackReasonHistoryEntry[] => {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
+  const competencyByLabel = new Map<string, LearningCompetency>();
+  pointReasonOptions.forEach((option) => {
+    Object.values(option.labels).forEach((label) => {
+      competencyByLabel.set(label.trim().toLocaleLowerCase(), option.competency);
+    });
+  });
   return value
-    .filter((item): item is string => typeof item === 'string')
-    .map((item) => item.trim().slice(0, 120))
+    .map((item): FeedbackReasonHistoryEntry | null => {
+      const rawLabel = typeof item === 'string'
+        ? item
+        : item && typeof item === 'object' && typeof (item as { label?: unknown }).label === 'string'
+          ? (item as { label: string }).label
+          : '';
+      const label = rawLabel.trim().slice(0, 120);
+      if (!label) return null;
+      const rawCompetency = item && typeof item === 'object'
+        ? (item as { competency?: unknown }).competency
+        : undefined;
+      return {
+        label,
+        competency: competencyByLabel.get(label.toLocaleLowerCase()) ?? (
+          isLearningCompetency(rawCompetency) ? rawCompetency : 'participation'
+        ),
+      };
+    })
+    .filter((item): item is FeedbackReasonHistoryEntry => Boolean(item))
     .filter((item) => {
-      const key = item.toLocaleLowerCase();
-      if (!item || seen.has(key)) return false;
+      const key = item.label.toLocaleLowerCase();
+      if (seen.has(key)) return false;
       seen.add(key);
       return true;
     })
@@ -331,6 +367,10 @@ export const createInitialData = (now = Date.now()): AppData => ({
     decayType: 'hourly',
     inclusiveMode: true,
     pauseDecayOnWeekends: true,
+    schoolTimeZone: DEFAULT_SCHOOL_TIME_ZONE,
+    schoolWeekdays: [...DEFAULT_SCHOOL_WEEKDAYS],
+    schoolHolidayDates: [],
+    dailyTaskMakeupWindowDays: DEFAULT_DAILY_TASK_MAKEUP_WINDOW_DAYS,
     petCareMode: 'rest',
     publicNameMode: 'masked',
   publicLeaderboardMode: 'hidden',
@@ -356,11 +396,20 @@ export const createInitialData = (now = Date.now()): AppData => ({
     teamBattleDefenderTeammateFullnessCost: TEAM_BATTLE_DEFENDER_TEAMMATE_FULLNESS_COST,
     bossAttackMaxTargets: DEFAULT_BOSS_ATTACK_MAX_TARGETS,
     bossAttackDamage: DEFAULT_BOSS_ATTACK_DAMAGE,
-    bossAttackMode: 'shared',
+    bossAttackMode: 'recoverable',
+    bossRecoveryMinutes: DEFAULT_BOSS_RECOVERY_MINUTES,
     pointReasonOptions: cloneDefaultPointReasons(),
     pinnedReasonIds: ['homework', 'participation', 'helpful'],
     recentReasonIds: [],
     feedbackReasonHistory: [],
+    pointGuardrailsEnabled: true,
+    dailyPositivePointLimit: DEFAULT_DAILY_POSITIVE_POINT_LIMIT,
+    dailyNegativePointLimit: DEFAULT_DAILY_NEGATIVE_POINT_LIMIT,
+    positiveFeedbackRatioTarget: DEFAULT_POSITIVE_FEEDBACK_RATIO_TARGET,
+    participationSupportEnabled: true,
+    minimumDailyParticipationPoints: DEFAULT_MINIMUM_DAILY_PARTICIPATION_POINTS,
+    catchUpGapThreshold: DEFAULT_CATCH_UP_GAP_THRESHOLD,
+    dailyCatchUpBonus: DEFAULT_DAILY_CATCH_UP_BONUS,
   },
 });
 
@@ -418,15 +467,63 @@ export const normalizeStudent = (student: any, fallbackIndex: number, now = Date
             source:
               record?.source === 'manual' ||
               record?.source === 'airdrop' ||
-              record?.source === 'dailyTask'
+              record?.source === 'dailyTask' ||
+              record?.source === 'participationTopUp' ||
+              record?.source === 'catchUpBonus'
                 ? record.source
                 : 'quick',
             reasonId: typeof record?.reasonId === 'string' ? record.reasonId : undefined,
             reasonLabel: typeof record?.reasonLabel === 'string' ? record.reasonLabel : undefined,
             competency: isLearningCompetency(record?.competency) ? record.competency : undefined,
+            effectiveDate: isDateKey(record?.effectiveDate) ? record.effectiveDate : undefined,
+            claimKind:
+              record?.claimKind === 'current' || record?.claimKind === 'makeup'
+                ? record.claimKind
+                : undefined,
+            requestedAmount:
+              record?.requestedAmount == null
+                ? undefined
+                : Math.trunc(toFiniteNumber(record.requestedAmount, 0)),
+            guardrailOutcome:
+              record?.guardrailOutcome === 'clamped' || record?.guardrailOutcome === 'blocked'
+                ? record.guardrailOutcome
+                : undefined,
+            guardrailReason:
+              record?.guardrailReason === 'dailyPositiveLimit' ||
+              record?.guardrailReason === 'dailyNegativeLimit'
+                ? record.guardrailReason
+                : undefined,
           }))
           .sort((a: PointAdjustmentRecord, b: PointAdjustmentRecord) => b.createdAt - a.createdAt)
           .slice(0, MAX_POINT_ADJUSTMENT_RECORDS)
+      : [],
+    economyEventRecords: Array.isArray(student?.economyEventRecords)
+      ? student.economyEventRecords
+          .filter((record: unknown) => record && typeof record === 'object')
+          .map((record: any, index: number): EconomyEventRecord => ({
+            id:
+              typeof record?.id === 'string' && record.id
+                ? record.id
+                : `economy-${now}-${fallbackIndex}-${index}`,
+            kind: isEconomyEventKind(record?.kind) ? record.kind : 'spend',
+            source: isEconomyEventSource(record?.source) ? record.source : 'feed',
+            amount: Math.trunc(toFiniteNumber(record?.amount, 0)),
+            createdAt: Math.max(0, toFiniteNumber(record?.createdAt, now)),
+            referenceId:
+              typeof record?.referenceId === 'string' && record.referenceId
+                ? record.referenceId.slice(0, 160)
+                : undefined,
+            previousPetType:
+              typeof record?.previousPetType === 'string' && record.previousPetType
+                ? record.previousPetType.slice(0, 80)
+                : undefined,
+            newPetType:
+              typeof record?.newPetType === 'string' && record.newPetType
+                ? record.newPetType.slice(0, 80)
+                : undefined,
+          }))
+          .sort((a: EconomyEventRecord, b: EconomyEventRecord) => b.createdAt - a.createdAt)
+          .slice(0, MAX_ECONOMY_EVENT_RECORDS)
       : [],
     bossRewardRecords: Array.isArray(student?.bossRewardRecords)
       ? student.bossRewardRecords
@@ -512,8 +609,11 @@ export const normalizeStudent = (student: any, fallbackIndex: number, now = Date
           .slice(0, MAX_BOSS_REWARD_RECORDS)
       : [],
     dailyProgress: {
-      lastClaimDate: typeof student?.dailyProgress?.lastClaimDate === 'string' ? student.dailyProgress.lastClaimDate : undefined,
+      lastClaimDate: isDateKey(student?.dailyProgress?.lastClaimDate)
+        ? student.dailyProgress.lastClaimDate
+        : undefined,
       streak: Math.max(0, Math.floor(toFiniteNumber(student?.dailyProgress?.streak, 0))),
+      excusedDates: normalizeDateKeyList(student?.dailyProgress?.excusedDates, 120),
       reflections: Array.isArray(student?.dailyProgress?.reflections)
           ? student.dailyProgress.reflections
             .filter((reflection: any) => isLearningCompetency(reflection?.competency))
@@ -552,6 +652,14 @@ export const normalizeStudent = (student: any, fallbackIndex: number, now = Date
             .slice(0, MAX_DAILY_REFLECTIONS)
         : [],
     },
+    bossRecovery: (() => {
+      const impact = Math.max(0, Math.floor(toFiniteNumber(student?.bossRecovery?.impact, 0)));
+      const startedAt = toFiniteNumber(student?.bossRecovery?.startedAt, now);
+      const recoverAt = toFiniteNumber(student?.bossRecovery?.recoverAt, 0);
+      return impact > 0 && startedAt <= now && recoverAt > now && recoverAt > startedAt
+        ? { impact, startedAt, recoverAt }
+        : undefined;
+    })(),
     lastBossDamage:
       student?.lastBossDamage == null
         ? undefined
@@ -574,6 +682,7 @@ export const normalizeStudent = (student: any, fallbackIndex: number, now = Date
 export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
   const initialData = createInitialData(now);
   const rawSettings = raw?.settings ?? {};
+  const schoolTimeZone = normalizeSchoolTimeZone(rawSettings?.schoolTimeZone);
   const requestedPauseDecayOnWeekends = rawSettings?.pauseDecayOnWeekends !== false;
   const requestedPetCareMode = rawSettings?.petCareMode === 'death' ? 'death' : 'rest';
   const requestedPublicNameMode = rawSettings?.publicNameMode === 'full' ? 'full' : 'masked';
@@ -582,7 +691,11 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
     rawSettings?.publicLeaderboardMode === 'hidden'
       ? rawSettings.publicLeaderboardMode
       : 'growth';
-  const requestedBossAttackMode = rawSettings?.bossAttackMode === 'random' ? 'random' : 'shared';
+  const requestedBossAttackMode = rawSettings?.bossAttackMode === 'random'
+    ? 'random'
+    : rawSettings?.bossAttackMode === 'shared'
+      ? 'shared'
+      : 'recoverable';
   const inclusiveMode =
     typeof rawSettings?.inclusiveMode === 'boolean'
       ? rawSettings.inclusiveMode
@@ -590,7 +703,7 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
         requestedPetCareMode === 'rest' &&
         requestedPublicNameMode === 'masked' &&
         requestedPublicLeaderboardMode !== 'rank' &&
-        requestedBossAttackMode === 'shared';
+        requestedBossAttackMode !== 'random';
   const rawClasses = Array.isArray(raw?.classes) && raw.classes.length > 0
     ? raw.classes
     : [
@@ -631,9 +744,10 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
       : classItem?.classGoal
         ? [classItem.classGoal]
         : [];
+    const goalsPerWeek = new Map<string, number>();
     const classGoals = rawGoals
       .filter((goal: any) => goal && typeof goal === 'object' && isLearningCompetency(goal.competency))
-      .slice(0, 3)
+      .slice(0, 156)
       .map((goal: any, goalIndex: number): ClassGoal => ({
         id:
           typeof goal.id === 'string' && goal.id
@@ -644,9 +758,18 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
             ? goal.title.trim()
             : 'Class goal',
         competency: goal.competency,
-        targetCount: Math.max(1, Math.floor(toFiniteNumber(goal.targetCount, 10))),
+        targetCount: clamp(Math.floor(toFiniteNumber(goal.targetCount, 10)), 1, 10_000),
         createdAt: toFiniteNumber(goal.createdAt, now),
-      }));
+        weekStartDate: isDateKey(goal.weekStartDate)
+          ? getWeekStartDateFromDateKey(goal.weekStartDate)
+          : getWeekStartDate(now, schoolTimeZone),
+      }))
+      .filter((goal) => {
+        const count = goalsPerWeek.get(goal.weekStartDate ?? '') ?? 0;
+        if (count >= 3) return false;
+        goalsPerWeek.set(goal.weekStartDate ?? '', count + 1);
+        return true;
+      });
     const sanitizedStudents = sanitizeTeamAssignments(
       withLegacyTeams,
       clampTeamSize(rawSettings?.maxTeamSize),
@@ -738,6 +861,12 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
       decayType: rawSettings?.decayType === 'daily' ? 'daily' : 'hourly',
       inclusiveMode,
       pauseDecayOnWeekends: inclusiveMode || requestedPauseDecayOnWeekends,
+      schoolTimeZone,
+      schoolWeekdays: normalizeSchoolWeekdays(rawSettings?.schoolWeekdays),
+      schoolHolidayDates: normalizeDateKeyList(rawSettings?.schoolHolidayDates),
+      dailyTaskMakeupWindowDays: normalizeDailyTaskMakeupWindowDays(
+        rawSettings?.dailyTaskMakeupWindowDays,
+      ),
       petCareMode: inclusiveMode ? 'rest' : requestedPetCareMode,
       publicNameMode: inclusiveMode ? 'masked' : requestedPublicNameMode,
       publicLeaderboardMode:
@@ -806,11 +935,69 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
         0,
         Math.floor(toFiniteNumber(rawSettings?.bossAttackDamage, DEFAULT_BOSS_ATTACK_DAMAGE)),
       ),
-      bossAttackMode: inclusiveMode ? 'shared' : requestedBossAttackMode,
+      bossAttackMode: inclusiveMode ? 'recoverable' : requestedBossAttackMode,
+      bossRecoveryMinutes: clamp(
+        Math.floor(toFiniteNumber(rawSettings?.bossRecoveryMinutes, DEFAULT_BOSS_RECOVERY_MINUTES)),
+        1,
+        MAX_BOSS_RECOVERY_MINUTES,
+      ),
       pointReasonOptions,
       pinnedReasonIds,
       recentReasonIds,
-      feedbackReasonHistory: normalizeFeedbackReasonHistory(rawSettings?.feedbackReasonHistory),
+      feedbackReasonHistory: normalizeFeedbackReasonHistory(
+        rawSettings?.feedbackReasonHistory,
+        pointReasonOptions,
+      ),
+      pointGuardrailsEnabled: rawSettings?.pointGuardrailsEnabled !== false,
+      dailyPositivePointLimit: clamp(
+        Math.floor(toFiniteNumber(
+          rawSettings?.dailyPositivePointLimit,
+          DEFAULT_DAILY_POSITIVE_POINT_LIMIT,
+        )),
+        0,
+        10_000,
+      ),
+      dailyNegativePointLimit: clamp(
+        Math.floor(toFiniteNumber(
+          rawSettings?.dailyNegativePointLimit,
+          DEFAULT_DAILY_NEGATIVE_POINT_LIMIT,
+        )),
+        0,
+        10_000,
+      ),
+      positiveFeedbackRatioTarget: clamp(
+        toFiniteNumber(
+          rawSettings?.positiveFeedbackRatioTarget,
+          DEFAULT_POSITIVE_FEEDBACK_RATIO_TARGET,
+        ),
+        1,
+        10,
+      ),
+      participationSupportEnabled: rawSettings?.participationSupportEnabled !== false,
+      minimumDailyParticipationPoints: clamp(
+        Math.floor(toFiniteNumber(
+          rawSettings?.minimumDailyParticipationPoints,
+          DEFAULT_MINIMUM_DAILY_PARTICIPATION_POINTS,
+        )),
+        0,
+        1_000,
+      ),
+      catchUpGapThreshold: clamp(
+        Math.floor(toFiniteNumber(
+          rawSettings?.catchUpGapThreshold,
+          DEFAULT_CATCH_UP_GAP_THRESHOLD,
+        )),
+        0,
+        10_000,
+      ),
+      dailyCatchUpBonus: clamp(
+        Math.floor(toFiniteNumber(
+          rawSettings?.dailyCatchUpBonus,
+          DEFAULT_DAILY_CATCH_UP_BONUS,
+        )),
+        0,
+        1_000,
+      ),
       enableSeasonResetRewards: Boolean(rawSettings?.enableSeasonResetRewards),
       seasonResetRewards: rawSettings?.seasonResetRewards ?? { diamond: 500, platinum: 400, gold: 300, silver: 200, bronze: 100 },
       reviveCost: Math.max(0, toFiniteNumber(rawSettings?.reviveCost, 120)),

@@ -2,7 +2,7 @@ import React from 'react';
 import { 
   Smile, Frown, Meh, Star, AlertCircle, Zap, Users, Crown, Heart, Trophy,
   Swords, Gift, RefreshCw, Utensils, Dices, Medal, Ghost, Dumbbell, Sparkles,
-  Target, Moon,
+  Target, Moon, ShieldCheck,
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -10,15 +10,19 @@ import { translations } from '../i18n/translations';
 import { PET_TYPES, DEFAULT_BATTLE_MODE } from '../store/constants';
 import { Student, PetAnimationMode, PublicNameMode, LearningCompetency } from '../store/types';
 import {
-  isPenaltyActive, isPetDead, clamp, getDateKey, isBattleReady,
+  isPenaltyActive, isPetDead, clamp, getDailyTaskClaimPlan, isBattleReady,
   SOLO_BATTLE_MIN_FULLNESS, TEAM_BATTLE_MIN_FULLNESS, TEAM_BATTLE_MIN_FULLNESS_ENABLED,
+  isBossRecoveryActive, getActiveClassGoals,
 } from '../gameRules';
 import { computeBadges, getTeamMembers } from '../store/utils';
 import {
   getNextStudentGoal,
+  getLatestPositiveFeedback,
+  getRecordCompetency,
 } from '../educationInsights';
 import { getActiveLearningEvidence } from '../../shared/education';
 import { getPublicStudentName } from '../studentPresentation';
+import { DailyTaskReflectionDialog } from './DailyTaskReflectionDialog';
 
 const WARNING_THRESHOLD = 3;
 const DAILY_TASK_REWARD_POINTS = 30;
@@ -49,6 +53,11 @@ const selectSettings = (state: any) => ({
   ) as PublicNameMode,
   teamBattleMinFullnessEnabled: state.data.settings?.teamBattleMinFullnessEnabled ?? TEAM_BATTLE_MIN_FULLNESS_ENABLED,
   teamBattleMinFullness: state.data.settings?.teamBattleMinFullness ?? TEAM_BATTLE_MIN_FULLNESS,
+  schoolTimeZone: state.data.settings?.schoolTimeZone,
+  schoolWeekdays: state.data.settings?.schoolWeekdays,
+  schoolHolidayDates: state.data.settings?.schoolHolidayDates,
+  dailyTaskMakeupWindowDays: state.data.settings?.dailyTaskMakeupWindowDays,
+  pointReasonOptions: state.data.settings?.pointReasonOptions,
 });
 
 const selectActiveBoss = (state: any) =>
@@ -105,6 +114,20 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
   const animationMode = useStore(selectAnimation(studentId));
   const teammateName = useStore(selectTeammateNames(studentId));
   const actions = useStore(useShallow(selectActions));
+  const recoveryExpiresAt = student?.bossRecovery?.recoverAt;
+  const [, setRecoveryClock] = React.useState(0);
+  const [dailyTaskDialogOpen, setDailyTaskDialogOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!recoveryExpiresAt) return;
+    const remaining = recoveryExpiresAt - Date.now();
+    if (remaining <= 0) return;
+    const timer = window.setTimeout(
+      () => setRecoveryClock((current) => current + 1),
+      Math.min(remaining + 50, 2_147_000_000),
+    );
+    return () => window.clearTimeout(timer);
+  }, [recoveryExpiresAt]);
 
   if (!student) return null;
 
@@ -121,6 +144,11 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
     publicNameMode,
     teamBattleMinFullnessEnabled,
     teamBattleMinFullness,
+    schoolTimeZone,
+    schoolWeekdays,
+    schoolHolidayDates,
+    dailyTaskMakeupWindowDays,
+    pointReasonOptions,
   } = settings;
   const tLang = translations[lang];
   const competencyLabels: Record<LearningCompetency, string> = {
@@ -149,6 +177,10 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
   const canFeed = points >= feedCost && !isDead;
   const canPlay = points >= playCost && !isDead && !isResting;
   const now = Date.now();
+  const hasBossRecovery = isBossRecoveryActive(student.bossRecovery, now);
+  const bossRecoveryMinutes = hasBossRecovery
+    ? Math.max(1, Math.ceil(((student.bossRecovery?.recoverAt ?? now) - now) / 60_000))
+    : 0;
   const soloBattleReady = isBattleReady(student, now, { minimumFullness: SOLO_BATTLE_MIN_FULLNESS });
   const teamBattleReady = isBattleReady(student, now, {
     minimumFullness: teamBattleMinFullness,
@@ -166,19 +198,42 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
   const canGacha = points >= 200 && !isDead;
   const hasUpgradeReward = nextUpgradeGachaLevel !== null && level >= nextUpgradeGachaLevel;
   const canRevive = points >= reviveCost;
-  const todayKey = getDateKey();
-  const dailyClaimedToday = dailyProgress?.lastClaimDate === todayKey;
+  const dailyTaskPlan = getDailyTaskClaimPlan(student, now, {
+    timeZone: schoolTimeZone,
+    schoolWeekdays,
+    holidayDates: schoolHolidayDates,
+    excusedDates: dailyProgress?.excusedDates,
+    makeupWindowDays: dailyTaskMakeupWindowDays,
+  });
+  const dailyTaskUnavailable = !dailyTaskPlan.targetDate;
   const streak = dailyProgress?.streak ?? 0;
-  const nextGoal = getNextStudentGoal(student, classGoals, learningEvidence);
+  const activeClassGoals = getActiveClassGoals(classGoals, now, schoolTimeZone);
+  const nextGoal = getNextStudentGoal(student, activeClassGoals, learningEvidence);
+  const weeklyGoalsCompleted = activeClassGoals.length > 0 && !nextGoal;
   const latestPositiveEvidence = getActiveLearningEvidence(learningEvidence)
     .find((record) => record.studentId === student.id && record.level !== 'needsSupport');
-  const latestPositiveCompetency = latestPositiveEvidence?.competency;
-  const latestPositiveReason =
-    !inclusiveMode && latestPositiveEvidence?.title
-      ? latestPositiveEvidence.title
-      : latestPositiveCompetency
-        ? competencyLabels[latestPositiveCompetency]
-        : undefined;
+  const latestPointFeedback = getLatestPositiveFeedback(student);
+  const configuredPointReason = latestPointFeedback?.reasonId
+    ? pointReasonOptions?.find((reason) => reason.id === latestPointFeedback.reasonId)
+    : undefined;
+  const latestPositiveCompetency = latestPointFeedback
+    ? getRecordCompetency(latestPointFeedback)
+    : latestPositiveEvidence?.competency;
+  const latestPositiveReason = latestPointFeedback
+    ? configuredPointReason
+      ? latestPointFeedback.reasonLabel ?? configuredPointReason.labels[lang]
+      : !inclusiveMode || latestPointFeedback.source === 'dailyTask'
+        ? latestPointFeedback.reasonLabel
+        : undefined
+    : !inclusiveMode
+      ? latestPositiveEvidence?.title
+      : undefined;
+  const latestPositiveSummary = latestPositiveReason ?? (
+    latestPositiveCompetency ? competencyLabels[latestPositiveCompetency] : undefined
+  );
+  const latestPositiveLabel = latestPointFeedback
+    ? tLang.latestPointReason
+    : tLang.latestPositiveFeedback;
   const isRerollAnimation = animationMode === 'reroll';
   const isGachaAnimation = animationMode === 'gacha';
   const isFeedAnimation = animationMode === 'feed';
@@ -270,6 +325,12 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
               {lang === 'en' ? 'Team' : '隊伍'}: {teammateName}
             </span>
           )}
+          {hasBossRecovery && (
+            <span className="mt-1 inline-flex w-fit items-center rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-bold text-sky-700" role="status">
+              <ShieldCheck className="mr-1 h-3 w-3" />
+              {tLang.bossRecoveryStatus.replace('{minutes}', String(bossRecoveryMinutes))}
+            </span>
+          )}
         </div>
         <div className="flex items-center bg-white px-2 py-1 rounded-full shadow-sm">
           <span className="text-xs font-bold text-indigo-600 mr-1">{tLang.points}</span>
@@ -277,7 +338,7 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
         </div>
       </div>
 
-      {(nextGoal || latestPositiveReason) && (
+      {(nextGoal || weeklyGoalsCompleted || latestPositiveSummary) && (
         <div className="border-b border-emerald-100 bg-emerald-50/70 px-4 py-3">
           {nextGoal && (
             <>
@@ -287,7 +348,9 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
                   <span className="truncate">{nextGoal.goal.title}</span>
                 </span>
                 <span className="shrink-0 text-xs font-black text-emerald-950">
-                  {tLang.feedbackCount.replace('{count}', nextGoal.progress.toString())}
+                  {tLang.classGoalProgress
+                    .replace('{current}', nextGoal.progress.toString())
+                    .replace('{target}', nextGoal.goal.targetCount.toString())}
                 </span>
               </div>
               <p className="mt-1 text-xs leading-5 text-emerald-800">
@@ -298,13 +361,26 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
               </p>
             </>
           )}
-          <div className={`${nextGoal ? 'mt-2 border-t border-emerald-100 pt-2' : ''}`}>
+          {weeklyGoalsCompleted && (
+            <p className="flex items-center text-xs font-bold text-emerald-800">
+              <Target className="mr-1.5 h-4 w-4" />
+              {tLang.classGoalPersonalCompleted}
+            </p>
+          )}
+          <div className={`${nextGoal || weeklyGoalsCompleted ? 'mt-2 border-t border-emerald-100 pt-2' : ''}`}>
             <p className="text-[10px] font-bold uppercase text-emerald-700">
-              {tLang.latestPositiveFeedback}
+              {latestPositiveLabel}
             </p>
-            <p className="mt-0.5 truncate text-xs font-medium text-emerald-950">
-              {latestPositiveReason ?? tLang.noPositiveFeedback}
-            </p>
+            <div className="mt-1 flex min-w-0 items-center gap-2">
+              <p className="min-w-0 truncate text-xs font-medium text-emerald-950">
+                {latestPositiveSummary ?? tLang.noPositiveFeedback}
+              </p>
+              {latestPositiveCompetency && (
+                <span className="shrink-0 rounded-full bg-white px-2 py-0.5 text-[10px] font-bold text-emerald-700 ring-1 ring-emerald-200">
+                  {competencyLabels[latestPositiveCompetency]}
+                </span>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -517,18 +593,23 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
             )}
 
             <button
-              onClick={() => actions.claimDailyTask(studentId)}
-              disabled={dailyClaimedToday}
+              onClick={() => setDailyTaskDialogOpen(true)}
+              disabled={dailyTaskUnavailable}
+              aria-haspopup="dialog"
               className={`w-full flex items-center justify-center py-2 px-4 rounded-xl font-bold text-sm transition-all duration-200 ${
-                dailyClaimedToday
+                dailyTaskUnavailable
                   ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
                   : 'bg-emerald-400 hover:bg-emerald-500 text-emerald-950 shadow-sm hover:shadow active:scale-95'
               }`}
             >
               <Gift className="h-4 w-4 mr-2" />
-              {dailyClaimedToday
+              {dailyTaskPlan.alreadyClaimed
                 ? tLang.dailyTaskDone
-                : `${tLang.dailyTask} (+${DAILY_TASK_REWARD_POINTS})`}
+                : dailyTaskPlan.frozen
+                  ? tLang.dailyTaskFrozen
+                  : dailyTaskPlan.claimKind === 'makeup'
+                    ? tLang.dailyTaskMakeup.replace('{date}', dailyTaskPlan.targetDate ?? '')
+                    : `${tLang.dailyTask} (+${DAILY_TASK_REWARD_POINTS})`}
             </button>
 
             {battleEnabled && (
@@ -667,6 +748,16 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
           </>
         )}
       </div>
+      {dailyTaskDialogOpen && dailyTaskPlan.targetDate && (
+        <DailyTaskReflectionDialog
+          language={lang}
+          studentName={publicStudentName}
+          targetDate={dailyTaskPlan.targetDate}
+          rewardPoints={DAILY_TASK_REWARD_POINTS}
+          onClose={() => setDailyTaskDialogOpen(false)}
+          onSubmit={(reflection) => actions.claimDailyTask(studentId, reflection)}
+        />
+      )}
     </div>
   );
 });

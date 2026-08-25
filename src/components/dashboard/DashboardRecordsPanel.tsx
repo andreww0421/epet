@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  AlertCircle,
-  BarChart3,
   BookOpen,
   Save,
   Shield,
   Swords,
 } from 'lucide-react';
+import type { LearningEvidenceRecord } from '../../../shared/education';
 import type {
   BossRewardRecord,
   DailyAssessment,
@@ -25,12 +24,11 @@ import {
 } from '../../gameRules';
 import {
   getRecordCompetency,
-  getWeeklyEducationInsights,
 } from '../../educationInsights';
 import { translations } from '../../i18n/translations';
+import { WeeklyFeedbackReportPanel } from './WeeklyFeedbackReportPanel';
 
 type DashboardCopy = (typeof translations)[keyof typeof translations];
-type WeeklyInsights = ReturnType<typeof getWeeklyEducationInsights>;
 
 type BossRewardRecordWithStudent = BossRewardRecord & {
   studentId: string;
@@ -46,25 +44,27 @@ type DashboardRecordsPanelProps = {
   classId?: string;
   competencyLabels: Record<LearningCompetency, string>;
   lang: Language;
+  learningEvidence: LearningEvidenceRecord[];
   onSaveMentorDailyFeedback: (
     studentId: string,
     feedback: MentorDailyFeedbackInput,
   ) => void;
   students: Student[];
+  schoolTimeZone?: string;
   tLang: DashboardCopy;
   visible: boolean;
-  weeklyInsights: WeeklyInsights;
 };
 
 export const DashboardRecordsPanel = ({
   classId,
   competencyLabels,
   lang,
+  learningEvidence,
   onSaveMentorDailyFeedback,
+  schoolTimeZone,
   students: currentStudents,
   tLang,
   visible,
-  weeklyInsights,
 }: DashboardRecordsPanelProps) => {
   const [recordView, setRecordView] =
     useState<'discipline' | 'points' | 'feedback' | 'boss'>('discipline');
@@ -337,175 +337,15 @@ export const DashboardRecordsPanel = ({
           </div>
         </div>
 
-        <div className="flex flex-col gap-2 border-b border-slate-200 pb-4 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <h3 className="flex items-center text-lg font-semibold text-slate-900">
-              <BarChart3 className="mr-2 h-5 w-5 text-emerald-600" />
-              {tLang.weeklyInsights}
-            </h3>
-            <p className="mt-1 text-sm text-slate-500">{tLang.weeklyInsightsHint}</p>
-          </div>
-          <div className="text-sm font-bold text-slate-600">
-            {weeklyInsights.positiveCount + weeklyInsights.negativeCount === 0
-              ? tLang.noWeeklyFeedback
-              : tLang.positiveRatio}
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-px bg-slate-200 sm:grid-cols-3 lg:grid-cols-6">
-          {[
-            [tLang.positiveFeedback, weeklyInsights.positiveCount, 'text-emerald-700'],
-            [tLang.correctiveFeedback, weeklyInsights.negativeCount, 'text-rose-700'],
-            [tLang.positiveRatio, `${Math.round(weeklyInsights.positiveRatio * 100)}%`, 'text-indigo-700'],
-            [
-              tLang.feedbackCoverage,
-              tLang.studentsReached
-                .replace('{current}', weeklyInsights.feedbackStudents.toString())
-                .replace('{total}', currentStudents.length.toString()),
-              'text-teal-700',
-            ],
-            [
-              tLang.collaborationReach,
-              tLang.studentsReached
-                .replace('{current}', weeklyInsights.collaborationStudents.toString())
-                .replace('{total}', currentStudents.length.toString()),
-              'text-sky-700',
-            ],
-            [tLang.reflectionCount, weeklyInsights.reflectionCount, 'text-violet-700'],
-          ].map(([label, value, tone]) => (
-            <div key={String(label)} className="bg-white px-4 py-4">
-              <p className="text-xs font-medium text-slate-500">{label}</p>
-              <p className={`mt-1 text-xl font-black ${tone}`}>{value}</p>
-            </div>
-          ))}
-        </div>
-        <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-xs font-medium text-slate-600">
-          <span>
-            {tLang.positiveFeedback}: {tLang.comparedPreviousWeek.replace(
-              '{value}',
-              `${weeklyInsights.positiveFeedbackTrend >= 0 ? '+' : ''}${weeklyInsights.positiveFeedbackTrend}`,
-            )}
-          </span>
-          <span>
-            {tLang.feedbackCoverage}: {tLang.comparedPreviousWeek.replace(
-              '{value}',
-              `${weeklyInsights.feedbackCoverageTrend >= 0 ? '+' : ''}${weeklyInsights.feedbackCoverageTrend}`,
-            )}
-          </span>
-        </div>
-
-        {weeklyInsights.positiveCount + weeklyInsights.negativeCount >= 3 &&
-          weeklyInsights.positiveRatio < 0.7 && (
-            <div className="mt-4 flex items-start gap-3 border-l-4 border-amber-400 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-              <p>{tLang.feedbackBalanceWarning}</p>
-            </div>
-          )}
-
-        <div className="mt-5 grid gap-6 lg:grid-cols-3">
-          <div>
-            <h4 className="mb-3 text-sm font-bold text-slate-800">{tLang.competencyDistribution}</h4>
-            <div className="space-y-3">
-              {(Object.keys(competencyLabels) as LearningCompetency[]).map((competency) => {
-                const count = weeklyInsights.competencyCounts[competency];
-                const total = Math.max(
-                  1,
-                  (Object.keys(competencyLabels) as LearningCompetency[]).reduce(
-                    (sum, item) => sum + weeklyInsights.competencyCounts[item],
-                    0,
-                  ),
-                );
-                return (
-                  <div key={competency}>
-                    <div className="mb-1 flex justify-between gap-3 text-xs">
-                      <span className="font-medium text-slate-700">{competencyLabels[competency]}</span>
-                      <span className="font-bold text-slate-500">
-                        {tLang.feedbackCount.replace('{count}', count.toString())}
-                      </span>
-                    </div>
-                    <div className="h-2 overflow-hidden rounded-full bg-slate-100">
-                      <div
-                        className="h-full rounded-full bg-emerald-500"
-                        style={{ width: `${(count / total) * 100}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          <div>
-            <h4 className="mb-3 text-sm font-bold text-slate-800">{tLang.topReasons}</h4>
-            {weeklyInsights.reasonCounts.length === 0 ? (
-              <p className="text-sm text-slate-500">{tLang.noWeeklyFeedback}</p>
-            ) : (
-              <div className="divide-y divide-slate-100">
-                {weeklyInsights.reasonCounts.slice(0, 6).map((reason) => (
-                  <div key={reason.id} className="flex items-center justify-between gap-3 py-2 text-sm">
-                    <span className="truncate text-slate-700">{reason.label}</span>
-                    <span className="shrink-0 font-bold text-slate-500">
-                      {tLang.feedbackCount.replace('{count}', reason.count.toString())}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div>
-            <h4 className="mb-3 text-sm font-bold text-slate-800">{tLang.overlookedStudents}</h4>
-            {weeklyInsights.overlookedStudents.length === 0 ? (
-              <p className="text-sm font-medium text-emerald-700">{tLang.noOverlookedStudents}</p>
-            ) : (
-              <div className="flex flex-wrap gap-2">
-                {weeklyInsights.overlookedStudents.map((student) => (
-                  <span
-                    key={student.id}
-                    className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs font-bold text-amber-800"
-                  >
-                    {student.name}
-                  </span>
-                ))}
-              </div>
-            )}
-            <h4 className="mb-3 mt-5 text-sm font-bold text-slate-800">{tLang.needsPositiveFeedback}</h4>
-            {weeklyInsights.needsPositiveFeedbackStudents.length === 0 ? (
-              <p className="text-sm font-medium text-emerald-700">{tLang.noPositiveFeedbackGap}</p>
-            ) : (
-              <div className="flex flex-wrap gap-2">
-                {weeklyInsights.needsPositiveFeedbackStudents.map((student) => (
-                  <span
-                    key={student.id}
-                    className="rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-xs font-bold text-rose-800"
-                  >
-                    {student.name}
-                  </span>
-                ))}
-              </div>
-            )}
-            <h4 className="mb-3 mt-5 text-sm font-bold text-slate-800">{tLang.needsSupportReflection}</h4>
-            {weeklyInsights.needsSupportReflectionStudents.length === 0 ? (
-              <p className="text-sm font-medium text-emerald-700">{tLang.noNeedsSupportReflection}</p>
-            ) : (
-              <div className="divide-y divide-violet-100 border-y border-violet-100">
-                {weeklyInsights.needsSupportReflectionStudents.map((student) => (
-                  <div key={student.id} className="py-2 text-xs">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-bold text-violet-900">{student.name}</span>
-                      <span className="rounded bg-violet-50 px-1.5 py-0.5 font-bold text-violet-700">
-                        {competencyLabels[student.competency]}
-                      </span>
-                    </div>
-                    {student.text && (
-                      <p className="mt-1 line-clamp-2 leading-5 text-slate-600">{student.text}</p>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
+        <WeeklyFeedbackReportPanel
+          classId={classId}
+          competencyLabels={competencyLabels}
+          evidence={learningEvidence}
+          lang={lang}
+          schoolTimeZone={schoolTimeZone}
+          students={currentStudents}
+          tLang={tLang}
+        />
       </section>
 
       <div className={`${visible ? '' : 'hidden'} mt-6 bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200`}>
@@ -621,6 +461,10 @@ export const DashboardRecordsPanel = ({
                       }`}>
                         {record.source === 'airdrop'
                           ? tLang.recordAirdrop
+                          : record.source === 'participationTopUp'
+                            ? (lang === 'en' ? 'Participation safety net' : '最低參與補足')
+                          : record.source === 'catchUpBonus'
+                            ? (lang === 'en' ? 'Catch-up bonus' : '追趕加成')
                           : record.source === 'dailyTask'
                             ? tLang.dailyTaskRecord
                           : record.source === 'manual'
@@ -628,6 +472,17 @@ export const DashboardRecordsPanel = ({
                             : tLang.recordQuickAdjust}
                       </span>
                       <span className="font-medium text-slate-900">{record.studentName}</span>
+                      {record.guardrailOutcome && (
+                        <span className={`rounded-md px-2 py-0.5 text-[11px] font-bold ${
+                          record.guardrailOutcome === 'blocked'
+                            ? 'bg-rose-100 text-rose-700'
+                            : 'bg-amber-100 text-amber-700'
+                        }`}>
+                          {record.guardrailOutcome === 'blocked'
+                            ? (lang === 'en' ? 'Blocked by daily limit' : '每日上限拒絕')
+                            : (lang === 'en' ? 'Clamped by daily limit' : '每日上限縮減')}
+                        </span>
+                      )}
                       {getRecordCompetency(record) && (
                         <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700">
                           {competencyLabels[getRecordCompetency(record)!]}
@@ -641,6 +496,18 @@ export const DashboardRecordsPanel = ({
                             .replace('{label}', record.amount >= 0 ? '+' : '-')
                             .replace('{amount}', Math.abs(record.amount).toString())}
                     </div>
+                    {record.source === 'dailyTask' && record.claimKind === 'makeup' && record.effectiveDate && (
+                      <div className="mt-1 text-xs font-medium text-amber-700">
+                        {tLang.dailyTaskMakeupRecord.replace('{date}', record.effectiveDate)}
+                      </div>
+                    )}
+                    {record.guardrailOutcome && record.requestedAmount != null && (
+                      <div className="mt-1 text-xs font-medium text-amber-700">
+                        {lang === 'en'
+                          ? `Requested ${record.requestedAmount > 0 ? '+' : ''}${record.requestedAmount}; applied ${record.amount > 0 ? '+' : ''}${record.amount}.`
+                          : `原要求 ${record.requestedAmount > 0 ? '+' : ''}${record.requestedAmount}，實際套用 ${record.amount > 0 ? '+' : ''}${record.amount}。`}
+                      </div>
+                    )}
                   </div>
                   <div className="text-xs font-medium text-slate-400">{formatRecordTime(record.createdAt)}</div>
                 </div>
@@ -777,4 +644,3 @@ export const DashboardRecordsPanel = ({
     </>
   );
 };
-
