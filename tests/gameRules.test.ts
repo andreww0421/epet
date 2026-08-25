@@ -36,6 +36,7 @@ import {
   isBossRecoveryActive,
   type BossRewardRecord,
   type EconomyEventRecord,
+  type StudentRuleState,
 } from '../src/gameRules.js';
 import {
   applyDecay,
@@ -101,7 +102,7 @@ const createStudent = (id = 'student-1', name = 'Student 1') => ({
     fullness: 80,
     happiness: 50,
     level: 3,
-  },
+  } as StudentRuleState['pet'],
   stats: {
     wins: 0,
     losses: 0,
