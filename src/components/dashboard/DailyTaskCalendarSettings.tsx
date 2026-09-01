@@ -5,6 +5,9 @@ import { getDateKey } from '../../gameRules';
 
 type DailyTaskCalendarSettingsProps = {
   lang: 'zh' | 'en';
+  classes: Array<{ id: string; name: string }>;
+  selectedClassId: string;
+  onClassChange: (classId: string) => void;
   timeZone: string;
   onTimeZoneChange: (value: string) => void;
   schoolWeekdays: number[];
@@ -15,6 +18,7 @@ type DailyTaskCalendarSettingsProps = {
   onMakeupWindowDaysChange: (value: number) => void;
   students: Student[];
   onSetExcusedDate: (studentId: string, date: string, excused: boolean) => void;
+  onSave: () => void;
 };
 
 const WEEKDAYS = [
@@ -29,6 +33,9 @@ const WEEKDAYS = [
 
 export const DailyTaskCalendarSettings: React.FC<DailyTaskCalendarSettingsProps> = ({
   lang,
+  classes,
+  selectedClassId,
+  onClassChange,
   timeZone,
   onTimeZoneChange,
   schoolWeekdays,
@@ -39,6 +46,7 @@ export const DailyTaskCalendarSettings: React.FC<DailyTaskCalendarSettingsProps>
   onMakeupWindowDaysChange,
   students,
   onSetExcusedDate,
+  onSave,
 }) => {
   const [selectedStudentId, setSelectedStudentId] = useState(students[0]?.id ?? '');
   const [excusedDate, setExcusedDate] = useState(() => getDateKey(Date.now(), timeZone));
@@ -53,13 +61,20 @@ export const DailyTaskCalendarSettings: React.FC<DailyTaskCalendarSettingsProps>
     }
   }, [selectedStudentId, students]);
 
+  useEffect(() => {
+    setExcusedDate(getDateKey(Date.now(), timeZone));
+  }, [selectedClassId, timeZone]);
+
   const copy = lang === 'en'
     ? {
         title: 'Daily Task Calendar',
-        hint: 'Use the school timezone and teaching calendar so weekends, holidays, and approved leave never break a streak.',
-        timeZone: 'School timezone',
+        hint: 'Each class has its own schedule. Weekends, holidays, and approved leave never break a streak.',
+        classroom: 'Class to configure',
+        scope: 'Changes apply only to this class. Save before switching classes.',
+        save: 'Save this class calendar',
+        timeZone: 'Class timezone',
         weekdays: 'Teaching days',
-        holidays: 'School holidays',
+        holidays: 'Class cancellations / holidays',
         holidaysHint: 'Enter one YYYY-MM-DD date per line. These dates freeze the streak for the whole class.',
         makeup: 'Make-up window (days)',
         makeupHint: 'Missed teaching days can be completed in order within this window. Set 0 to disable make-ups.',
@@ -73,10 +88,13 @@ export const DailyTaskCalendarSettings: React.FC<DailyTaskCalendarSettingsProps>
       }
     : {
         title: '每日任務校曆',
-        hint: '依學校時區與上課日計算；週末、校定假日及核准請假不會中斷連續紀錄。',
-        timeZone: '學校時區',
+        hint: '每個班級可設定自己的上課日；週末、停課日及核准請假不會中斷連續紀錄。',
+        classroom: '要設定的班級',
+        scope: '變更只會套用到這個班級；切換班級前請先儲存。',
+        save: '儲存此班校曆',
+        timeZone: '班級時區',
         weekdays: '固定上課日',
-        holidays: '全校停課／假日',
+        holidays: '本班停課／假日',
         holidaysHint: '每行輸入一個 YYYY-MM-DD；這些日期會為全班凍結連續紀錄。',
         makeup: '可補簽天數',
         makeupHint: '缺漏的上課日會依序補簽；設為 0 即關閉跨日補簽。',
@@ -103,13 +121,30 @@ export const DailyTaskCalendarSettings: React.FC<DailyTaskCalendarSettingsProps>
 
   return (
     <section className="mb-6 rounded-xl border border-amber-200 bg-amber-50/60 p-4" aria-labelledby="daily-task-calendar-title">
-      <div className="flex items-start gap-3">
-        <span className="rounded-lg bg-amber-100 p-2 text-amber-800">
-          <CalendarDays className="h-5 w-5" aria-hidden="true" />
-        </span>
-        <div>
-          <h4 id="daily-task-calendar-title" className="font-bold text-slate-900">{copy.title}</h4>
-          <p className="mt-1 text-sm text-slate-600">{copy.hint}</p>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+        <div className="flex items-start gap-3">
+          <span className="shrink-0 rounded-lg bg-amber-100 p-2 text-amber-800">
+            <CalendarDays className="h-5 w-5" aria-hidden="true" />
+          </span>
+          <div>
+            <h4 id="daily-task-calendar-title" className="font-bold text-slate-900">{copy.title}</h4>
+            <p className="mt-1 text-sm text-slate-600">{copy.hint}</p>
+          </div>
+        </div>
+        <div className="sm:ml-auto sm:w-64">
+          <label className="flex flex-col gap-1 text-xs font-bold text-amber-950">
+            {copy.classroom}
+            <select
+              value={selectedClassId}
+              onChange={(event) => onClassChange(event.target.value)}
+              className="rounded-md border border-amber-300 bg-white p-2 text-sm font-medium text-slate-800 shadow-sm focus:border-amber-500 focus:ring-amber-500"
+            >
+              {classes.map((classroom) => (
+                <option key={classroom.id} value={classroom.id}>{classroom.name}</option>
+              ))}
+            </select>
+          </label>
+          <p className="mt-1 text-xs text-amber-800">{copy.scope}</p>
         </div>
       </div>
 
@@ -249,6 +284,17 @@ export const DailyTaskCalendarSettings: React.FC<DailyTaskCalendarSettingsProps>
         <ShieldCheck className="h-4 w-4 shrink-0" aria-hidden="true" />
         {copy.audit}
       </p>
+      <div className="mt-4 flex justify-end">
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={!selectedClassId}
+          className="inline-flex items-center justify-center rounded-md bg-amber-700 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-amber-800 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <ShieldCheck className="mr-2 h-4 w-4" aria-hidden="true" />
+          {copy.save}
+        </button>
+      </div>
     </section>
   );
 };

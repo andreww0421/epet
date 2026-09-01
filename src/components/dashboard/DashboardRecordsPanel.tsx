@@ -75,7 +75,7 @@ export const DashboardRecordsPanel = ({
     useState<DailyAssessment>('progressing');
   const [mentorFeedbackText, setMentorFeedbackText] = useState('');
 
-  const todayKey = getDateKey();
+  const todayKey = getDateKey(Date.now(), schoolTimeZone);
   const selectedMentorFeedback = useMemo(
     () => currentStudents
       .find((student) => student.id === mentorFeedbackStudentId)

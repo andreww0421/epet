@@ -22,7 +22,6 @@ import {
 } from '../educationInsights';
 import { getActiveLearningEvidence } from '../../shared/education';
 import { getPublicStudentName } from '../studentPresentation';
-import { DailyTaskReflectionDialog } from './DailyTaskReflectionDialog';
 
 const WARNING_THRESHOLD = 3;
 const DAILY_TASK_REWARD_POINTS = 30;
@@ -37,28 +36,32 @@ const selectStudent = (studentId: string) => (state: any): Student | undefined =
     .find((c: any) => c.id === state.data.currentClassId)
     ?.students.find((s: any) => s.id === studentId);
 
-const selectSettings = (state: any) => ({
-  lang: (state.data.settings?.language || 'zh') as 'zh' | 'en',
-  feedCost: state.data.settings?.feedCost ?? 10,
-  playCost: state.data.settings?.playCost ?? 5,
-  reviveCost: state.data.settings?.reviveCost ?? 120,
-  maxPoints: state.data.settings?.maxPoints ?? 700,
-  maxTeamSize: state.data.settings?.maxTeamSize ?? 6,
-  battleEnabled: state.data.settings?.battleEnabled !== false,
-  battleMode: state.data.settings?.battleMode ?? DEFAULT_BATTLE_MODE,
-  inclusiveMode: state.data.settings?.inclusiveMode !== false,
-  petCareMode: state.data.settings?.petCareMode === 'death' ? 'death' : 'rest',
-  publicNameMode: (
-    state.data.settings?.publicNameMode === 'full' ? 'full' : 'masked'
-  ) as PublicNameMode,
-  teamBattleMinFullnessEnabled: state.data.settings?.teamBattleMinFullnessEnabled ?? TEAM_BATTLE_MIN_FULLNESS_ENABLED,
-  teamBattleMinFullness: state.data.settings?.teamBattleMinFullness ?? TEAM_BATTLE_MIN_FULLNESS,
-  schoolTimeZone: state.data.settings?.schoolTimeZone,
-  schoolWeekdays: state.data.settings?.schoolWeekdays,
-  schoolHolidayDates: state.data.settings?.schoolHolidayDates,
-  dailyTaskMakeupWindowDays: state.data.settings?.dailyTaskMakeupWindowDays,
-  pointReasonOptions: state.data.settings?.pointReasonOptions,
-});
+const selectSettings = (state: any) => {
+  const currentClass = state.data.classes.find((c: any) => c.id === state.data.currentClassId);
+  const calendar = currentClass?.dailyTaskCalendar;
+  return {
+    lang: (state.data.settings?.language || 'zh') as 'zh' | 'en',
+    feedCost: state.data.settings?.feedCost ?? 10,
+    playCost: state.data.settings?.playCost ?? 5,
+    reviveCost: state.data.settings?.reviveCost ?? 120,
+    maxPoints: state.data.settings?.maxPoints ?? 700,
+    maxTeamSize: state.data.settings?.maxTeamSize ?? 6,
+    battleEnabled: state.data.settings?.battleEnabled !== false,
+    battleMode: state.data.settings?.battleMode ?? DEFAULT_BATTLE_MODE,
+    inclusiveMode: state.data.settings?.inclusiveMode !== false,
+    petCareMode: state.data.settings?.petCareMode === 'death' ? 'death' : 'rest',
+    publicNameMode: (
+      state.data.settings?.publicNameMode === 'full' ? 'full' : 'masked'
+    ) as PublicNameMode,
+    teamBattleMinFullnessEnabled: state.data.settings?.teamBattleMinFullnessEnabled ?? TEAM_BATTLE_MIN_FULLNESS_ENABLED,
+    teamBattleMinFullness: state.data.settings?.teamBattleMinFullness ?? TEAM_BATTLE_MIN_FULLNESS,
+    schoolTimeZone: calendar?.schoolTimeZone ?? state.data.settings?.schoolTimeZone,
+    schoolWeekdays: calendar?.schoolWeekdays ?? state.data.settings?.schoolWeekdays,
+    schoolHolidayDates: calendar?.schoolHolidayDates ?? state.data.settings?.schoolHolidayDates,
+    dailyTaskMakeupWindowDays: calendar?.dailyTaskMakeupWindowDays ?? state.data.settings?.dailyTaskMakeupWindowDays,
+    pointReasonOptions: state.data.settings?.pointReasonOptions,
+  };
+};
 
 const selectActiveBoss = (state: any) =>
   state.data.classes.find((c: any) => c.id === state.data.currentClassId)?.activeBoss;
@@ -116,7 +119,6 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
   const actions = useStore(useShallow(selectActions));
   const recoveryExpiresAt = student?.bossRecovery?.recoverAt;
   const [, setRecoveryClock] = React.useState(0);
-  const [dailyTaskDialogOpen, setDailyTaskDialogOpen] = React.useState(false);
 
   React.useEffect(() => {
     if (!recoveryExpiresAt) return;
@@ -593,9 +595,8 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
             )}
 
             <button
-              onClick={() => setDailyTaskDialogOpen(true)}
+              onClick={() => actions.claimDailyTask(studentId)}
               disabled={dailyTaskUnavailable}
-              aria-haspopup="dialog"
               className={`w-full flex items-center justify-center py-2 px-4 rounded-xl font-bold text-sm transition-all duration-200 ${
                 dailyTaskUnavailable
                   ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
@@ -748,16 +749,6 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
           </>
         )}
       </div>
-      {dailyTaskDialogOpen && dailyTaskPlan.targetDate && (
-        <DailyTaskReflectionDialog
-          language={lang}
-          studentName={publicStudentName}
-          targetDate={dailyTaskPlan.targetDate}
-          rewardPoints={DAILY_TASK_REWARD_POINTS}
-          onClose={() => setDailyTaskDialogOpen(false)}
-          onSubmit={(reflection) => actions.claimDailyTask(studentId, reflection)}
-        />
-      )}
     </div>
   );
 });

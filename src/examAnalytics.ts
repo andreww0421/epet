@@ -27,7 +27,7 @@ const safeDateKey = (value: unknown, fallbackTimestamp: number) => {
 const normalizeItemName = (value: string) =>
   value.trim().toLocaleLowerCase().replace(/\s+/g, ' ');
 
-const compareExams = (left: ExamRecord, right: ExamRecord) =>
+export const compareExamRecords = (left: ExamRecord, right: ExamRecord) =>
   left.examDate.localeCompare(right.examDate) ||
   left.createdAt - right.createdAt ||
   left.id.localeCompare(right.id);
@@ -138,7 +138,7 @@ export const normalizeExamRecords = (
       };
     })
     .filter((exam: ExamRecord | null): exam is ExamRecord => Boolean(exam))
-    .sort((left, right) => compareExams(right, left))
+    .sort((left, right) => compareExamRecords(right, left))
     .slice(0, MAX_EXAM_RECORDS);
 };
 
@@ -192,8 +192,10 @@ const getOverallPercent = (
 
 const getPreviousExams = (exams: ExamRecord[], currentExam: ExamRecord) =>
   exams
-    .filter((exam) => exam.id !== currentExam.id && compareExams(exam, currentExam) < 0)
-    .sort((left, right) => compareExams(right, left));
+    .filter(
+      (exam) => exam.id !== currentExam.id && compareExamRecords(exam, currentExam) < 0,
+    )
+    .sort((left, right) => compareExamRecords(right, left));
 
 const getClassAveragePercent = (exam: ExamRecord) => {
   const values = exam.results

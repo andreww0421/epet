@@ -63,7 +63,10 @@ import {
   computeExamStudentAnalysis,
   normalizeExamRecords,
 } from '../src/examAnalytics.js';
-import { createExamReportHtml } from '../src/examReport.js';
+import {
+  createExamReportHtml,
+  getExamReportSelection,
+} from '../src/examReport.js';
 import {
   createWeeklyFeedbackReportCsv,
   getWeeklyFeedbackReport,
@@ -117,12 +120,6 @@ const createStudent = (id = 'student-1', name = 'Student 1') => ({
   },
   lastBossDamage: undefined as number | undefined,
   lastBossFairScore: undefined as number | undefined,
-});
-
-const createDailyTaskReflection = (text = 'I completed the task and checked my work.') => ({
-  competency: 'assignmentQuality' as const,
-  assessment: 'progressing' as const,
-  text,
 });
 
 const createBoss = () => ({
@@ -465,9 +462,6 @@ test('claimDailyTaskForStudent grants reward once per day and grows streak', () 
     createStudent(),
     Date.UTC(2026, 2, 29, 1, 0, 0),
     700,
-    undefined,
-    undefined,
-    createDailyTaskReflection(),
   );
 
   assert.equal(first.claimed, true);
@@ -479,9 +473,6 @@ test('claimDailyTaskForStudent grants reward once per day and grows streak', () 
     first.student,
     Date.UTC(2026, 2, 29, 8, 0, 0),
     700,
-    undefined,
-    undefined,
-    createDailyTaskReflection(),
   );
   assert.equal(secondSameDay.claimed, false);
 
@@ -489,63 +480,24 @@ test('claimDailyTaskForStudent grants reward once per day and grows streak', () 
     first.student,
     Date.UTC(2026, 2, 30, 1, 0, 0),
     700,
-    undefined,
-    undefined,
-    createDailyTaskReflection('I improved how I checked the next task.'),
   );
   assert.equal(nextDay.claimed, true);
   assert.equal(nextDay.rewardPoints, 35);
   assert.equal(nextDay.student.dailyProgress?.streak, 2);
 });
 
-test('daily task requires and stores a student reflection before granting its reward', () => {
+test('daily task grants its reward without collecting feedback data', () => {
   const now = Date.UTC(2026, 6, 28, 2, 0, 0);
-  const missingReflection = claimDailyTaskForStudent(
-    createStudent('a', 'Alpha'),
-    now,
-    700,
-    'Homework Completion Task',
-  );
-  assert.equal(missingReflection.claimed, false);
-  assert.equal(missingReflection.reflectionRequired, true);
-  assert.equal(missingReflection.student.points, 200);
-  assert.deepEqual(missingReflection.student.pointAdjustmentRecords, []);
-
-  const blankReflection = claimDailyTaskForStudent(
-    createStudent('a', 'Alpha'),
-    now,
-    700,
-    'Homework Completion Task',
-    undefined,
-    createDailyTaskReflection('   '),
-  );
-  assert.equal(blankReflection.claimed, false);
-  assert.equal(blankReflection.reflectionRequired, true);
-  assert.equal(blankReflection.student.points, 200);
-
   const result = claimDailyTaskForStudent(
     createStudent('a', 'Alpha'),
     now,
     700,
     'Homework Completion Task',
-    undefined,
-    {
-      competency: 'growth',
-      assessment: 'confident',
-      text: '  I completed the task and can explain my next step.  ',
-    },
   );
 
   assert.equal(result.claimed, true);
-  assert.deepEqual(result.student.dailyProgress?.reflections?.[0], {
-    id: result.student.dailyProgress?.reflections?.[0].id,
-    date: '2026-07-28',
-    createdAt: now,
-    competency: 'growth',
-    author: 'student',
-    selfAssessment: 'confident',
-    text: 'I completed the task and can explain my next step.',
-  });
+  assert.equal(result.student.points, 230);
+  assert.equal(result.student.dailyProgress?.reflections, undefined);
   assert.deepEqual(result.student.pointAdjustmentRecords?.[0], {
     id: result.student.pointAdjustmentRecords?.[0].id,
     amount: 30,
@@ -555,10 +507,6 @@ test('daily task requires and stores a student reflection before granting its re
     reasonLabel: 'Homework Completion Task',
     competency: 'assignmentQuality',
   });
-
-  const insights = getWeeklyEducationInsights([result.student], now);
-  assert.equal(insights.reflectionCount, 0);
-  assert.equal(insights.competencyCounts.assignmentQuality, 1);
 });
 
 test('daily teacher point guardrails clamp and block positive and negative adjustments', () => {
@@ -731,7 +679,6 @@ test('daily tasks can trigger one catch-up bonus without receiving an unnecessar
     700,
     'Homework Completion Task',
     { timeZone: 'Asia/Taipei', schoolWeekdays: [1, 2, 3, 4, 5] },
-    createDailyTaskReflection(),
   );
   assert.equal(claimed.claimed, true);
   if (!claimed.claimed) throw new Error('Expected daily task claim');
@@ -865,7 +812,6 @@ test('daily task uses the school timezone instead of resetting at UTC midnight',
     700,
     undefined,
     options,
-    createDailyTaskReflection(),
   );
   assert.equal(first.claimed, true);
   assert.equal(first.student.dailyProgress?.lastClaimDate, '2026-08-25');
@@ -876,7 +822,6 @@ test('daily task uses the school timezone instead of resetting at UTC midnight',
     700,
     undefined,
     options,
-    createDailyTaskReflection(),
   );
   assert.equal(sameSchoolDay.claimed, false);
   assert.equal(sameSchoolDay.alreadyClaimed, true);
@@ -905,7 +850,6 @@ test('weekends, school holidays, and approved leave freeze the daily streak', ()
     700,
     undefined,
     baseOptions,
-    createDailyTaskReflection(),
   );
   assert.equal(friday.claimed, true);
 
@@ -923,7 +867,6 @@ test('weekends, school holidays, and approved leave freeze the daily streak', ()
     700,
     undefined,
     baseOptions,
-    createDailyTaskReflection(),
   );
   assert.equal(monday.claimed, true);
   assert.equal(monday.streak, 2);
@@ -934,7 +877,6 @@ test('weekends, school holidays, and approved leave freeze the daily streak', ()
     700,
     undefined,
     { ...baseOptions, holidayDates: ['2026-08-24'] },
-    createDailyTaskReflection(),
   );
   assert.equal(holidayTuesday.claimed, true);
   assert.equal(holidayTuesday.streak, 2);
@@ -945,7 +887,6 @@ test('weekends, school holidays, and approved leave freeze the daily streak', ()
     700,
     undefined,
     { ...baseOptions, excusedDates: ['2026-08-25'] },
-    createDailyTaskReflection(),
   );
   assert.equal(excusedTuesday.claimed, true);
   assert.equal(excusedTuesday.effectiveDate, '2026-08-26');
@@ -964,7 +905,6 @@ test('make-up claims are ordered, windowed, and auditable', () => {
     700,
     'Homework Completion Task',
     options,
-    createDailyTaskReflection('I completed Friday’s task.'),
   );
   assert.equal(friday.claimed, true);
 
@@ -974,7 +914,6 @@ test('make-up claims are ordered, windowed, and auditable', () => {
     700,
     'Homework Completion Task',
     options,
-    createDailyTaskReflection('I reviewed and completed the missed task.'),
   );
   assert.equal(makeup.claimed, true);
   assert.equal(makeup.claimKind, 'makeup');
@@ -982,8 +921,7 @@ test('make-up claims are ordered, windowed, and auditable', () => {
   assert.equal(makeup.streak, 2);
   assert.equal(makeup.student.pointAdjustmentRecords?.[0].claimKind, 'makeup');
   assert.equal(makeup.student.pointAdjustmentRecords?.[0].effectiveDate, '2026-08-24');
-  assert.equal(makeup.student.dailyProgress?.reflections?.[0].date, '2026-08-24');
-  assert.equal(makeup.student.dailyProgress?.reflections?.[0].author, 'student');
+  assert.equal(makeup.student.dailyProgress?.reflections, undefined);
 
   const secondClaimOnSameSchoolDay = claimDailyTaskForStudent(
     makeup.student,
@@ -991,7 +929,6 @@ test('make-up claims are ordered, windowed, and auditable', () => {
     700,
     undefined,
     options,
-    createDailyTaskReflection(),
   );
   assert.equal(secondClaimOnSameSchoolDay.claimed, false);
   assert.equal(secondClaimOnSameSchoolDay.alreadyClaimed, true);
@@ -1002,7 +939,6 @@ test('make-up claims are ordered, windowed, and auditable', () => {
     700,
     undefined,
     options,
-    createDailyTaskReflection(),
   );
   assert.equal(expiredMakeup.claimed, true);
   assert.equal(expiredMakeup.claimKind, 'current');
@@ -1064,19 +1000,103 @@ test('calendar settings and make-up audit fields are sanitized on import', () =>
   assert.equal(normalized.classes[0].students[0].pointAdjustmentRecords?.[1].effectiveDate, undefined);
 });
 
+test('legacy calendar settings migrate into independent class calendars', () => {
+  const normalized = normalizeAppData({
+    currentClassId: 'class-a',
+    settings: {
+      schoolTimeZone: 'Asia/Tokyo',
+      schoolWeekdays: [1, 3, 5],
+      schoolHolidayDates: ['2026-09-21'],
+      dailyTaskMakeupWindowDays: 4,
+    },
+    classes: [
+      { id: 'class-a', name: 'Class A', students: [] },
+      { id: 'class-b', name: 'Class B', students: [] },
+    ],
+  }, Date.UTC(2026, 8, 1));
+
+  assert.deepEqual(normalized.classes[0].dailyTaskCalendar, {
+    schoolTimeZone: 'Asia/Tokyo',
+    schoolWeekdays: [1, 3, 5],
+    schoolHolidayDates: ['2026-09-21'],
+    dailyTaskMakeupWindowDays: 4,
+  });
+  assert.deepEqual(
+    normalized.classes[1].dailyTaskCalendar,
+    normalized.classes[0].dailyTaskCalendar,
+  );
+  assert.notEqual(
+    normalized.classes[1].dailyTaskCalendar?.schoolWeekdays,
+    normalized.classes[0].dailyTaskCalendar?.schoolWeekdays,
+  );
+});
+
+test('class calendar updates and daily claims stay scoped to the selected class', () => {
+  const originalDateNow = Date.now;
+  const now = Date.UTC(2026, 8, 6, 2);
+  Date.now = () => now;
+
+  try {
+    const data = normalizeAppData({
+      currentClassId: 'class-a',
+      classes: [
+        {
+          id: 'class-a',
+          name: 'Monday Class',
+          students: [createStudent('a', 'Alpha')],
+          dailyTaskCalendar: {
+            schoolTimeZone: 'Asia/Taipei',
+            schoolWeekdays: [1],
+            schoolHolidayDates: [],
+            dailyTaskMakeupWindowDays: 0,
+          },
+        },
+        {
+          id: 'class-b',
+          name: 'Sunday Class',
+          students: [createStudent('b', 'Beta')],
+          dailyTaskCalendar: {
+            schoolTimeZone: 'Asia/Taipei',
+            schoolWeekdays: [0],
+            schoolHolidayDates: [],
+            dailyTaskMakeupWindowDays: 2,
+          },
+        },
+      ],
+    }, now);
+    useStore.setState({ data, toast: null, undoAction: null });
+
+    useStore.getState().updateClassDailyTaskCalendar('class-a', {
+      schoolTimeZone: 'Asia/Taipei',
+      schoolWeekdays: [2, 4],
+      schoolHolidayDates: ['2026-09-08', 'invalid'],
+      dailyTaskMakeupWindowDays: 99,
+    });
+
+    let classes = useStore.getState().data.classes;
+    assert.deepEqual(classes[0].dailyTaskCalendar, {
+      schoolTimeZone: 'Asia/Taipei',
+      schoolWeekdays: [2, 4],
+      schoolHolidayDates: ['2026-09-08'],
+      dailyTaskMakeupWindowDays: 30,
+    });
+    assert.deepEqual(classes[1].dailyTaskCalendar?.schoolWeekdays, [0]);
+    assert.equal(useStore.getState().claimDailyTask('a'), false);
+
+    useStore.getState().switchClass('class-b');
+    assert.equal(useStore.getState().claimDailyTask('b'), true);
+    classes = useStore.getState().data.classes;
+    assert.equal(classes[1].students[0].dailyProgress?.lastClaimDate, '2026-09-06');
+  } finally {
+    Date.now = originalDateNow;
+    resetStoreForSession(now + 1);
+  }
+});
+
 test('mentor daily feedback creates and then updates one record for the same day', () => {
   const now = Date.UTC(2026, 6, 28, 2, 0, 0);
-  const claimed = claimDailyTaskForStudent(
-    createStudent('a', 'Alpha'),
-    now,
-    700,
-    'Homework Completion Task',
-    undefined,
-    createDailyTaskReflection(),
-  );
-  assert.equal(claimed.claimed, true);
   const first = saveMentorDailyFeedbackForStudent(
-    claimed.student,
+    createStudent('a', 'Alpha'),
     {
       competency: 'growth',
       assessment: 'needsSupport',
@@ -1087,9 +1107,9 @@ test('mentor daily feedback creates and then updates one record for the same day
 
   assert.equal(first.saved, true);
   assert.equal(first.updated, false);
-  assert.equal(first.student.points, 230);
-  assert.equal(first.student.dailyProgress?.lastClaimDate, '2026-07-28');
-  assert.equal(first.student.dailyProgress?.streak, 1);
+  assert.equal(first.student.points, 200);
+  assert.equal(first.student.dailyProgress?.lastClaimDate, undefined);
+  assert.equal(first.student.dailyProgress?.streak, 0);
   assert.deepEqual(first.student.dailyProgress?.reflections?.[0], {
     id: first.student.dailyProgress?.reflections?.[0].id,
     date: '2026-07-28',
@@ -1112,10 +1132,10 @@ test('mentor daily feedback creates and then updates one record for the same day
   );
   assert.equal(second.saved, true);
   assert.equal(second.updated, true);
-  assert.equal(second.student.points, 230);
-  assert.equal(second.student.dailyProgress?.lastClaimDate, '2026-07-28');
-  assert.equal(second.student.dailyProgress?.streak, 1);
-  assert.equal(second.student.dailyProgress?.reflections?.length, 2);
+  assert.equal(second.student.points, 200);
+  assert.equal(second.student.dailyProgress?.lastClaimDate, undefined);
+  assert.equal(second.student.dailyProgress?.streak, 0);
+  assert.equal(second.student.dailyProgress?.reflections?.length, 1);
   assert.equal(
     second.student.dailyProgress?.reflections?.[0].id,
     first.student.dailyProgress?.reflections?.[0].id,
@@ -2770,7 +2790,7 @@ test('PII cache is opt-in and resetStoreForSession clears account-scoped state w
   );
 });
 
-test('formal discipline and level decrease require reasons and cannot be repeatedly clicked', () => {
+test('formal discipline requires a reason while quick level decrease uses an audit label and cannot repeat', () => {
   const data = normalizeAppData({
     currentClassId: 'class-a',
     classes: [{
@@ -2793,19 +2813,17 @@ test('formal discipline and level decrease require reasons and cannot be repeate
   });
 
   useStore.getState().disciplineStudent('a', '   ');
-  useStore.getState().decreaseLevel('a', '\n');
+  useStore.getState().decreaseLevel('a');
   let student = useStore.getState().data.classes[0].students[0];
   assert.equal(student.points, 200);
-  assert.equal(student.pet.level, 3);
-  assert.deepEqual(student.disciplineRecords, []);
-
-  useStore.getState().decreaseLevel('a', 'Repeatedly ignored the agreed classroom routine');
-  useStore.getState().decreaseLevel('a', 'Second click must be blocked');
-  student = useStore.getState().data.classes[0].students[0];
   assert.equal(student.pet.level, 2);
   assert.equal(student.disciplineRecords?.length, 1);
   assert.equal(student.disciplineRecords?.[0].type, 'levelDecrease');
-  assert.equal(student.disciplineRecords?.[0].reason, 'Repeatedly ignored the agreed classroom routine');
+  assert.equal(student.disciplineRecords?.[0].reason, '導師快速降級操作');
+  useStore.getState().decreaseLevel('a');
+  student = useStore.getState().data.classes[0].students[0];
+  assert.equal(student.pet.level, 2);
+  assert.equal(student.disciplineRecords?.length, 1);
   const pendingLevelUndo = useStore.getState().safetyUndoAction;
   assert.ok(pendingLevelUndo);
   useStore.setState({
@@ -3283,6 +3301,68 @@ test('learning evidence stays separate from game points and point history', () =
   assert.equal(nextClass.learningEvidenceRecords?.[0].source, 'manual');
 });
 
+test('daily task skips feedback collection while separate mentor feedback still syncs evidence', () => {
+  const originalDateNow = Date.now;
+  let now = Date.UTC(2026, 7, 31, 2, 0, 0);
+  Date.now = () => now;
+
+  try {
+    const data = normalizeAppData({
+      currentClassId: 'class-a',
+      classes: [{
+        id: 'class-a',
+        name: 'Class A',
+        students: [{
+          ...createStudent('a', 'Alpha'),
+          pet: { ...createStudent().pet, type: 'dog' },
+        }],
+        learningEvidenceRecords: [],
+      }],
+    }, now);
+    useStore.setState({
+      data,
+      toast: null,
+      undoAction: null,
+      showToast: () => undefined,
+    });
+
+    const claimed = useStore.getState().claimDailyTask('a');
+    assert.equal(claimed, true);
+
+    let currentClass = useStore.getState().data.classes[0];
+    assert.deepEqual(currentClass.students[0].dailyProgress?.reflections ?? [], []);
+    assert.deepEqual(currentClass.learningEvidenceRecords, []);
+
+    now += 60_000;
+    useStore.getState().saveMentorDailyFeedback('a', {
+      competency: 'growth',
+      assessment: 'needsSupport',
+      text: 'Needs a prompt to explain the next improvement step.',
+    });
+
+    currentClass = useStore.getState().data.classes[0];
+    const mentorFeedback = currentClass.students[0].dailyProgress?.reflections?.[0];
+    assert.equal(mentorFeedback?.author, 'mentor');
+    assert.equal(currentClass.learningEvidenceRecords?.length, 1);
+    assert.equal(currentClass.learningEvidenceRecords?.[0].sourceId, mentorFeedback?.id);
+
+    const analytics = computeStudentLearningAnalytics(
+      currentClass.students[0],
+      currentClass.learningEvidenceRecords ?? [],
+      now,
+    );
+    assert.equal(analytics.evidenceCount, 1);
+    assert.equal(analytics.recentEvidence[0]?.competency, 'growth');
+    assert.equal(analytics.recentEvidence[0]?.level, 'needsSupport');
+    assert.equal(
+      analytics.recentEvidence[0]?.title,
+      'Needs a prompt to explain the next improvement step.',
+    );
+  } finally {
+    Date.now = originalDateNow;
+  }
+});
+
 test('education metrics report evidence coverage, recovery, alignment, and student trend', () => {
   const now = Date.UTC(2026, 6, 29, 4, 0, 0);
   const students = [
@@ -3534,10 +3614,13 @@ test('individual exam report uses A4 print CSS and escapes teacher-provided cont
       id: 'exam-report',
       title: 'Progress <Review>',
       examDate: '2026-07-01',
-      items: [{ id: 'item-1', name: 'Reading', maxScore: 100 }],
+      items: [
+        { id: 'item-1', name: 'Reading', maxScore: 100 },
+        { id: 'item-2', name: 'Writing', maxScore: 100 },
+      ],
       results: [{
         studentId: 'a',
-        scores: { 'item-1': 72 },
+        scores: { 'item-1': 72, 'item-2': 84 },
         mentorComment: 'Practice <strong>daily</strong>.',
       }],
       createdAt: 1000,
@@ -3554,12 +3637,116 @@ test('individual exam report uses A4 print CSS and escapes teacher-provided cont
     exam,
     analysis,
     lang: 'zh',
+    itemIds: ['item-1'],
   });
 
   assert.match(html, /@page \{ size: A4 portrait;/);
   assert.match(html, /Progress &lt;Review&gt;/);
   assert.match(html, /Practice &lt;strong&gt;daily&lt;\/strong&gt;\./);
+  assert.match(html, /Reading/);
+  assert.doesNotMatch(html, /Writing/);
+  assert.match(html, /<strong>1 \/ 2<\/strong>/);
   assert.doesNotMatch(html, /<script>alert\(1\)<\/script>/);
+
+  const noItemRowsHtml = createExamReportHtml({
+    className: 'Class A',
+    studentName: 'Student A',
+    exam,
+    analysis,
+    lang: 'zh',
+    itemIds: [],
+  });
+  assert.doesNotMatch(noItemRowsHtml, /<h2>得分率<\/h2>/);
+  assert.doesNotMatch(noItemRowsHtml, /Reading|Writing/);
+  assert.match(noItemRowsHtml, /<strong>0 \/ 2<\/strong>/);
+});
+
+test('individual exam report independently scopes score and completed comment history', () => {
+  const createHistoryExam = (
+    id: string,
+    title: string,
+    examDate: string,
+    score: number,
+    mentorComment?: string,
+  ) => ({
+    id,
+    title,
+    examDate,
+    items: [{ id: `${id}-math`, name: 'Math', maxScore: 100 }],
+    results: [{
+      studentId: 'a',
+      scores: { [`${id}-math`]: score },
+      mentorComment,
+    }],
+    createdAt: Date.parse(`${examDate}T00:00:00Z`),
+  });
+  const exams = normalizeExamRecords(
+    [
+      createHistoryExam('future', 'Future Assessment', '2026-08-01', 99, 'Future comment'),
+      createHistoryExam('current', 'Current Assessment', '2026-07-01', 90, 'Current <comment>'),
+      createHistoryExam('june', 'June Assessment', '2026-06-01', 80),
+      createHistoryExam('may', 'May Assessment', '2026-05-01', 70, 'May comment'),
+      createHistoryExam('april', 'April Assessment', '2026-04-01', 60, 'April comment'),
+      createHistoryExam('march', 'March Assessment', '2026-03-01', 50, 'March comment'),
+    ],
+    new Set(['a']),
+    Date.UTC(2026, 7, 2),
+  );
+  const currentExam = exams.find((exam) => exam.id === 'current');
+  assert.ok(currentExam);
+  const analysis = computeExamStudentAnalysis(exams, currentExam.id, 'a');
+  assert.ok(analysis);
+
+  const selection = getExamReportSelection({
+    exams,
+    exam: currentExam,
+    analysis,
+    scoreRange: 'recent3',
+    commentRange: 'recent3',
+  });
+  assert.deepEqual(
+    selection.scoreEntries.map((entry) => entry.exam.id),
+    ['current', 'june', 'may'],
+  );
+  assert.deepEqual(
+    selection.commentEntries.map((entry) => entry.exam.id),
+    ['current', 'may', 'april'],
+  );
+
+  const scoreOnlyHtml = createExamReportHtml({
+    className: 'Class A',
+    studentName: 'Alpha',
+    exam: currentExam,
+    exams,
+    analysis,
+    lang: 'zh',
+    scoreRange: 'recent3',
+    commentRange: 'none',
+  });
+  assert.match(scoreOnlyHtml, /最近 3 次考試 \(3\)/);
+  assert.match(scoreOnlyHtml, /June Assessment/);
+  assert.match(scoreOnlyHtml, /May Assessment/);
+  assert.doesNotMatch(scoreOnlyHtml, /Future Assessment/);
+  assert.doesNotMatch(scoreOnlyHtml, /March Assessment/);
+  assert.doesNotMatch(scoreOnlyHtml, /<h2>導師評語<\/h2>/);
+  assert.doesNotMatch(scoreOnlyHtml, /Current &lt;comment&gt;/);
+
+  const commentHistoryHtml = createExamReportHtml({
+    className: 'Class A',
+    studentName: 'Alpha',
+    exam: currentExam,
+    exams,
+    analysis,
+    lang: 'zh',
+    scoreRange: 'current',
+    commentRange: 'recent3',
+  });
+  assert.match(commentHistoryHtml, /最近 3 筆評語 \(3\)/);
+  assert.match(commentHistoryHtml, /Current &lt;comment&gt;/);
+  assert.match(commentHistoryHtml, /May comment/);
+  assert.match(commentHistoryHtml, /April comment/);
+  assert.doesNotMatch(commentHistoryHtml, /March comment/);
+  assert.doesNotMatch(commentHistoryHtml, /Future comment/);
 });
 
 test('normalizeAppData preserves and sanitizes the economy event ledger', () => {

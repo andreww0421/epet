@@ -1,12 +1,28 @@
-import type { ExamStudentAnalysis } from './examAnalytics';
+import {
+  compareExamRecords,
+  computeExamStudentAnalysis,
+  type ExamStudentAnalysis,
+} from './examAnalytics';
 import type { ExamRecord, Language } from './store/types';
+
+export type ExamReportScoreRange = 'current' | 'recent3' | 'all';
+export type ExamReportCommentRange = ExamReportScoreRange | 'none';
+
+export type ExamReportSelection = {
+  scoreEntries: Array<{ exam: ExamRecord; analysis: ExamStudentAnalysis }>;
+  commentEntries: Array<{ exam: ExamRecord; comment: string }>;
+};
 
 type ExamReportInput = {
   className: string;
   studentName: string;
   exam: ExamRecord;
+  exams?: ExamRecord[];
   analysis: ExamStudentAnalysis;
   lang: Language;
+  scoreRange?: ExamReportScoreRange;
+  commentRange?: ExamReportCommentRange;
+  itemIds?: string[];
 };
 
 const escapeHtml = (value: unknown) =>
@@ -23,12 +39,78 @@ const formatNumber = (value: number) =>
 const formatPercent = (value: number | null) =>
   value == null ? '-' : `${Math.round(value)}%`;
 
+export const getExamReportSelection = ({
+  exams,
+  exam,
+  analysis,
+  scoreRange = 'current',
+  commentRange = 'current',
+}: Pick<ExamReportInput, 'exams' | 'exam' | 'analysis' | 'scoreRange' | 'commentRange'>): ExamReportSelection => {
+  const uniqueExams = new Map<string, ExamRecord>();
+  [exam, ...(exams ?? [])].forEach((candidate) => {
+    if (!uniqueExams.has(candidate.id)) uniqueExams.set(candidate.id, candidate);
+  });
+  const eligibleExams = [...uniqueExams.values()]
+    .filter(
+      (candidate) =>
+        candidate.id === exam.id || compareExamRecords(candidate, exam) < 0,
+    )
+    .sort((left, right) => compareExamRecords(right, left));
+  const scoreExams = scoreRange === 'current'
+    ? [exam]
+    : scoreRange === 'recent3'
+      ? eligibleExams.slice(0, 3)
+      : eligibleExams;
+  const scoreEntries = scoreExams
+    .map((candidate) => {
+      const candidateAnalysis = candidate.id === exam.id
+        ? analysis
+        : computeExamStudentAnalysis(
+            eligibleExams,
+            candidate.id,
+            analysis.studentId,
+          );
+      return candidateAnalysis ? { exam: candidate, analysis: candidateAnalysis } : null;
+    })
+    .filter(
+      (entry): entry is { exam: ExamRecord; analysis: ExamStudentAnalysis } => Boolean(entry),
+    );
+  const commentCandidates = commentRange === 'none'
+    ? []
+    : commentRange === 'current'
+      ? [exam]
+      : eligibleExams.filter((candidate) =>
+          candidate.results.some(
+            (result) =>
+              result.studentId === analysis.studentId &&
+              Boolean(result.mentorComment?.trim()),
+          ),
+        );
+  const limitedCommentCandidates = commentRange === 'recent3'
+    ? commentCandidates.slice(0, 3)
+    : commentCandidates;
+  const commentEntries = limitedCommentCandidates.map((candidate) => ({
+    exam: candidate,
+    comment:
+      candidate.id === exam.id
+        ? analysis.mentorComment
+        : candidate.results.find((result) => result.studentId === analysis.studentId)
+            ?.mentorComment?.trim() ?? '',
+  }));
+
+  return { scoreEntries, commentEntries };
+};
+
 export const createExamReportHtml = ({
   className,
   studentName,
   exam,
+  exams,
   analysis,
   lang,
+  scoreRange = 'current',
+  commentRange = 'current',
+  itemIds,
 }: ExamReportInput) => {
   const copy = lang === 'en'
     ? {
@@ -55,6 +137,19 @@ export const createExamReportHtml = ({
         none: 'None identified',
         mentorComment: 'Teacher comment',
         noComment: 'No teacher comment yet.',
+        reportScope: 'Report scope',
+        scoreScope: 'Scores',
+        commentScope: 'Comments',
+        itemScope: 'Item rows',
+        scoreHistory: 'Assessment history',
+        completion: 'Completed items',
+        currentScoreRange: 'Current assessment',
+        recentScoreRange: 'Latest 3 assessments',
+        allScoreRange: 'All assessments to this date',
+        currentCommentRange: 'Current comment',
+        recentCommentRange: 'Latest 3 comments',
+        allCommentRange: 'All comments to this date',
+        noCommentRange: 'Comments excluded',
         note: 'Trends use normalized percentages from entered assessment history and support instructional review only.',
       }
     : {
@@ -81,14 +176,49 @@ export const createExamReportHtml = ({
         none: '目前未辨識',
         mentorComment: '導師評語',
         noComment: '導師尚未補充評語。',
+        reportScope: '報表內容範圍',
+        scoreScope: '成績',
+        commentScope: '評語',
+        itemScope: '項目列',
+        scoreHistory: '歷次成績',
+        completion: '完成項目',
+        currentScoreRange: '本次考試',
+        recentScoreRange: '最近 3 次考試',
+        allScoreRange: '截至本次的全部考試',
+        currentCommentRange: '本次評語',
+        recentCommentRange: '最近 3 筆評語',
+        allCommentRange: '截至本次的全部評語',
+        noCommentRange: '不輸出評語',
         note: '趨勢依已輸入的歷次考試百分比計算，僅供教學回饋與學習支持使用。',
       };
+  const selection = getExamReportSelection({
+    exams,
+    exam,
+    analysis,
+    scoreRange,
+    commentRange,
+  });
+  const scoreRangeLabels: Record<ExamReportScoreRange, string> = {
+    current: copy.currentScoreRange,
+    recent3: copy.recentScoreRange,
+    all: copy.allScoreRange,
+  };
+  const commentRangeLabels: Record<ExamReportCommentRange, string> = {
+    current: copy.currentCommentRange,
+    recent3: copy.recentCommentRange,
+    all: copy.allCommentRange,
+    none: copy.noCommentRange,
+  };
   const trendLabel = copy[analysis.trend];
   const trendDelta =
     analysis.trendDelta == null
       ? ''
       : `${analysis.trendDelta >= 0 ? '+' : ''}${analysis.trendDelta.toFixed(1)}%`;
-  const itemRows = analysis.itemAnalyses.map((item) => {
+  const itemIdSet = itemIds == null ? null : new Set(itemIds);
+  const selectedItemAnalyses = analysis.itemAnalyses.filter(
+    (item) => itemIdSet == null || itemIdSet.has(item.itemId),
+  );
+  const itemRows = selectedItemAnalyses.map((item) => {
     const itemTrend =
       item.trendDelta == null
         ? '-'
@@ -118,9 +248,104 @@ export const createExamReportHtml = ({
     items.length > 0
       ? items.map((item) => `<span class="tag">${escapeHtml(item.name)}</span>`).join('')
       : `<span class="empty">${escapeHtml(copy.none)}</span>`;
-  const comment = analysis.mentorComment
+  const selectedStrengthItems = analysis.strengthItems.filter(
+    (item) => itemIdSet == null || itemIdSet.has(item.itemId),
+  );
+  const selectedWeaknessItems = analysis.weaknessItems.filter(
+    (item) => itemIdSet == null || itemIdSet.has(item.itemId),
+  );
+  const selectedMissingItems = analysis.missingItems.filter(
+    (item) => itemIdSet == null || itemIdSet.has(item.itemId),
+  );
+  const scoreHistoryRows = selection.scoreEntries.map((entry) => {
+    const entryDelta = entry.analysis.trendDelta == null
+      ? '-'
+      : `${entry.analysis.trendDelta >= 0 ? '+' : ''}${entry.analysis.trendDelta.toFixed(1)}%`;
+    return `
+      <tr>
+        <td>${escapeHtml(entry.exam.title)}</td>
+        <td>${escapeHtml(entry.exam.examDate)}</td>
+        <td class="numeric">${formatPercent(entry.analysis.overallPercent)}</td>
+        <td class="numeric">${escapeHtml(entryDelta)}</td>
+        <td class="numeric">${entry.analysis.completedItemCount} / ${entry.analysis.totalItemCount}</td>
+      </tr>
+    `;
+  }).join('');
+  const scoreHistorySection = scoreRange === 'current'
+    ? ''
+    : `
+      <section class="section history-section">
+        <h2>${escapeHtml(copy.scoreHistory)}</h2>
+        <table class="history-table">
+          <thead>
+            <tr>
+              <th>${escapeHtml(copy.assessment)}</th>
+              <th>${escapeHtml(copy.date)}</th>
+              <th class="numeric">${escapeHtml(copy.overall)}</th>
+              <th class="numeric">${escapeHtml(copy.trend)}</th>
+              <th class="numeric">${escapeHtml(copy.completion)}</th>
+            </tr>
+          </thead>
+          <tbody>${scoreHistoryRows}</tbody>
+        </table>
+      </section>
+    `;
+  const nonEmptyCommentEntries = selection.commentEntries.filter(
+    (entry) => entry.comment.trim(),
+  );
+  const currentComment = analysis.mentorComment
     ? escapeHtml(analysis.mentorComment).replaceAll('\n', '<br>')
     : `<span class="empty">${escapeHtml(copy.noComment)}</span>`;
+  const commentHistory = nonEmptyCommentEntries.length > 0
+    ? nonEmptyCommentEntries.map((entry) => `
+        <article class="comment-entry">
+          <div class="comment-meta">
+            <strong>${escapeHtml(entry.exam.title)}</strong>
+            <span>${escapeHtml(entry.exam.examDate)}</span>
+          </div>
+          <div>${escapeHtml(entry.comment).replaceAll('\n', '<br>')}</div>
+        </article>
+      `).join('')
+    : `<div class="comment"><span class="empty">${escapeHtml(copy.noComment)}</span></div>`;
+  const commentSection = commentRange === 'none'
+    ? ''
+    : commentRange === 'current'
+      ? `
+        <section class="section">
+          <h2>${escapeHtml(copy.mentorComment)}</h2>
+          <div class="comment">${currentComment}</div>
+        </section>
+      `
+      : `
+        <section class="section comment-section">
+          <h2>${escapeHtml(copy.mentorComment)}</h2>
+          <div class="comment-history">${commentHistory}</div>
+        </section>
+      `;
+  const itemDetailSection = selectedItemAnalyses.length === 0
+    ? ''
+    : `
+      <section class="section">
+        <h2>${escapeHtml(copy.performance)}</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>${escapeHtml(copy.item)}</th>
+              <th class="numeric">${escapeHtml(copy.score)}</th>
+              <th>${escapeHtml(copy.performance)}</th>
+              <th class="numeric">${escapeHtml(copy.itemTrend)}</th>
+            </tr>
+          </thead>
+          <tbody>${itemRows}</tbody>
+        </table>
+      </section>
+
+      <section class="section profile">
+        <div class="profile-card"><h3>${escapeHtml(copy.strengths)}</h3>${list(selectedStrengthItems)}</div>
+        <div class="profile-card"><h3>${escapeHtml(copy.weaknesses)}</h3>${list(selectedWeaknessItems)}</div>
+        <div class="profile-card"><h3>${escapeHtml(copy.missing)}</h3>${list(selectedMissingItems)}</div>
+      </section>
+    `;
 
   return `<!doctype html>
 <html lang="${lang === 'en' ? 'en' : 'zh-Hant'}">
@@ -129,7 +354,7 @@ export const createExamReportHtml = ({
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${escapeHtml(studentName)} - ${escapeHtml(exam.title)}</title>
   <style>
-    @page { size: A4 portrait; margin: 12mm 14mm 14mm; }
+    @page { size: A4 portrait; margin: 9mm 14mm; }
     * { box-sizing: border-box; }
     html { background: #e2e8f0; }
     body {
@@ -172,6 +397,25 @@ export const createExamReportHtml = ({
     .identity div { display: flex; justify-content: space-between; gap: 12px; margin-top: 3px; }
     .identity span { color: #64748b; }
     .identity strong { text-align: right; }
+    .scope {
+      display: grid;
+      grid-template-columns: auto repeat(3, 1fr);
+      gap: 1px;
+      margin-top: 10px;
+      border: 1px solid #cbd5e1;
+      background: #cbd5e1;
+    }
+    .scope-title, .scope-item { padding: 7px 9px; background: #f8fafc; }
+    .scope-title {
+      display: flex;
+      align-items: center;
+      color: #0f766e;
+      font-size: 8.5pt;
+      font-weight: 900;
+      letter-spacing: .04em;
+    }
+    .scope-item span { display: block; color: #64748b; font-size: 8pt; }
+    .scope-item strong { display: block; margin-top: 1px; font-size: 8.5pt; }
     .metrics {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
@@ -180,20 +424,22 @@ export const createExamReportHtml = ({
       background: #cbd5e1;
       border: 1px solid #cbd5e1;
     }
-    .metric { min-height: 28mm; padding: 10px 12px; background: #f8fafc; }
+    .metric { min-height: 24mm; padding: 10px 12px; background: #f8fafc; }
     .metric-label { color: #64748b; font-size: 8.5pt; font-weight: 700; }
     .metric-value { margin-top: 2px; font-size: 22pt; font-weight: 900; line-height: 1; }
     .metric-note { margin-top: 5px; color: #475569; font-size: 8.5pt; }
     .trend-improving .metric-value { color: #047857; }
     .trend-declining .metric-value { color: #be123c; }
     .trend-stable .metric-value, .trend-first .metric-value { color: #0f766e; }
-    .section { margin-top: 14px; break-inside: avoid; }
+    .section { margin-top: 11px; break-inside: avoid; }
     .section h2 {
       margin: 0 0 7px;
       color: #0f172a;
       font-size: 11pt;
       letter-spacing: .02em;
+      break-after: avoid;
     }
+    .history-section, .comment-section { break-inside: auto; }
     table { width: 100%; border-collapse: collapse; table-layout: fixed; }
     th {
       padding: 6px 7px;
@@ -206,15 +452,22 @@ export const createExamReportHtml = ({
     th:nth-child(2) { width: 20%; }
     th:nth-child(3) { width: 36%; }
     th:nth-child(4) { width: 17%; }
+    .history-table th:nth-child(1) { width: 31%; }
+    .history-table th:nth-child(2) { width: 18%; }
+    .history-table th:nth-child(3) { width: 17%; }
+    .history-table th:nth-child(4) { width: 17%; }
+    .history-table th:nth-child(5) { width: 17%; }
     td { padding: 6px 7px; border-bottom: 1px solid #e2e8f0; vertical-align: middle; }
     tbody tr:nth-child(even) td { background: #f8fafc; }
+    thead { display: table-header-group; }
+    tr { break-inside: avoid; }
     .numeric { text-align: right; font-variant-numeric: tabular-nums; }
     .negative { color: #be123c; font-weight: 800; }
     .score-line { display: grid; grid-template-columns: 1fr 34px; gap: 8px; align-items: center; }
     .score-track { height: 6px; overflow: hidden; border-radius: 99px; background: #e2e8f0; }
     .score-track span { display: block; height: 100%; border-radius: inherit; background: #0f766e; }
     .profile { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 9px; }
-    .profile-card { min-height: 25mm; padding: 9px 10px; border: 1px solid #dbe4e6; background: #f8fafc; }
+    .profile-card { min-height: 21mm; padding: 9px 10px; border: 1px solid #dbe4e6; background: #f8fafc; }
     .profile-card h3 { margin: 0 0 7px; color: #475569; font-size: 8.5pt; }
     .tag {
       display: inline-block;
@@ -235,10 +488,25 @@ export const createExamReportHtml = ({
       background: #f0fdfa;
       white-space: normal;
     }
+    .comment-history { display: grid; gap: 5px; }
+    .comment-entry {
+      padding: 7px 11px;
+      border-left: 4px solid #0f766e;
+      background: #f0fdfa;
+      break-inside: avoid;
+    }
+    .comment-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 4px;
+      color: #475569;
+      font-size: 8.5pt;
+    }
     .empty { color: #94a3b8; font-style: italic; }
     .footer {
-      margin-top: 14px;
-      padding-top: 8px;
+      margin-top: 6px;
+      padding-top: 4px;
       border-top: 1px solid #cbd5e1;
       color: #64748b;
       font-size: 8pt;
@@ -264,6 +532,22 @@ export const createExamReportHtml = ({
       </div>
     </header>
 
+    <section class="scope" aria-label="${escapeHtml(copy.reportScope)}">
+      <div class="scope-title">${escapeHtml(copy.reportScope)}</div>
+      <div class="scope-item">
+        <span>${escapeHtml(copy.scoreScope)}</span>
+        <strong>${escapeHtml(scoreRangeLabels[scoreRange])} (${selection.scoreEntries.length})</strong>
+      </div>
+      <div class="scope-item">
+        <span>${escapeHtml(copy.commentScope)}</span>
+        <strong>${escapeHtml(commentRangeLabels[commentRange])} (${nonEmptyCommentEntries.length})</strong>
+      </div>
+      <div class="scope-item">
+        <span>${escapeHtml(copy.itemScope)}</span>
+        <strong>${selectedItemAnalyses.length} / ${analysis.itemAnalyses.length}</strong>
+      </div>
+    </section>
+
     <section class="metrics">
       <div class="metric">
         <div class="metric-label">${escapeHtml(copy.overall)}</div>
@@ -281,31 +565,11 @@ export const createExamReportHtml = ({
       </div>
     </section>
 
-    <section class="section">
-      <h2>${escapeHtml(copy.performance)}</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>${escapeHtml(copy.item)}</th>
-            <th class="numeric">${escapeHtml(copy.score)}</th>
-            <th>${escapeHtml(copy.performance)}</th>
-            <th class="numeric">${escapeHtml(copy.itemTrend)}</th>
-          </tr>
-        </thead>
-        <tbody>${itemRows}</tbody>
-      </table>
-    </section>
+    ${scoreHistorySection}
 
-    <section class="section profile">
-      <div class="profile-card"><h3>${escapeHtml(copy.strengths)}</h3>${list(analysis.strengthItems)}</div>
-      <div class="profile-card"><h3>${escapeHtml(copy.weaknesses)}</h3>${list(analysis.weaknessItems)}</div>
-      <div class="profile-card"><h3>${escapeHtml(copy.missing)}</h3>${list(analysis.missingItems)}</div>
-    </section>
+    ${itemDetailSection}
 
-    <section class="section">
-      <h2>${escapeHtml(copy.mentorComment)}</h2>
-      <div class="comment">${comment}</div>
-    </section>
+    ${commentSection}
     <footer class="footer">${escapeHtml(copy.note)}</footer>
   </main>
 </body>

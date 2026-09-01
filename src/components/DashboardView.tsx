@@ -108,6 +108,7 @@ const READ_ONLY_MUTATION_ACTIONS = new Set([
   'togglePinnedReason',
   'undoLastPointAdjustment',
   'undoLastSafetyAction',
+  'updateClassDailyTaskCalendar',
   'updateSettings',
   'warnStudent',
 ]);
@@ -149,6 +150,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       undoLastPointAdjustment: state.undoLastPointAdjustment,
       safetyUndoAction: state.safetyUndoAction,
       undoLastSafetyAction: state.undoLastSafetyAction,
+      updateClassDailyTaskCalendar: state.updateClassDailyTaskCalendar,
       updateSettings: state.updateSettings,
       warnStudent: state.warnStudent,
     })),
@@ -503,6 +505,33 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     setPointAdjustmentTarget(null);
   }, [currentClass?.id]);
   useEffect(() => {
+    const calendar = currentClass?.dailyTaskCalendar;
+    setSchoolTimeZone(
+      calendar?.schoolTimeZone ?? data.settings?.schoolTimeZone ?? DEFAULT_SCHOOL_TIME_ZONE,
+    );
+    setSchoolWeekdays(
+      calendar?.schoolWeekdays ?? data.settings?.schoolWeekdays ?? [...DEFAULT_SCHOOL_WEEKDAYS],
+    );
+    setSchoolHolidayDatesText(
+      (calendar?.schoolHolidayDates ?? data.settings?.schoolHolidayDates ?? []).join('\n'),
+    );
+    setDailyTaskMakeupWindowDays(
+      calendar?.dailyTaskMakeupWindowDays ??
+        data.settings?.dailyTaskMakeupWindowDays ??
+        DEFAULT_DAILY_TASK_MAKEUP_WINDOW_DAYS,
+    );
+  }, [
+    currentClass?.dailyTaskCalendar?.dailyTaskMakeupWindowDays,
+    currentClass?.dailyTaskCalendar?.schoolHolidayDates,
+    currentClass?.dailyTaskCalendar?.schoolTimeZone,
+    currentClass?.dailyTaskCalendar?.schoolWeekdays,
+    currentClass?.id,
+    data.settings?.dailyTaskMakeupWindowDays,
+    data.settings?.schoolHolidayDates,
+    data.settings?.schoolTimeZone,
+    data.settings?.schoolWeekdays,
+  ]);
+  useEffect(() => {
     if (selectAllCheckboxRef.current) {
       selectAllCheckboxRef.current.indeterminate = someStudentsSelected;
     }
@@ -611,16 +640,31 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           '隊伍戰的平衡刻意比單人戰保守，重點是鼓勵合作，而不是讓高等級組合直接滾雪球。',
         ];
 
+  const saveCurrentClassDailyTaskCalendar = (announce = true) => {
+    if (!currentClass) return;
+    store.updateClassDailyTaskCalendar(currentClass.id, {
+      schoolTimeZone,
+      schoolWeekdays,
+      schoolHolidayDates: schoolHolidayDatesText.split(/[\s,]+/).filter(Boolean),
+      dailyTaskMakeupWindowDays: Number(dailyTaskMakeupWindowDays),
+    });
+    if (announce) {
+      store.showToast(
+        lang === 'en'
+          ? `${currentClass.name} daily task calendar saved.`
+          : `${currentClass.name}的每日任務校曆已儲存`,
+        'success',
+      );
+    }
+  };
+
   const handleSaveSettings = () => {
+    saveCurrentClassDailyTaskCalendar(false);
     store.updateSettings({
       decayAmount: Number(decayAmount),
       decayType,
       inclusiveMode,
       pauseDecayOnWeekends,
-      schoolTimeZone,
-      schoolWeekdays,
-      schoolHolidayDates: schoolHolidayDatesText.split(/[\s,]+/).filter(Boolean),
-      dailyTaskMakeupWindowDays: Number(dailyTaskMakeupWindowDays),
       pointGuardrailsEnabled,
       dailyPositivePointLimit: Number(dailyPositivePointLimit),
       dailyNegativePointLimit: Number(dailyNegativePointLimit),
@@ -1399,11 +1443,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           <button
                             type="button"
                             onClick={() => {
-                              requestSafetyAction(
-                                tLang.decreaseLevel,
-                                student.name,
-                                (reason) => store.decreaseLevel(student.id, reason),
+                              const confirmed = window.confirm(
+                                lang === 'en'
+                                  ? `Decrease ${student.name}'s pet by one level? You can undo this for 10 seconds.`
+                                  : `確定將 ${student.name} 的寵物降低 1 級？完成後 10 秒內可撤銷。`,
                               );
+                              if (confirmed) store.decreaseLevel(student.id);
                             }}
                             disabled={
                               (student.pet.level || 1) <= 1 ||
@@ -1472,7 +1517,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         lang={lang}
         learningEvidence={currentClass?.learningEvidenceRecords ?? []}
         onSaveMentorDailyFeedback={store.saveMentorDailyFeedback}
-        schoolTimeZone={data.settings?.schoolTimeZone}
+        schoolTimeZone={
+          currentClass?.dailyTaskCalendar?.schoolTimeZone ?? data.settings?.schoolTimeZone
+        }
         students={currentStudents}
         tLang={tLang}
         visible={dashboardSection === 'records'}
@@ -1858,6 +1905,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
         <DailyTaskCalendarSettings
           lang={lang}
+          classes={data.classes.map((classroom) => ({ id: classroom.id, name: classroom.name }))}
+          selectedClassId={currentClass?.id ?? ''}
+          onClassChange={store.switchClass}
           timeZone={schoolTimeZone}
           onTimeZoneChange={setSchoolTimeZone}
           schoolWeekdays={schoolWeekdays}
@@ -1868,6 +1918,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           onMakeupWindowDaysChange={setDailyTaskMakeupWindowDays}
           students={currentStudents}
           onSetExcusedDate={store.setDailyTaskExcusedDate}
+          onSave={() => saveCurrentClassDailyTaskCalendar(true)}
         />
 
         <PointGuardrailSettings

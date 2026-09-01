@@ -10,6 +10,7 @@ import {
   computeStudentLearningAnalytics,
   type LearningCompetency,
   type LearningEvidenceLevel,
+  type LearningEvidenceSource,
   type LearningEvidenceType,
 } from '../../../shared/education';
 import { translations } from '../../i18n/translations';
@@ -112,10 +113,20 @@ export const StudentAnalyticsPanel: React.FC<StudentAnalyticsPanelProps> = ({
     };
   }, [currentClass, evidence, selectedStudent]);
 
-  const studentAnalytics =
-    remoteStudentAnalytics?.evidenceCount === localStudentAnalytics?.evidenceCount
-      ? remoteStudentAnalytics
-      : localStudentAnalytics;
+  const remoteStudentEvidenceIsCurrent = Boolean(
+    remoteStudentAnalytics &&
+    localStudentAnalytics &&
+    remoteStudentAnalytics.evidenceCount === localStudentAnalytics.evidenceCount &&
+    remoteStudentAnalytics.recentEvidence.length === localStudentAnalytics.recentEvidence.length &&
+    remoteStudentAnalytics.recentEvidence.every(
+      (record, index) =>
+        record.id === localStudentAnalytics.recentEvidence[index]?.id &&
+        record.revision === localStudentAnalytics.recentEvidence[index]?.revision,
+    ),
+  );
+  const studentAnalytics = remoteStudentEvidenceIsCurrent
+    ? remoteStudentAnalytics
+    : localStudentAnalytics;
   const classMetrics =
     remoteClassMetrics?.evidenceCount === localClassMetrics.evidenceCount
       ? remoteClassMetrics
@@ -138,6 +149,11 @@ export const StudentAnalyticsPanel: React.FC<StudentAnalyticsPanelProps> = ({
     reflection: tLang.learningEvidenceReflection,
     project: tLang.learningEvidenceProject,
     assessment: tLang.learningEvidenceAssessment,
+  };
+  const sourceLabels: Record<LearningEvidenceSource, string> = {
+    manual: tLang.learningEvidenceManualSource,
+    mentorDailyFeedback: tLang.dailyReflectionRecord,
+    import: tLang.learningEvidenceImportSource,
   };
 
   if (!currentClass) return null;
@@ -279,7 +295,17 @@ export const StudentAnalyticsPanel: React.FC<StudentAnalyticsPanelProps> = ({
                             <span className="rounded bg-indigo-50 px-2 py-0.5 text-xs font-bold text-indigo-700">
                               {levelLabels[record.level]}
                             </span>
+                            <span className={`rounded px-2 py-0.5 text-xs font-bold ${
+                              record.source === 'mentorDailyFeedback'
+                                ? 'bg-emerald-50 text-emerald-800'
+                                : 'bg-slate-100 text-slate-600'
+                            }`}>
+                              {sourceLabels[record.source]}
+                            </span>
                           </div>
+                          {record.note && record.note !== record.title && (
+                            <p className="mt-1 text-sm leading-5 text-slate-600">{record.note}</p>
+                          )}
                           <p className="mt-1 text-xs text-slate-500">
                             {new Date(record.createdAt).toLocaleDateString(
                               lang === 'en' ? 'en-US' : 'zh-TW',

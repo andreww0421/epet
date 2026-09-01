@@ -22,11 +22,11 @@ import {
 import {
   AppData, Student, DisciplineRecord, PointAdjustmentRecord, WorldBoss, ClassGoal,
   PointReasonOption, FeedbackReasonHistoryEntry, LearningCompetency, LearningEvidenceRecord,
-  EconomyEventRecord,
+  EconomyEventRecord, ClassDailyTaskCalendar,
 } from './types';
 import { normalizeExamRecords } from '../examAnalytics';
 import {
-  createLearningEvidenceRecord,
+  createMentorFeedbackEvidenceRecord,
   normalizeLearningEvidenceRecords,
 } from '../../shared/education';
 import {
@@ -58,6 +58,29 @@ export const computeBadges = (student: Pick<Student, 'points' | 'pet' | 'stats'>
   if ((student.pet.level || 1) >= 10) badges.add('badgeMaxLevel');
 
   return Array.from(badges);
+};
+
+export const normalizeClassDailyTaskCalendar = (
+  value: unknown,
+  fallback?: Partial<ClassDailyTaskCalendar>,
+): ClassDailyTaskCalendar => {
+  const calendar = value && typeof value === 'object'
+    ? value as Partial<ClassDailyTaskCalendar>
+    : {};
+  return {
+    schoolTimeZone: normalizeSchoolTimeZone(
+      calendar.schoolTimeZone ?? fallback?.schoolTimeZone,
+    ),
+    schoolWeekdays: normalizeSchoolWeekdays(
+      calendar.schoolWeekdays ?? fallback?.schoolWeekdays,
+    ),
+    schoolHolidayDates: normalizeDateKeyList(
+      calendar.schoolHolidayDates ?? fallback?.schoolHolidayDates,
+    ),
+    dailyTaskMakeupWindowDays: normalizeDailyTaskMakeupWindowDays(
+      calendar.dailyTaskMakeupWindowDays ?? fallback?.dailyTaskMakeupWindowDays,
+    ),
+  };
 };
 
 const normalizeLedgerPenaltyStatus = (raw: unknown): SafetyActionSnapshot['penaltyStatus'] => {
@@ -357,6 +380,7 @@ export const createInitialData = (now = Date.now()): AppData => ({
       id: 'default',
       name: DEFAULT_CLASS_NAME,
       students: [],
+      dailyTaskCalendar: normalizeClassDailyTaskCalendar(undefined),
       learningEvidenceRecords: [],
       examRecords: [],
     },
@@ -683,6 +707,14 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
   const initialData = createInitialData(now);
   const rawSettings = raw?.settings ?? {};
   const schoolTimeZone = normalizeSchoolTimeZone(rawSettings?.schoolTimeZone);
+  const legacyDailyTaskCalendar = normalizeClassDailyTaskCalendar(undefined, {
+    schoolTimeZone,
+    schoolWeekdays: normalizeSchoolWeekdays(rawSettings?.schoolWeekdays),
+    schoolHolidayDates: normalizeDateKeyList(rawSettings?.schoolHolidayDates),
+    dailyTaskMakeupWindowDays: normalizeDailyTaskMakeupWindowDays(
+      rawSettings?.dailyTaskMakeupWindowDays,
+    ),
+  });
   const requestedPauseDecayOnWeekends = rawSettings?.pauseDecayOnWeekends !== false;
   const requestedPetCareMode = rawSettings?.petCareMode === 'death' ? 'death' : 'rest';
   const requestedPublicNameMode = rawSettings?.publicNameMode === 'full' ? 'full' : 'masked';
@@ -794,27 +826,18 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
             !existingSourceIds.has(`mentorDailyFeedback:${reflection.id}`),
         )
         .map((reflection): LearningEvidenceRecord =>
-          createLearningEvidenceRecord(
+          createMentorFeedbackEvidenceRecord(
             classId,
             student.id,
             {
+              id: reflection.id,
               competency: reflection.competency,
-              level:
-                reflection.mentorAssessment === 'needsSupport'
-                  ? 'needsSupport'
-                  : reflection.mentorAssessment === 'confident'
-                    ? 'mastered'
-                    : 'progressing',
-              evidenceType: 'observation',
-              title: reflection.text || 'Mentor daily feedback',
-              note: reflection.text,
-              actor: 'mentor',
-              source: 'mentorDailyFeedback',
-              sourceId: reflection.id,
-              rubricVersion: 'legacy-1.0',
+              assessment: reflection.mentorAssessment,
+              text: reflection.text,
+              createdAt: reflection.createdAt,
             },
-            reflection.createdAt,
-            `evidence-${reflection.id}`,
+            explicitEvidence,
+            'legacy-1.0',
           ),
         ),
     );
@@ -829,6 +852,10 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
       id: classId,
       name: typeof classItem?.name === 'string' && classItem.name.trim() ? classItem.name.trim() : DEFAULT_CLASS_NAME,
       students: sanitizedStudents,
+      dailyTaskCalendar: normalizeClassDailyTaskCalendar(
+        classItem?.dailyTaskCalendar,
+        legacyDailyTaskCalendar,
+      ),
       activeBoss: normalizeWorldBoss(classItem?.activeBoss, index, now),
       classGoals,
       learningEvidenceRecords,

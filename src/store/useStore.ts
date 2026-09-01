@@ -5,9 +5,12 @@ import {
   PointAdjustmentSource, BattleMode, Language, BossRewardTier, BossVictoryResult,
   ClassGoal, LearningCompetency, BossReward, BossAttackMode, MentorDailyFeedbackInput,
   PointReasonOption, FeedbackReasonHistoryEntry, LearningEvidenceInput, ExamRecord,
-  DailyTaskReflectionInput,
+  DailyReflection, LearningEvidenceRecord, ClassDailyTaskCalendar,
 } from './types';
-import { createLearningEvidenceRecord } from '../../shared/education';
+import {
+  createLearningEvidenceRecord,
+  createMentorFeedbackEvidenceRecord,
+} from '../../shared/education';
 import { 
   translations, STORAGE_KEY, DEFAULT_MAX_TEAM_SIZE,
   DEFAULT_BATTLE_MODE, petNames
@@ -15,7 +18,7 @@ import {
 import {
   normalizeAppData, applyDecay, getRandomPetType, 
   sanitizeTeamAssignments, getTeamMembers, createTeamId, normalizeWorldBoss,
-  normalizePointReasonOptions,
+  normalizePointReasonOptions, normalizeClassDailyTaskCalendar,
 } from './utils';
 import { normalizeExamRecords } from '../examAnalytics';
 import { getPublicStudentName } from '../studentPresentation';
@@ -123,6 +126,10 @@ type StoreState = {
   deleteClass: (classId: string) => void;
   importData: (importedData: any, now?: number) => void;
   updateSettings: (settings: Partial<NonNullable<AppData['settings']>>) => void;
+  updateClassDailyTaskCalendar: (
+    classId: string,
+    calendar: ClassDailyTaskCalendar,
+  ) => void;
   setClassGoal: (
     goal: Pick<ClassGoal, 'title' | 'competency' | 'targetCount'> | null,
     goalId?: string,
@@ -153,7 +160,7 @@ type StoreState = {
   replacePointReasons: (reasons: PointReasonOption[]) => void;
   togglePinnedReason: (reasonId: string) => void;
   undoLastPointAdjustment: () => void;
-  decreaseLevel: (studentId: string, reason: string) => void;
+  decreaseLevel: (studentId: string, reason?: string) => void;
   warnStudent: (studentId: string) => void;
   removeWarning: (studentId: string) => void;
   disciplineStudent: (studentId: string, reason: string) => void;
@@ -164,7 +171,7 @@ type StoreState = {
   // Interactions
   feedPet: (studentId: string) => void;
   playWithPet: (studentId: string) => void;
-  claimDailyTask: (studentId: string, reflection: DailyTaskReflectionInput) => boolean;
+  claimDailyTask: (studentId: string) => boolean;
   setDailyTaskExcusedDate: (studentId: string, date: string, excused: boolean) => void;
   saveMentorDailyFeedback: (studentId: string, feedback: MentorDailyFeedbackInput) => void;
   addLearningEvidence: (studentId: string, evidence: LearningEvidenceInput) => void;
@@ -205,6 +212,7 @@ let safetyUndoTimer: ReturnType<typeof setTimeout> | undefined;
 const POINT_UNDO_WINDOW_MS = 10_000;
 const SAFETY_UNDO_WINDOW_MS = 10_000;
 const MAX_BULK_STUDENTS = 200;
+const MAX_LEARNING_EVIDENCE_RECORDS = 2000;
 const PII_CACHE_ENABLED = (
   import.meta as ImportMeta & {
     env?: Record<string, string | undefined>;
@@ -232,6 +240,27 @@ const createNewStudent = (student: Student): Student => ({
   teamId: undefined,
   badges: [],
 });
+
+const syncMentorFeedbackEvidence = (
+  records: LearningEvidenceRecord[],
+  classId: string,
+  studentId: string,
+  reflection: DailyReflection,
+) => [
+  createMentorFeedbackEvidenceRecord(
+    classId,
+    studentId,
+    {
+      id: reflection.id,
+      competency: reflection.competency,
+      assessment: reflection.mentorAssessment,
+      text: reflection.text,
+      createdAt: reflection.createdAt,
+    },
+    records,
+  ),
+  ...records,
+].slice(0, MAX_LEARNING_EVIDENCE_RECORDS);
 
 const createStudentFromImportedName = (name: string, index: number): Student =>
   createNewStudent({
@@ -443,7 +472,7 @@ const scheduleSafetyUndoExpiry = (
   }, SAFETY_UNDO_WINDOW_MS);
 };
 
-const normalizeSafetyReason = (reason: string) => reason.trim().slice(0, 240);
+const normalizeSafetyReason = (reason?: string) => reason?.trim().slice(0, 240) ?? '';
 
 const prependFeedbackReason = (
   history: FeedbackReasonHistoryEntry[] | undefined,
@@ -516,6 +545,7 @@ export const useStore = create<StoreState>()(
           id: Date.now().toString(),
           name,
           students: [],
+          dailyTaskCalendar: normalizeClassDailyTaskCalendar(undefined, state.data.settings),
           learningEvidenceRecords: [],
           examRecords: [],
         };
@@ -735,6 +765,22 @@ export const useStore = create<StoreState>()(
             }))
           }
         };
+      }),
+
+      updateClassDailyTaskCalendar: (classId, calendar) => set((state) => {
+        const currentClassIndex = state.data.classes.findIndex(
+          (classData) => classData.id === classId,
+        );
+        if (currentClassIndex === -1) return state;
+        const nextClasses = [...state.data.classes];
+        nextClasses[currentClassIndex] = {
+          ...nextClasses[currentClassIndex],
+          dailyTaskCalendar: normalizeClassDailyTaskCalendar(
+            calendar,
+            state.data.settings,
+          ),
+        };
+        return { data: { ...state.data, classes: nextClasses } };
       }),
 
       setClassGoal: (goal, goalId) => set((state) => {
@@ -1325,12 +1371,10 @@ export const useStore = create<StoreState>()(
       },
 
       decreaseLevel: (studentId, reason) => {
-        const normalizedReason = normalizeSafetyReason(reason);
         const language = get().data.settings?.language || 'zh';
-        if (!normalizedReason) {
-          get().showToast(language === 'en' ? 'A reason is required.' : '必須填寫降級理由。', 'error');
-          return;
-        }
+        const normalizedReason = normalizeSafetyReason(reason) || (
+          language === 'en' ? 'Quick level decrease by mentor' : '導師快速降級操作'
+        );
 
         let createdUndoId = '';
         let blockedMessage = '';
@@ -1755,12 +1799,13 @@ export const useStore = create<StoreState>()(
         return { data: { ...state.data, classes: nextClasses } };
       }),
 
-      claimDailyTask: (studentId, reflection) => {
+      claimDailyTask: (studentId) => {
         let claimed = false;
         set((state) => {
         const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
         if (currentClassIndex === -1) return state;
-        const targetStudent = state.data.classes[currentClassIndex].students.find(s => s.id === studentId);
+        const currentClass = state.data.classes[currentClassIndex];
+        const targetStudent = currentClass.students.find(s => s.id === studentId);
         if (!targetStudent) return state;
 
         const tLang = translations[state.data.settings?.language || 'zh'];
@@ -1771,28 +1816,24 @@ export const useStore = create<StoreState>()(
           state.data.settings?.maxPoints ?? 700,
           tLang.dailyTaskRecord,
           {
-            timeZone: state.data.settings?.schoolTimeZone,
-            schoolWeekdays: state.data.settings?.schoolWeekdays,
-            holidayDates: state.data.settings?.schoolHolidayDates,
+            timeZone: currentClass.dailyTaskCalendar?.schoolTimeZone ?? state.data.settings?.schoolTimeZone,
+            schoolWeekdays: currentClass.dailyTaskCalendar?.schoolWeekdays ?? state.data.settings?.schoolWeekdays,
+            holidayDates: currentClass.dailyTaskCalendar?.schoolHolidayDates ?? state.data.settings?.schoolHolidayDates,
             excusedDates: targetStudent.dailyProgress?.excusedDates,
-            makeupWindowDays: state.data.settings?.dailyTaskMakeupWindowDays,
+            makeupWindowDays: currentClass.dailyTaskCalendar?.dailyTaskMakeupWindowDays ?? state.data.settings?.dailyTaskMakeupWindowDays,
           },
-          reflection,
         );
 
         if (!result.claimed) {
           get().showToast(
             result.frozen
               ? (tLang.dailyTaskFrozen ?? '今天不是上課日，連續紀錄已凍結')
-              : result.reflectionRequired
-                ? (tLang.dailyTaskReflectionRequired ?? '請先完成一句反思與自評')
               : (tLang.dailyTaskDone ?? '今日已完成'),
             result.frozen ? 'success' : 'error',
           );
           return state;
         }
 
-        const currentClass = state.data.classes[currentClassIndex];
         const projectedStudents = currentClass.students.map((student) =>
           student.id === studentId ? result.student : student,
         );
@@ -1886,7 +1927,8 @@ export const useStore = create<StoreState>()(
         if (!targetStudent) return state;
 
         const now = Date.now();
-        const timeZone = state.data.settings?.schoolTimeZone;
+        const timeZone = currentClass.dailyTaskCalendar?.schoolTimeZone ??
+          state.data.settings?.schoolTimeZone;
         const result = saveMentorDailyFeedbackForStudent(
           targetStudent,
           feedback,
@@ -1900,43 +1942,6 @@ export const useStore = create<StoreState>()(
             reflection.date === getDateKey(now, timeZone),
         );
         const currentEvidence = currentClass.learningEvidenceRecords ?? [];
-        const previousRevision = savedReflection
-          ? Math.max(
-              0,
-              ...currentEvidence
-                .filter(
-                  (record) =>
-                    record.source === 'mentorDailyFeedback' &&
-                    record.sourceId === savedReflection.id,
-                )
-                .map((record) => record.revision),
-            )
-          : 0;
-        const nextEvidence = savedReflection
-          ? createLearningEvidenceRecord(
-              currentClass.id,
-              studentId,
-              {
-                competency: feedback.competency,
-                level:
-                  feedback.assessment === 'needsSupport'
-                    ? 'needsSupport'
-                    : feedback.assessment === 'confident'
-                      ? 'mastered'
-                      : 'progressing',
-                evidenceType: 'observation',
-                title: feedback.text,
-                note: feedback.text,
-                actor: 'mentor',
-                source: 'mentorDailyFeedback',
-                sourceId: savedReflection.id,
-                rubricVersion: '1.0',
-              },
-              now,
-              `evidence-${savedReflection.id}-${previousRevision + 1}`,
-              previousRevision + 1,
-            )
-          : null;
 
         const nextClasses = [...state.data.classes];
         nextClasses[currentClassIndex] = {
@@ -1944,8 +1949,13 @@ export const useStore = create<StoreState>()(
           students: currentClass.students.map((student) =>
             student.id === studentId ? result.student : student,
           ),
-          learningEvidenceRecords: nextEvidence
-            ? [nextEvidence, ...currentEvidence].slice(0, 2000)
+          learningEvidenceRecords: savedReflection
+            ? syncMentorFeedbackEvidence(
+                currentEvidence,
+                currentClass.id,
+                studentId,
+                savedReflection,
+              )
             : currentEvidence,
         };
         const tLang = translations[state.data.settings?.language || 'zh'];
@@ -1983,7 +1993,7 @@ export const useStore = create<StoreState>()(
           learningEvidenceRecords: [
             record,
             ...(currentClass.learningEvidenceRecords ?? []),
-          ].slice(0, 2000),
+          ].slice(0, MAX_LEARNING_EVIDENCE_RECORDS),
         };
         const lang = state.data.settings?.language || 'zh';
         get().showToast(translations[lang].learningEvidenceSaved, 'success');

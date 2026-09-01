@@ -59,6 +59,14 @@ export type LearningEvidenceInput = Pick<
   rubricVersion?: string;
 };
 
+export type MentorFeedbackEvidenceInput = {
+  id: string;
+  competency: LearningCompetency;
+  assessment?: 'needsSupport' | 'progressing' | 'confident';
+  text?: string;
+  createdAt: number;
+};
+
 export type CompetencyLearningSummary = {
   competency: LearningCompetency;
   evidenceCount: number;
@@ -147,6 +155,51 @@ export const createLearningEvidenceRecord = (
   revision: Math.max(1, Math.floor(revision)),
   createdAt: now,
 });
+
+export const createMentorFeedbackEvidenceRecord = (
+  classId: string,
+  studentId: string,
+  feedback: MentorFeedbackEvidenceInput,
+  existingRecords: LearningEvidenceRecord[] = [],
+  rubricVersion = '1.0',
+): LearningEvidenceRecord => {
+  const previousRevision = Math.max(
+    0,
+    ...existingRecords
+      .filter(
+        (record) =>
+          record.source === 'mentorDailyFeedback' &&
+          record.sourceId === feedback.id,
+      )
+      .map((record) => record.revision),
+  );
+  const revision = previousRevision + 1;
+  const text = feedback.text?.trim() || 'Mentor daily feedback';
+
+  return createLearningEvidenceRecord(
+    classId,
+    studentId,
+    {
+      competency: feedback.competency,
+      level:
+        feedback.assessment === 'needsSupport'
+          ? 'needsSupport'
+          : feedback.assessment === 'confident'
+            ? 'mastered'
+            : 'progressing',
+      evidenceType: 'observation',
+      title: text,
+      note: feedback.text,
+      actor: 'mentor',
+      source: 'mentorDailyFeedback',
+      sourceId: feedback.id,
+      rubricVersion,
+    },
+    feedback.createdAt,
+    revision === 1 ? `evidence-${feedback.id}` : `evidence-${feedback.id}-${revision}`,
+    revision,
+  );
+};
 
 export const normalizeLearningEvidenceRecords = (
   value: unknown,

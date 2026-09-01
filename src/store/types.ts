@@ -4,7 +4,7 @@ import {
   BossRewardRecord, LearningCompetency, ClassGoal, BossAttackMode, BossReward,
   BossRecoveryStatus,
   DailyReflection, MentorDailyFeedbackInput, DailyAssessment, DailySelfAssessment,
-  DailyTaskReflectionInput, EconomyEventRecord, EconomyEventKind, EconomyEventSource,
+  EconomyEventRecord, EconomyEventKind, EconomyEventSource,
 } from '../gameRules';
 import type {
   LearningEvidenceInput,
@@ -19,7 +19,7 @@ export type {
   BossRewardRecord, LearningCompetency, ClassGoal, BossAttackMode, BossReward,
   BossRecoveryStatus,
   DailyReflection, MentorDailyFeedbackInput, DailyAssessment, DailySelfAssessment,
-  DailyTaskReflectionInput, EconomyEventRecord, EconomyEventKind, EconomyEventSource,
+  EconomyEventRecord, EconomyEventKind, EconomyEventSource,
   LearningEvidenceInput, LearningEvidenceLevel, LearningEvidenceRecord, LearningEvidenceType,
 };
 
@@ -98,10 +98,18 @@ export type ExamRecord = {
   updatedAt: number;
 };
 
+export type ClassDailyTaskCalendar = {
+  schoolTimeZone: string;
+  schoolWeekdays: number[];
+  schoolHolidayDates: string[];
+  dailyTaskMakeupWindowDays: number;
+};
+
 export type ClassData = {
   id: string;
   name: string;
   students: Student[];
+  dailyTaskCalendar?: ClassDailyTaskCalendar;
   activeBoss?: WorldBoss;
   classGoals?: ClassGoal[];
   learningEvidenceRecords?: LearningEvidenceRecord[];

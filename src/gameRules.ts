@@ -221,12 +221,6 @@ export type MentorDailyFeedbackInput = {
   text: string;
 };
 
-export type DailyTaskReflectionInput = {
-  competency: LearningCompetency;
-  assessment: DailySelfAssessment;
-  text: string;
-};
-
 export type BossRecoveryStatus = {
   impact: number;
   startedAt: number;
@@ -1627,7 +1621,6 @@ export const claimDailyTaskForStudent = <T extends StudentRuleState>(
   maxPoints = 700,
   reasonLabel?: string,
   calendarOptions?: DailyTaskCalendarOptions,
-  reflectionInput?: DailyTaskReflectionInput,
 ) => {
   const lastClaimDate = student.dailyProgress?.lastClaimDate;
   const currentStreak = student.dailyProgress?.streak ?? 0;
@@ -1652,27 +1645,6 @@ export const claimDailyTaskForStudent = <T extends StudentRuleState>(
     return { claimed: false as const, student, alreadyClaimed: true, frozen: false };
   }
 
-  const reflectionText = reflectionInput?.text.trim().slice(0, 160) ?? '';
-  const reflectionIsValid = Boolean(
-    reflectionText &&
-    reflectionInput &&
-    isLearningCompetency(reflectionInput.competency) &&
-    (
-      reflectionInput.assessment === 'needsSupport' ||
-      reflectionInput.assessment === 'progressing' ||
-      reflectionInput.assessment === 'confident'
-    ),
-  );
-  if (!reflectionIsValid || !reflectionInput) {
-    return {
-      claimed: false as const,
-      student,
-      alreadyClaimed: false,
-      frozen: false,
-      reflectionRequired: true as const,
-    };
-  }
-
   const followsPreviousInstructionDate = calendarOptions && isDateKey(lastClaimDate)
     ? getNextDailyTaskInstructionDate(lastClaimDate, {
         ...calendarOptions,
@@ -1694,16 +1666,6 @@ export const claimDailyTaskForStudent = <T extends StudentRuleState>(
     now,
     plan ? { effectiveDate: targetDate, claimKind } : undefined,
   );
-  const dailyReflection: DailyReflection = {
-    id: `reflection-${now}-${Math.random().toString(36).slice(2, 8)}`,
-    date: targetDate,
-    createdAt: now,
-    competency: reflectionInput.competency,
-    author: 'student',
-    selfAssessment: reflectionInput.assessment,
-    text: reflectionText,
-  };
-
   return {
     claimed: true as const,
     rewardPoints,
@@ -1723,10 +1685,7 @@ export const claimDailyTaskForStudent = <T extends StudentRuleState>(
       dailyProgress: {
         lastClaimDate: targetDate,
         streak: nextStreak,
-        reflections: [
-          dailyReflection,
-          ...(student.dailyProgress?.reflections ?? []),
-        ].slice(0, MAX_DAILY_REFLECTIONS),
+        reflections: student.dailyProgress?.reflections,
         excusedDates: student.dailyProgress?.excusedDates,
       },
       pointAdjustmentRecords: [

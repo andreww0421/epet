@@ -21,7 +21,12 @@ import {
   MAX_EXAM_ITEMS,
   computeExamStudentAnalysis,
 } from '../../examAnalytics';
-import { createExamReportHtml } from '../../examReport';
+import {
+  createExamReportHtml,
+  getExamReportSelection,
+  type ExamReportCommentRange,
+  type ExamReportScoreRange,
+} from '../../examReport';
 import {
   applyExamScorePaste,
   createExamCsvTemplate,
@@ -204,6 +209,21 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
         commentPlaceholder: 'Add specific, actionable feedback for the learner and family...',
         printA4: 'Generate individual A4 PDF',
         printHint: 'Opens the system print dialog. Choose “Save as PDF”; the page size is preset to A4.',
+        reportScope: 'Report content',
+        reportScopeHint: 'Choose score history, comment history, and assessment item rows independently. This changes only the PDF, not saved records.',
+        scoreRange: 'Score range',
+        commentRange: 'Comment range',
+        itemRows: 'Assessment item rows',
+        selectAllItems: 'Select all',
+        clearAllItems: 'Clear all',
+        rangeCurrentScore: 'Current assessment only',
+        rangeRecentScore: 'Latest 3 assessments',
+        rangeAllScore: 'All assessments to this date',
+        rangeCurrentComment: 'Current comment only',
+        rangeRecentComment: 'Latest 3 completed comments',
+        rangeAllComment: 'All comments to this date',
+        rangeNoComment: 'Do not include comments',
+        reportScopeSummary: '{scores} assessment(s) · {comments} comment(s) · {items} item row(s)',
         popupBlocked: 'The report window was blocked. Allow pop-ups and try again.',
         completeRequired: 'Add an assessment title and at least one unique item before saving.',
         itemTrend: 'vs. previous',
@@ -274,6 +294,21 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
         commentPlaceholder: '補上具體、可行動，且適合學生與家長閱讀的回饋...',
         printA4: '產生個別 A4 PDF',
         printHint: '會開啟系統列印視窗；選擇「另存為 PDF」即可，紙張已預設為 A4。',
+        reportScope: '報表內容範圍',
+        reportScopeHint: '成績、評語與評量項目列可分別選擇；只影響這次 PDF，不會刪除或隱藏原始紀錄。',
+        scoreRange: '成績範圍',
+        commentRange: '評語範圍',
+        itemRows: '輸出評量項目列',
+        selectAllItems: '全選',
+        clearAllItems: '全部取消',
+        rangeCurrentScore: '僅本次考試',
+        rangeRecentScore: '最近 3 次考試',
+        rangeAllScore: '截至本次的全部考試',
+        rangeCurrentComment: '僅本次評語',
+        rangeRecentComment: '最近 3 筆已填評語',
+        rangeAllComment: '截至本次的全部評語',
+        rangeNoComment: '不輸出評語',
+        reportScopeSummary: '已選 {scores} 次成績 · {comments} 筆評語 · {items} 個項目列',
         popupBlocked: '報告視窗遭瀏覽器阻擋，請允許彈出式視窗後重試。',
         completeRequired: '請填寫考試名稱，並保留至少一個名稱不重複的項目。',
         itemTrend: '較上次',
@@ -291,6 +326,11 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
   const [draft, setDraft] = useState<ExamRecord>(() => createExamDraft(lang, 1));
   const [selectedStudentId, setSelectedStudentId] = useState('');
   const [isDirty, setIsDirty] = useState(false);
+  const [reportScoreRange, setReportScoreRange] =
+    useState<ExamReportScoreRange>('current');
+  const [reportCommentRange, setReportCommentRange] =
+    useState<ExamReportCommentRange>('current');
+  const [excludedReportItemIds, setExcludedReportItemIds] = useState<string[]>([]);
   const [scorePastePreview, setScorePastePreview] = useState<
     ReturnType<typeof previewExamScorePaste> | null
   >(null);
@@ -301,6 +341,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
     setSelectedStudentId(students[0]?.id ?? '');
     setIsDirty(false);
     setScorePastePreview(null);
+    setExcludedReportItemIds([]);
   }, [currentClass?.id]);
 
   useEffect(() => {
@@ -355,6 +396,21 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
         selectedStudent.id,
       )
     : null;
+  const reportSelection = analysis
+    ? getExamReportSelection({
+        exams: allExamsForAnalysis,
+        exam: draft,
+        analysis,
+        scoreRange: reportScoreRange,
+        commentRange: reportCommentRange,
+      })
+    : null;
+  const reportCommentCount = reportSelection?.commentEntries.filter(
+    (entry) => entry.comment.trim(),
+  ).length ?? 0;
+  const selectedReportItemIds = draft.items
+    .filter((item) => !excludedReportItemIds.includes(item.id))
+    .map((item) => item.id);
   const enteredScoreCount = students.reduce((total, student) => {
     const result = getStudentResult(draft, student.id);
     return total + draft.items.filter((item) => hasScore(result?.scores[item.id])).length;
@@ -414,6 +470,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
     setSelectedStudentId(students[0]?.id ?? '');
     setIsDirty(false);
     setScorePastePreview(null);
+    setExcludedReportItemIds([]);
   };
 
   const saveDraft = () => {
@@ -622,8 +679,12 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
         className: currentClass.name,
         studentName: selectedStudent.name,
         exam: draft,
+        exams: allExamsForAnalysis,
         analysis,
         lang,
+        scoreRange: reportScoreRange,
+        commentRange: reportCommentRange,
+        itemIds: selectedReportItemIds,
       }),
     );
     reportWindow.document.close();
@@ -1196,6 +1257,107 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                   placeholder={copy.commentPlaceholder}
                   className="mt-3 w-full resize-y rounded-md border border-slate-300 bg-white p-3 text-sm leading-6 focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
                 />
+                <div className="mt-4 border-l-4 border-teal-600 bg-white px-4 py-4 shadow-sm ring-1 ring-slate-200">
+                  <div>
+                    <p className="text-sm font-black text-slate-900">{copy.reportScope}</p>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">
+                      {copy.reportScopeHint}
+                    </p>
+                  </div>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <label className="block text-xs font-bold text-slate-700">
+                      {copy.scoreRange}
+                      <select
+                        value={reportScoreRange}
+                        onChange={(event) =>
+                          setReportScoreRange(event.target.value as ExamReportScoreRange)
+                        }
+                        className="mt-1 min-h-10 w-full rounded-md border border-slate-300 bg-[#fffdf8] px-2 py-2 text-sm text-slate-900 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100"
+                      >
+                        <option value="current">{copy.rangeCurrentScore}</option>
+                        <option value="recent3">{copy.rangeRecentScore}</option>
+                        <option value="all">{copy.rangeAllScore}</option>
+                      </select>
+                    </label>
+                    <label className="block text-xs font-bold text-slate-700">
+                      {copy.commentRange}
+                      <select
+                        value={reportCommentRange}
+                        onChange={(event) =>
+                          setReportCommentRange(event.target.value as ExamReportCommentRange)
+                        }
+                        className="mt-1 min-h-10 w-full rounded-md border border-slate-300 bg-[#fffdf8] px-2 py-2 text-sm text-slate-900 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100"
+                      >
+                        <option value="current">{copy.rangeCurrentComment}</option>
+                        <option value="recent3">{copy.rangeRecentComment}</option>
+                        <option value="all">{copy.rangeAllComment}</option>
+                        <option value="none">{copy.rangeNoComment}</option>
+                      </select>
+                    </label>
+                  </div>
+                  <fieldset className="mt-4 border-t border-slate-200 pt-3">
+                    <legend className="sr-only">{copy.itemRows}</legend>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-xs font-bold text-slate-700">
+                        {copy.itemRows}
+                      </p>
+                      <div className="flex items-center gap-2 text-xs font-bold">
+                        <button
+                          type="button"
+                          onClick={() => setExcludedReportItemIds([])}
+                          disabled={selectedReportItemIds.length === draft.items.length}
+                          className="text-teal-700 hover:text-teal-900 disabled:cursor-default disabled:text-slate-300"
+                        >
+                          {copy.selectAllItems}
+                        </button>
+                        <span className="text-slate-300" aria-hidden="true">/</span>
+                        <button
+                          type="button"
+                          onClick={() => setExcludedReportItemIds(draft.items.map((item) => item.id))}
+                          disabled={selectedReportItemIds.length === 0}
+                          className="text-teal-700 hover:text-teal-900 disabled:cursor-default disabled:text-slate-300"
+                        >
+                          {copy.clearAllItems}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                      {draft.items.map((item) => {
+                        const isSelected = !excludedReportItemIds.includes(item.id);
+                        return (
+                          <label
+                            key={item.id}
+                            className={`flex min-h-10 cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm font-semibold ${
+                              isSelected
+                                ? 'border-teal-300 bg-teal-50 text-teal-950'
+                                : 'border-slate-200 bg-[#fffdf8] text-slate-500'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={(event) =>
+                                setExcludedReportItemIds((current) =>
+                                  event.target.checked
+                                    ? current.filter((id) => id !== item.id)
+                                    : [...new Set([...current, item.id])]
+                                )
+                              }
+                              className="h-4 w-4 accent-teal-700"
+                            />
+                            <span className="truncate">{item.name || copy.itemName}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </fieldset>
+                  <p className="mt-3 border-t border-slate-100 pt-2 text-xs font-bold text-teal-800">
+                    {copy.reportScopeSummary
+                      .replace('{scores}', String(reportSelection?.scoreEntries.length ?? 0))
+                      .replace('{comments}', String(reportCommentCount))
+                      .replace('{items}', String(selectedReportItemIds.length))}
+                  </p>
+                </div>
                 <div className="mt-4 grid gap-2">
                   {!readOnly && (
                   <button
