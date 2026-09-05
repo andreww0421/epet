@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useCallback, useEffect, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertCircle, CloudOff, Database, Dices, Dog, LogOut, RefreshCw, Settings, Smile, Users,
 } from 'lucide-react';
@@ -112,6 +112,8 @@ const EmptyWorkspaceView = ({
 
 function WorkspaceApp() {
   const { session, logout, selectWorkspace, invalidateSession } = useAuth();
+  const workspaceSwitchInFlight = useRef(false);
+  const [switchingWorkspace, setSwitchingWorkspace] = useState(false);
   const activeWorkspaceId = session?.activeWorkspaceId ?? null;
   const activeWorkspace = session?.workspaces.find(
     (workspace) => workspace.id === activeWorkspaceId,
@@ -161,7 +163,8 @@ function WorkspaceApp() {
     ?? (lang === 'en' ? 'current workspace' : '目前工作區');
   const effectiveView = canManage ? view : 'dashboard';
   const workspaceReady =
-    backendStatus === 'connected' || backendStatus === 'saving';
+    !switchingWorkspace &&
+    (backendStatus === 'connected' || backendStatus === 'saving');
 
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'auto' });
@@ -185,18 +188,33 @@ function WorkspaceApp() {
   }, [flushBackendChanges, lang, logout, showToast]);
 
   const handleWorkspaceChange = useCallback(async (workspaceId: string) => {
-    if (!(await flushBackendChanges())) {
+    if (workspaceSwitchInFlight.current || workspaceId === activeWorkspaceId) return;
+    workspaceSwitchInFlight.current = true;
+    setSwitchingWorkspace(true);
+    try {
+      if (!(await flushBackendChanges())) {
+        showToast(
+          lang === 'en'
+            ? 'Finish synchronizing the current workspace before switching.'
+            : '目前工作區尚未同步完成，暫時無法切換。',
+          'error',
+        );
+        return;
+      }
+      // The sync hook owns reset/hydration after the old listener is detached.
+      await selectWorkspace(workspaceId);
+    } catch {
       showToast(
         lang === 'en'
-          ? 'Finish synchronizing the current workspace before switching.'
-          : '目前工作區尚未同步完成，暫時無法切換。',
+          ? 'The workspace could not be switched. Please retry.'
+          : '無法切換工作區，請稍後再試。',
         'error',
       );
-      return;
+    } finally {
+      workspaceSwitchInFlight.current = false;
+      setSwitchingWorkspace(false);
     }
-    resetStoreForSession();
-    await selectWorkspace(workspaceId);
-  }, [flushBackendChanges, lang, selectWorkspace, showToast]);
+  }, [activeWorkspaceId, flushBackendChanges, lang, selectWorkspace, showToast]);
 
   if (session && session.workspaces.length === 0) {
     return (
@@ -225,6 +243,7 @@ function WorkspaceApp() {
                   <span>{lang === 'en' ? 'Workspace' : '工作區'}</span>
                   <select
                     value={activeWorkspaceId ?? ''}
+                    disabled={switchingWorkspace || backendStatus === 'checking'}
                     onChange={(event) => {
                       void handleWorkspaceChange(event.target.value);
                     }}
@@ -373,7 +392,7 @@ function WorkspaceApp() {
             className="mx-auto flex min-h-[60vh] max-w-xl flex-col items-center justify-center px-6 py-16 text-center"
             aria-live="polite"
           >
-            {backendStatus === 'checking' ? (
+            {backendStatus === 'checking' || switchingWorkspace ? (
               <>
                 <RefreshCw className="h-8 w-8 animate-spin text-indigo-600" aria-hidden="true" />
                 <h1 className="mt-5 text-xl font-black text-slate-900">

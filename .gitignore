@@ -4,6 +4,7 @@ dist/
 coverage/
 .tmp-rule-tests/
 .playwright-cli/
+output/playwright/
 .DS_Store
 *.log
 .env*

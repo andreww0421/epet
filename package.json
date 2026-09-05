@@ -19,6 +19,9 @@
     "test:server": "tsx tests/server.test.ts",
     "test:d1-core": "tsx --test tests/d1-core.test.ts",
     "test": "npm run test:rules && npm run test:imports && npm run test:auth && npm run test:server && npm run test:d1-core",
+    "test:e2e": "playwright test",
+    "test:a11y": "playwright test --config playwright.a11y.config.ts",
+    "test:e2e:server": "tsx tests/e2e/support/server.ts",
     "check:worker": "wrangler deploy --dry-run",
     "db:migrate:local": "wrangler d1 migrations apply epet-production --local",
     "db:migrate:remote": "wrangler d1 migrations apply epet-production --remote",
@@ -33,7 +36,9 @@
     "zustand": "^5.0.12"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "@cloudflare/workers-types": "^5.20260729.1",
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^22.14.0",
     "@types/papaparse": "^5.5.2",

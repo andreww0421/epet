@@ -132,6 +132,79 @@ npm run dev:full
 npm run verify
 ```
 
+### Playwright E2E testing
+
+E2E tests 以真實 Chromium 驗證登入、工作區、班級／學生、導師操作、考試、角色權限及同步衝突等 critical user flows。第一次執行前安裝 Playwright browser：
+
+```bash
+npm ci
+npx playwright install chromium
+```
+
+執行完整 E2E suite：
+
+```bash
+npm run test:e2e
+```
+
+Playwright 會自動執行 `npm run build`，再於 `127.0.0.1:3100` 啟動專用 Node server，同站提供建置後的 frontend 與 API。請保持此 port 未被占用；測試不會沿用既有 server，也不提供 production URL override。每次測試在系統暫存目錄建立獨立的 `epet-e2e-<UUID>/` JSON repository 與邀請 outbox，正常結束或案例失敗時由 teardown 清除，不會連線或修改 production D1。這也避免 OneDrive 對頻繁替換 JSON 檔案的鎖定干擾。測試 server 只在該 process 內開放註冊並捕捉虛構的 `example.test` 邀請；production 設定不會被改動。HttpOnly/Secure cookie、Origin、CSRF、workspace membership 與 class scope 仍走正式程式碼路徑。
+
+失敗時的 screenshot、video、trace 與 HTML report 位於 `output/playwright/`。需要觀察 browser 操作時可執行：
+
+```bash
+npx playwright test --headed
+```
+
+既有 `npm test` 仍只執行快速的 rules/import/auth/server/D1 tests，不會隱含啟動 browser；E2E 需明確執行 `npm run test:e2e`。
+
+測試檔位於 `tests/e2e/`，目前的 regression coverage：
+
+| 測試檔 | 保護的流程 |
+| --- | --- |
+| `authentication.spec.ts` | 登入成功／失敗、登出、無效 session、瀏覽器 cookie 到期後重新登入 |
+| `workspace.spec.ts` | 建立／切換工作區、資料隔離、未授權工作區與班級的讀寫拒絕 |
+| `class-and-teacher.spec.ts` | 新增班級／學生、CSV 名冊匯入、刪除學生、加減分、每日評語、學習證據 |
+| `exam.spec.ts` | 建立考試、貼上匯入成績、超過滿分的輸入不得套用 |
+| `permissions.spec.ts` | viewer 拒絕寫入、teacher 班級範圍、admin 新增班級、owner 移轉所有權、CSRF／Origin 拒絕 |
+| `data-safety.spec.ts` | 已同步資料的工作區往返保護、真實 revision conflict、禁止不安全切換、草稿下載與重載後恢復同步、不污染另一工作區 |
+
+可用 `npm run test:e2e -- tests/e2e/authentication.spec.ts` 執行單一檔案，或用 `npx playwright show-report output/playwright/report` 查看最近報告。suite 固定單一 worker；每個案例使用獨立、隨機命名的虛構帳號，透過正式 API 與邀請流程建立角色，不直接注入前端 store 或繞過權限檢查。資料安全案例僅攔截網路以製造延遲／斷線，衝突回應由真實 API 產生。不要將測試 server 暴露至網際網路；不要用真實師生資料執行測試或分享含 session 資訊的 trace。
+
+範圍限制：此 suite 測試 Chromium + Node JSON repository，不等同 Cloudflare Worker／D1 的瀏覽器端 E2E；D1 仍由 `npm test` 中的既有整合測試保護。Email／Turnstile 外部服務沒有納入 browser suite；測試 process 使用既有選項關閉這兩項外部依賴，正式啟動設定完全不變。Linux 首次安裝 browser 如缺系統函式庫，可改用 `npx playwright install --with-deps chromium`。
+
+#### 工作區往返資料安全修正（2026-09-05）
+
+`workspace round-trip preserves already synchronized students` 已從紅燈回歸案例改為通過：在工作區 A 與 B 分別新增學生並完成同步，多次往返後，UI 與兩邊 API 快照都保持不變，切換動作也不會產生 PUT 或空白 pending draft。
+
+同步層現在先停止舊工作區生命週期，再重設與載入新工作區；session generation 會讓舊讀取、儲存與重試失效，而每個 state request 會固定攜帶建立它的 workspace ID。切換仍須先完成既有儲存，衝突或斷線時會維持原工作區並保留本機草稿。
+
+獨立重現：
+
+```bash
+npm run test:e2e -- tests/e2e/data-safety.spec.ts -g "workspace round-trip"
+```
+
+### Accessibility testing
+
+沿用上述 Playwright 安裝步驟後執行：
+
+```bash
+npm run test:a11y
+```
+
+`playwright.a11y.config.ts` 繼承原 E2E 的隔離 server、真實登入、虛構帳號與 teardown，只改用 `tests/accessibility/` 及獨立報告目錄。`npm test` 與 `npm run test:e2e` 不會隱含執行 accessibility suite。兩組 browser suite 共用本機 port 3100，請依序執行，不要同時啟動。
+
+涵蓋 Login（含欄位錯誤）、Classroom（孵化前／後）、Teacher Dashboard（學生／獎勵）、Student analytics（已儲存學習證據）、Exam（編輯／已儲存成績）、Settings，以及新增班級、加減分、刪除學生、刪除帳號對話框。另以鍵盤驗證 Tab／Shift+Tab 焦點循環、Escape、焦點返回、分頁方向鍵／Home／End、評語建議選取及小螢幕對話框。
+
+axe 會掃描完整頁面的所有預設規則，包含 best practices，未關閉規則或排除元素。serious／critical violations 會使測試失敗；moderate／minor 與 `incomplete`（需要人工判讀）仍保留在 JSON／HTML 報告。對話框的背景由正式元件的原生 modal 行為隔離，不是測試程式隱藏。測試沒有使用正式師生資料，也沒有變更 production authentication、CSRF、角色權限或資料庫結構。
+
+```bash
+npm run test:a11y -- tests/accessibility/dialogs.spec.ts
+npx playwright show-report output/playwright/accessibility/report
+```
+
+各掃描的 `axe-*.json`、畫面截圖及失敗 trace 位於 `output/playwright/accessibility/results/`。axe 無法證明整個產品已符合 WCAG；仍待解決的問題、人工檢查與覆蓋限制記錄在 [accessibility backlog](docs/accessibility-backlog.md)。目前只執行 Chromium 與繁體中文，其他瀏覽器、螢幕閱讀器及高風險遊戲狀態仍需補測。
+
 ## 專案結構
 
 ```text

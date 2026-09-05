@@ -176,10 +176,10 @@ export const RosterImportPanel: React.FC<RosterImportPanelProps> = ({
     <section className="mt-5 border-t border-slate-200 pt-5" aria-labelledby="roster-import-title">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="max-w-2xl">
-          <h4 id="roster-import-title" className="flex items-center text-sm font-black text-slate-900">
+          <h3 id="roster-import-title" className="flex items-center text-sm font-black text-slate-900">
             <FileSpreadsheet className="mr-2 h-4 w-4 text-teal-700" aria-hidden="true" />
             {copy.title}
-          </h4>
+          </h3>
           <p className="mt-1 text-xs leading-5 text-slate-600">{copy.hint}</p>
         </div>
         <button

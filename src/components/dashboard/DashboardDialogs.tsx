@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { AlertCircle, Edit2, Gift, Users } from 'lucide-react';
 import type { FeedbackReasonHistoryEntry, LearningCompetency } from '../../store/types';
 import { translations } from '../../i18n/translations';
+import { ModalDialog } from '../ModalDialog';
 
 type DashboardCopy = (typeof translations)[keyof typeof translations];
 
@@ -37,10 +38,9 @@ export const AddClassDialog = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 animate-in fade-in duration-200">
-      <div className="w-full max-w-sm overflow-hidden rounded-xl bg-white shadow-xl">
+    <ModalDialog labelledBy="add-class-title" onClose={onClose} className="max-w-sm">
         <div className="p-6">
-          <h3 className="mb-4 text-lg font-bold text-slate-900">{tLang.addClass}</h3>
+          <h2 id="add-class-title" className="mb-4 text-lg font-bold text-slate-900">{tLang.addClass}</h2>
           <label htmlFor="className" className="mb-1 block text-sm font-medium text-slate-700">
             {tLang.className}
           </label>
@@ -49,7 +49,13 @@ export const AddClassDialog = ({
             type="text"
             value={name}
             onChange={(event) => setName(event.target.value)}
-            onKeyDown={(event) => event.key === 'Enter' && submit()}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' || event.nativeEvent.isComposing) return;
+              // Focus returns to the opener during submit; prevent the same
+              // Enter from activating that button and reopening the dialog.
+              event.preventDefault();
+              submit();
+            }}
             className="w-full rounded-md border border-slate-300 p-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
             placeholder={tLang.enterClassName}
             autoFocus
@@ -72,8 +78,7 @@ export const AddClassDialog = ({
             {tLang.add}
           </button>
         </div>
-      </div>
-    </div>
+    </ModalDialog>
   );
 };
 
@@ -96,21 +101,23 @@ export const DeleteConfirmationDialog = ({
   open,
   title,
 }: DeleteConfirmationDialogProps) => {
+  const titleId = useId();
+  const descriptionId = useId();
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 animate-in fade-in duration-200">
-      <div className="w-full max-w-sm overflow-hidden rounded-xl bg-white shadow-xl">
+    <ModalDialog labelledBy={titleId} describedBy={descriptionId} onClose={onCancel} className="max-w-sm">
         <div className="p-6">
           <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-red-100">
             <AlertCircle className="h-6 w-6 text-red-600" />
           </div>
-          <h3 className="mb-2 text-center text-lg font-bold text-slate-900">{title}</h3>
-          <p className="mb-4 text-center text-sm text-slate-600">{message}</p>
+          <h2 id={titleId} className="mb-2 text-center text-lg font-bold text-slate-900">{title}</h2>
+          <p id={descriptionId} className="mb-4 text-center text-sm text-slate-600">{message}</p>
         </div>
         <div className="flex justify-end space-x-3 bg-slate-50 px-6 py-4">
           <button
             type="button"
             onClick={onCancel}
+            autoFocus
             className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
           >
             {cancelLabel}
@@ -123,8 +130,7 @@ export const DeleteConfirmationDialog = ({
             {confirmLabel}
           </button>
         </div>
-      </div>
-    </div>
+    </ModalDialog>
   );
 };
 
@@ -162,12 +168,14 @@ export const PointAdjustmentDialog = ({
   const [competency, setCompetency] =
     useState<LearningCompetency>('participation');
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  const [activeSuggestion, setActiveSuggestion] = useState(-1);
 
   useEffect(() => {
     setAmount('');
     setReason('');
     setCompetency('participation');
     setSuggestionsOpen(false);
+    setActiveSuggestion(-1);
   }, [target]);
 
   const suggestions = useMemo(() => {
@@ -193,10 +201,16 @@ export const PointAdjustmentDialog = ({
   if (!target) return null;
   const parsedAmount = Math.trunc(Number(amount));
   const canSubmit = Number.isFinite(parsedAmount) && parsedAmount !== 0 && Boolean(reason.trim());
+  const showSuggestions = suggestionsOpen && suggestions.length > 0;
+  const chooseSuggestion = (suggestion: ReasonOption) => {
+    setReason(suggestion.label);
+    setCompetency(suggestion.competency);
+    setSuggestionsOpen(false);
+    setActiveSuggestion(-1);
+  };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 animate-in fade-in duration-200">
-      <div className="w-full max-w-sm overflow-hidden rounded-xl bg-white shadow-xl">
+    <ModalDialog labelledBy="point-adjustment-title" describedBy="point-adjustment-description" onClose={onCancel} className="max-w-sm">
         <div className="p-6">
           <div className={`mb-4 flex h-11 w-11 items-center justify-center rounded-full ${
             target.kind === 'class'
@@ -209,14 +223,14 @@ export const PointAdjustmentDialog = ({
                 ? <Users className="h-5 w-5" />
                 : <Edit2 className="h-5 w-5" />}
           </div>
-          <h3 className="text-lg font-bold text-slate-900">
+          <h2 id="point-adjustment-title" className="text-lg font-bold text-slate-900">
             {target.kind === 'class'
               ? tLang.airdropTitle
               : target.kind === 'batch'
                 ? tLang.batchAdjustTitle
                 : tLang.manualAdjustTitle}
-          </h3>
-          <p className="mt-2 text-sm text-slate-600">
+          </h2>
+          <p id="point-adjustment-description" className="mt-2 text-sm text-slate-600">
             {target.kind === 'class'
               ? tLang.airdropDesc.replace('{count}', target.count.toString())
               : target.kind === 'batch'
@@ -250,41 +264,63 @@ export const PointAdjustmentDialog = ({
                 type="text"
                 role="combobox"
                 aria-autocomplete="list"
-                aria-expanded={suggestionsOpen}
-                aria-controls="point-adjustment-reason-options"
+                aria-expanded={showSuggestions}
+                aria-controls={showSuggestions ? 'point-adjustment-reason-options' : undefined}
+                aria-activedescendant={showSuggestions && activeSuggestion >= 0 && activeSuggestion < suggestions.length
+                  ? `point-adjustment-option-${activeSuggestion}` : undefined}
                 value={reason}
-                onFocus={() => setSuggestionsOpen(true)}
+                onFocus={() => { setSuggestionsOpen(true); setActiveSuggestion(-1); }}
                 onChange={(event) => {
                   setReason(event.target.value);
                   setSuggestionsOpen(true);
+                  setActiveSuggestion(-1);
                 }}
-                onKeyDown={(event) => event.key === 'Escape' && setSuggestionsOpen(false)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape' && showSuggestions) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setSuggestionsOpen(false);
+                    setActiveSuggestion(-1);
+                  } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                    if (!suggestions.length) return;
+                    event.preventDefault();
+                    const next = event.key === 'ArrowDown'
+                      ? (activeSuggestion + 1) % suggestions.length
+                      : (activeSuggestion <= 0 ? suggestions.length : activeSuggestion) - 1;
+                    setSuggestionsOpen(true);
+                    setActiveSuggestion(next);
+                    document.getElementById(`point-adjustment-option-${next}`)?.scrollIntoView({ block: 'nearest' });
+                  } else if (event.key === 'Enter' && showSuggestions && activeSuggestion >= 0) {
+                    event.preventDefault();
+                    const suggestion = suggestions[activeSuggestion];
+                    if (suggestion) chooseSuggestion(suggestion);
+                  }
+                }}
                 className="mt-1 w-full rounded-md border border-slate-300 p-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
                 placeholder={tLang.airdropReasonPlaceholder}
                 autoComplete="off"
               />
-              {suggestionsOpen && suggestions.length > 0 && (
+              {showSuggestions && (
                 <div
                   id="point-adjustment-reason-options"
                   role="listbox"
+                  aria-label={tLang.airdropReason}
                   className="absolute z-20 mt-1 max-h-52 w-full overflow-y-auto rounded-md border border-slate-200 bg-white p-1 shadow-lg"
                 >
-                  {suggestions.map((suggestion) => (
+                  {suggestions.map((suggestion, index) => (
                     <button
                       key={`${suggestion.label}-${suggestion.competency}`}
                       type="button"
                       role="option"
-                      aria-selected={reason === suggestion.label}
+                      id={`point-adjustment-option-${index}`}
+                      tabIndex={-1}
+                      aria-selected={activeSuggestion === index}
                       onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => {
-                        setReason(suggestion.label);
-                        setCompetency(suggestion.competency);
-                        setSuggestionsOpen(false);
-                      }}
-                      className="flex w-full items-center justify-between gap-3 rounded px-3 py-2 text-left text-sm text-slate-700 hover:bg-indigo-50 hover:text-indigo-900"
+                      onClick={() => chooseSuggestion(suggestion)}
+                      className={`flex w-full items-center justify-between gap-3 rounded px-3 py-2 text-left text-sm text-slate-700 hover:bg-indigo-50 hover:text-indigo-900 ${activeSuggestion === index ? 'bg-indigo-50 text-indigo-900' : ''}`}
                     >
                       <span>{suggestion.label}</span>
-                      <span className="shrink-0 text-xs text-slate-400">
+                      <span className="shrink-0 text-xs text-slate-600">
                         {competencyLabels[suggestion.competency]}
                       </span>
                     </button>
@@ -328,7 +364,7 @@ export const PointAdjustmentDialog = ({
             disabled={!canSubmit}
             className={`rounded-md px-4 py-2 text-sm font-medium text-white disabled:bg-slate-300 ${
               target.kind === 'class'
-                ? 'bg-emerald-600 hover:bg-emerald-700'
+                ? 'bg-emerald-700 hover:bg-emerald-800'
                 : 'bg-indigo-600 hover:bg-indigo-700'
             }`}
           >
@@ -339,7 +375,6 @@ export const PointAdjustmentDialog = ({
                 : tLang.confirmAdjustment}
           </button>
         </div>
-      </div>
-    </div>
+    </ModalDialog>
   );
 };

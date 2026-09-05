@@ -697,7 +697,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
     tone: 'emerald' | 'amber' | 'slate',
   ) => {
     if (items.length === 0) {
-      return <span className="text-xs italic text-slate-400">{copy.none}</span>;
+      return <span className="text-xs italic text-slate-600">{copy.none}</span>;
     }
     const classes = {
       emerald: 'border-emerald-300 bg-emerald-50 text-emerald-800',
@@ -733,7 +733,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
       </header>
 
       {students.length === 0 ? (
-        <div className="px-5 py-14 text-center text-sm text-slate-500">
+        <div className="px-5 py-14 text-center text-sm text-slate-600">
           {copy.noStudents}
         </div>
       ) : (
@@ -819,7 +819,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <h3 className="text-sm font-black text-slate-900">{copy.itemSettings}</h3>
-                <p className="mt-1 text-xs text-slate-500">{copy.itemSettingsHint}</p>
+                <p className="mt-1 text-xs text-slate-600">{copy.itemSettingsHint}</p>
               </div>
               {!readOnly && (
               <button
@@ -853,7 +853,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                   key={item.id}
                   className="grid grid-cols-[minmax(0,1fr)_76px_auto] gap-2 border-l-4 border-amber-400 bg-white p-3 shadow-sm"
                 >
-                  <label className="text-[11px] font-bold text-slate-500">
+                  <label className="text-[11px] font-bold text-slate-600">
                     {copy.itemName}
                     <input
                       value={item.name}
@@ -872,7 +872,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                       className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm text-slate-900"
                     />
                   </label>
-                  <label className="text-[11px] font-bold text-slate-500">
+                  <label className="text-[11px] font-bold text-slate-600">
                     {copy.maximum}
                     <input
                       type="number"
@@ -948,7 +948,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
             <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
               <div>
                 <h3 className="text-sm font-black text-slate-900">{copy.classScores}</h3>
-                <p className="mt-1 text-xs text-slate-500">{copy.classScoresHint}</p>
+                <p className="mt-1 text-xs text-slate-600">{copy.classScoresHint}</p>
               </div>
               <div className="flex flex-wrap items-center justify-end gap-3 text-xs">
                 {!readOnly && (
@@ -1055,7 +1055,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                     {draft.items.map((item) => (
                       <th key={item.id} className="min-w-32 border-r border-slate-700 px-3 py-2">
                         <span className="block">{item.name || copy.itemName}</span>
-                        <span className="font-normal text-slate-400">/ {item.maxScore}</span>
+                        <span className="font-normal text-slate-300">/ {item.maxScore}</span>
                       </th>
                     ))}
                     <th className="min-w-24 px-3 py-2 text-right">{copy.overall}</th>
@@ -1162,24 +1162,24 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
 
                 <div className="mt-4 grid grid-cols-3 gap-px bg-slate-200">
                   <div className="bg-[#f8f4ea] px-3 py-3">
-                    <p className="text-xs text-slate-500">{copy.overall}</p>
+                    <p className="text-xs text-slate-600">{copy.overall}</p>
                     <p className="mt-1 text-2xl font-black text-slate-950">
                       {formatPercent(analysis.overallPercent)}
                     </p>
                   </div>
                   <div className="bg-[#f8f4ea] px-3 py-3">
-                    <p className="text-xs text-slate-500">{copy.classAverage}</p>
+                    <p className="text-xs text-slate-600">{copy.classAverage}</p>
                     <p className="mt-1 text-2xl font-black text-slate-950">
                       {formatPercent(analysis.classAveragePercent)}
                     </p>
                   </div>
                   <div className="bg-[#f8f4ea] px-3 py-3">
-                    <p className="text-xs text-slate-500">{copy.trend}</p>
+                    <p className="text-xs text-slate-600">{copy.trend}</p>
                     <p className={`mt-1 flex items-center text-base font-black ${trendTone}`}>
                       <TrendIcon className="mr-1.5 h-4 w-4" />
                       {copy[analysis.trend]}
                     </p>
-                    <p className="mt-1 text-xs font-bold tabular-nums text-slate-500">
+                    <p className="mt-1 text-xs font-bold tabular-nums text-slate-600">
                       {formatDelta(analysis.trendDelta)}
                     </p>
                   </div>
@@ -1201,7 +1201,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                       <span className="text-right font-bold tabular-nums">
                         {formatPercent(item.percent)}
                       </span>
-                      <span className="text-right tabular-nums text-slate-500">
+                      <span className="text-right tabular-nums text-slate-600">
                         {formatPercent(item.classAveragePercent)}
                       </span>
                       <span className={`text-right font-bold tabular-nums ${
@@ -1209,7 +1209,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                           ? 'text-rose-700'
                           : item.trendDelta != null && item.trendDelta >= 3
                             ? 'text-emerald-700'
-                            : 'text-slate-500'
+                            : 'text-slate-600'
                       }`}>
                         {formatDelta(item.trendDelta)}
                       </span>
@@ -1260,7 +1260,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                 <div className="mt-4 border-l-4 border-teal-600 bg-white px-4 py-4 shadow-sm ring-1 ring-slate-200">
                   <div>
                     <p className="text-sm font-black text-slate-900">{copy.reportScope}</p>
-                    <p className="mt-1 text-xs leading-5 text-slate-500">
+                    <p className="mt-1 text-xs leading-5 text-slate-600">
                       {copy.reportScopeHint}
                     </p>
                   </div>
@@ -1330,7 +1330,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                             className={`flex min-h-10 cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm font-semibold ${
                               isSelected
                                 ? 'border-teal-300 bg-teal-50 text-teal-950'
-                                : 'border-slate-200 bg-[#fffdf8] text-slate-500'
+                                : 'border-slate-200 bg-[#fffdf8] text-slate-600'
                             }`}
                           >
                             <input
@@ -1380,7 +1380,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                     {copy.printA4}
                   </button>
                 </div>
-                <p className="mt-3 text-xs leading-5 text-slate-500">{copy.printHint}</p>
+                <p className="mt-3 text-xs leading-5 text-slate-600">{copy.printHint}</p>
                 <div className={`mt-4 flex items-center text-xs font-bold ${
                   isPendingSave ? 'text-amber-700' : 'text-emerald-700'
                 }`}>

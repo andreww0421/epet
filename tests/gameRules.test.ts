@@ -87,7 +87,7 @@ Object.defineProperty(globalThis, 'localStorage', {
     setItem: (key: string, value: string) => memoryStorage.set(key, value),
   },
 });
-const { resetStoreForSession, useStore } = await import('../src/store/useStore.js');
+const { getStoreSessionGeneration, resetStoreForSession, useStore } = await import('../src/store/useStore.js');
 
 const tests: Array<{ name: string; run: () => void }> = [];
 
@@ -2720,6 +2720,25 @@ test('deleteStudent immediately removes every class-level record keyed to that s
   );
   assert.deepEqual(currentClass.activeBoss?.contributions, { kept: 20 });
   assert.deepEqual(currentClass.activeBoss?.attackCounts, { kept: 1 });
+});
+
+test('session reset invalidates sync observers before notifying them without persisting lifecycle metadata', () => {
+  const generation = getStoreSessionGeneration();
+  let observedGeneration: number | undefined;
+  const unsubscribe = useStore.subscribe(() => {
+    observedGeneration = getStoreSessionGeneration();
+  });
+  try {
+    resetStoreForSession(3000);
+    assert.equal(observedGeneration, generation + 1);
+    assert.equal(getStoreSessionGeneration(), generation + 1);
+    useStore.setState({ view: 'dashboard' });
+    assert.equal(getStoreSessionGeneration(), generation + 1);
+    assert.equal('storeSessionGeneration' in useStore.getState().data, false);
+  } finally {
+    unsubscribe();
+    resetStoreForSession(3000);
+  }
 });
 
 test('PII cache is opt-in and resetStoreForSession clears account-scoped state without deleting legacy data', () => {

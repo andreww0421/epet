@@ -267,10 +267,10 @@ export const WorkspaceAccessPanel = ({
     <section className="mb-6 rounded-xl border border-slate-200 bg-white p-5">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h4 className="flex items-center text-base font-black text-slate-900">
+          <h3 className="flex items-center text-base font-black text-slate-900">
             <Users className="mr-2 h-5 w-5 text-indigo-600" aria-hidden="true" />
             {copy.title}
-          </h4>
+          </h3>
           <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-600">{copy.hint}</p>
         </div>
         <button
@@ -286,7 +286,7 @@ export const WorkspaceAccessPanel = ({
       {error && <p className="mt-4 border-l-4 border-rose-500 bg-rose-50 px-3 py-2 text-sm font-bold text-rose-900" role="alert">{error}</p>}
 
       <div className="mt-5 rounded-lg border border-indigo-200 bg-indigo-50 p-4">
-        <h5 className="font-black text-indigo-950">{copy.invite}</h5>
+        <h4 className="font-black text-indigo-950">{copy.invite}</h4>
         <p className="mt-1 text-sm text-indigo-800">
           {invitationEnabled ? copy.inviteHint : copy.invitationUnavailable}
         </p>
@@ -319,7 +319,7 @@ export const WorkspaceAccessPanel = ({
 
       {invitations.length > 0 && (
         <div className="mt-5">
-          <h5 className="text-sm font-black text-slate-800">{copy.pendingInvitations}</h5>
+          <h4 className="text-sm font-black text-slate-800">{copy.pendingInvitations}</h4>
           <div className="mt-2 space-y-2">
             {invitations.map((invitation) => {
               const active = invitation.acceptedAt == null && invitation.revokedAt == null && invitation.expiresAt > Date.now();
@@ -431,10 +431,10 @@ export const WorkspaceAccessPanel = ({
 
       {isOwner && activeWorkspace && (
         <div className="mt-6 border-t border-rose-200 pt-5">
-          <h5 className="flex items-center font-black text-rose-900">
+          <h4 className="flex items-center font-black text-rose-900">
             <AlertTriangle className="mr-2 h-5 w-5" aria-hidden="true" />
             {copy.danger}
-          </h5>
+          </h4>
           <p className="mt-1 text-sm leading-6 text-rose-800">{copy.dangerHint}</p>
           <div className="mt-4 grid gap-3 md:grid-cols-2">
             <label className="text-xs font-bold text-slate-700">

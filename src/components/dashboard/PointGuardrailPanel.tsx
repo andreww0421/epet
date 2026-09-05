@@ -28,10 +28,10 @@ export const PointFairnessSummary: React.FC<PointFairnessSummaryProps> = ({
     <section className="border-b border-slate-200 bg-white px-5 py-4" aria-labelledby="point-fairness-heading">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h4 id="point-fairness-heading" className="flex items-center gap-2 text-sm font-bold text-slate-900">
+          <h3 id="point-fairness-heading" className="flex items-center gap-2 text-sm font-bold text-slate-900">
             <Users className="h-4 w-4 text-indigo-600" />
             {lang === 'en' ? 'Today’s feedback fairness' : '今日回饋公平性'}
-          </h4>
+          </h3>
           <p className="mt-1 text-xs text-slate-500">
             {lang === 'en'
               ? 'Counts teacher quick, manual, and class adjustments only.'

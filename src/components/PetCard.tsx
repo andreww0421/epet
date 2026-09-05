@@ -300,7 +300,7 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
           <span className="font-bold text-gray-800 text-lg">
             {publicStudentName}
           </span>
-          <span className="text-xs font-bold text-amber-600 flex items-center">
+          <span className="text-xs font-bold text-amber-700 flex items-center">
             <Star className="h-3 w-3 mr-1 fill-amber-500" /> Lv. {level}
           </span>
           {warningPoints > 0 && (
@@ -409,7 +409,7 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
           <rankInfo.icon className={`h-5 w-5 ${rankInfo.color}`} />
           <div className="flex flex-col leading-none">
             <span className={`font-black text-sm tracking-widest ${rankInfo.color}`}>{rankInfo.name}</span>
-            <span className={`text-[10px] font-bold opacity-70 ${rankInfo.color}`}>{rankPoints} RP</span>
+            <span className={`text-[10px] font-bold ${rankInfo.color}`}>{rankPoints} RP</span>
           </div>
         </div>
         
@@ -632,7 +632,7 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
                 className={`w-full flex items-center justify-center py-2 px-4 rounded-xl font-bold text-sm transition-all duration-200 ${
                   !canRevive
                     ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                    : 'bg-rose-500 hover:bg-rose-600 text-white shadow-sm hover:shadow active:scale-95'
+                    : 'bg-rose-700 hover:bg-rose-800 text-white shadow-sm hover:shadow active:scale-95'
                 }`}
               >
                 <RefreshCw className="h-4 w-4 mr-2" />
@@ -660,7 +660,7 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
                 className={`flex-1 flex items-center justify-center py-2 px-2 rounded-xl font-bold text-xs transition-all duration-200 ${
                   !canPlay || happiness >= 100
                     ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                    : 'bg-rose-400 hover:bg-rose-500 text-white shadow-sm hover:shadow active:scale-95'
+                    : 'bg-rose-700 hover:bg-rose-800 text-white shadow-sm hover:shadow active:scale-95'
                 }`}
               >
                 <Smile className="h-3 w-3 mr-1" />
@@ -697,7 +697,7 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
                 className={`flex-1 flex items-center justify-center py-2 px-2 rounded-xl font-bold text-xs transition-all duration-200 ${
                   !canBattle
                     ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                    : 'bg-rose-500 hover:bg-rose-600 text-white shadow-sm hover:shadow active:scale-95'
+                    : 'bg-rose-700 hover:bg-rose-800 text-white shadow-sm hover:shadow active:scale-95'
                 }`}
               >
                 <Swords className="h-3 w-3 mr-1" />
@@ -721,7 +721,7 @@ export const PetCard = React.memo<PetCardProps>(({ studentId, onBattle, onTeamUp
             )}
             
             {(!canFeed && fullness < 100 || (!canPlay && happiness < 100) || !canBattle || (!canUpgrade && level < 10)) && (
-              <p className="text-center text-[10px] text-red-500 mt-2 flex flex-col items-center justify-center space-y-0.5">
+              <p className="text-center text-[10px] text-red-700 mt-2 flex flex-col items-center justify-center space-y-0.5">
                 {!canFeed && fullness < 100 && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.feedNeedPoints.replace('{cost}', feedCost.toString())}</span>}
                 {!canPlay && happiness < 100 && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.playNeedPoints.replace('{cost}', playCost.toString())}</span>}
                 {!battleEnabled && <span><AlertCircle className="h-3 w-3 inline mr-1" />{tLang.battleDisabledByTeacher}</span>}

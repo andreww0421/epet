@@ -148,7 +148,7 @@ export const EconomyDashboardPanel: React.FC<EconomyDashboardPanelProps> = ({
         ].map(({ title, icon: Icon, items }) => (
           <div key={title}>
             <h3 className="flex items-center text-sm font-bold text-slate-800"><Icon className="mr-2 h-4 w-4 text-indigo-600" />{title}</h3>
-            {items.length === 0 ? <p className="mt-3 text-sm text-slate-400">{copy.noData}</p> : (
+            {items.length === 0 ? <p className="mt-3 text-sm text-slate-600">{copy.noData}</p> : (
               <div className="mt-2 divide-y divide-slate-100">
                 {items.slice(0, 5).map((item) => (
                   <div key={item.source} className="flex items-center justify-between py-2 text-sm">
@@ -162,7 +162,7 @@ export const EconomyDashboardPanel: React.FC<EconomyDashboardPanelProps> = ({
         ))}
         <div>
           <h3 className="flex items-center text-sm font-bold text-slate-800"><Trophy className="mr-2 h-4 w-4 text-indigo-600" />{copy.recipients}</h3>
-          {insights.topRecipients.length === 0 ? <p className="mt-3 text-sm text-slate-400">{copy.noData}</p> : (
+          {insights.topRecipients.length === 0 ? <p className="mt-3 text-sm text-slate-600">{copy.noData}</p> : (
             <ol className="mt-2 divide-y divide-slate-100">
               {insights.topRecipients.map((recipient, index) => (
                 <li key={recipient.studentId} className="flex items-center justify-between py-2 text-sm">

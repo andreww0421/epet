@@ -127,7 +127,7 @@ export const DailyTaskCalendarSettings: React.FC<DailyTaskCalendarSettingsProps>
             <CalendarDays className="h-5 w-5" aria-hidden="true" />
           </span>
           <div>
-            <h4 id="daily-task-calendar-title" className="font-bold text-slate-900">{copy.title}</h4>
+            <h3 id="daily-task-calendar-title" className="font-bold text-slate-900">{copy.title}</h3>
             <p className="mt-1 text-sm text-slate-600">{copy.hint}</p>
           </div>
         </div>
@@ -222,7 +222,7 @@ export const DailyTaskCalendarSettings: React.FC<DailyTaskCalendarSettingsProps>
       </div>
 
       <div className="mt-5 border-t border-amber-200 pt-4">
-        <h5 className="text-sm font-bold text-slate-800">{copy.leave}</h5>
+        <h4 className="text-sm font-bold text-slate-800">{copy.leave}</h4>
         {students.length === 0 ? (
           <p className="mt-2 text-sm text-slate-500">{copy.noStudents}</p>
         ) : (

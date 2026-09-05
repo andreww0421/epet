@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { AlertTriangle, Trash2, X } from 'lucide-react';
 import { useAuth } from '../auth/AuthProvider';
 import { deleteCurrentAccount } from '../services/backendApi';
+import { ModalDialog } from './ModalDialog';
 
 type AccountDeletionDialogProps = {
   language: 'zh' | 'en';
@@ -19,7 +20,6 @@ export const AccountDeletionDialog = ({
   const [confirmation, setConfirmation] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const closeButtonRef = useRef<HTMLButtonElement>(null);
   const copy = language === 'en'
     ? {
         title: 'Delete account',
@@ -60,15 +60,6 @@ export const AccountDeletionDialog = ({
       : '帳號刪除未完成，請稍後再試。';
   };
 
-  useEffect(() => {
-    closeButtonRef.current?.focus();
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !busy) onClose();
-    };
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [busy, onClose]);
-
   const submit = async () => {
     setBusy(true);
     setError('');
@@ -87,20 +78,19 @@ export const AccountDeletionDialog = ({
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/60 p-4">
-      <section
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="delete-account-title"
-        aria-describedby="delete-account-description"
-        className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"
-      >
+    <ModalDialog
+      labelledBy="delete-account-title"
+      describedBy="delete-account-description"
+      onClose={onClose}
+      closeDisabled={busy}
+      className="max-w-md rounded-2xl p-6 shadow-2xl"
+    >
         <div className="flex items-start justify-between gap-4">
           <div>
             <AlertTriangle className="h-8 w-8 text-rose-700" aria-hidden="true" />
             <h2 id="delete-account-title" className="mt-3 text-xl font-black text-slate-950">{copy.title}</h2>
           </div>
-          <button ref={closeButtonRef} type="button" onClick={onClose} disabled={busy} aria-label={copy.close} className="flex h-10 w-10 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100">
+          <button autoFocus type="button" onClick={onClose} disabled={busy} aria-label={copy.close} className="flex h-10 w-10 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100">
             <X className="h-5 w-5" aria-hidden="true" />
           </button>
         </div>
@@ -118,7 +108,6 @@ export const AccountDeletionDialog = ({
           <Trash2 className="mr-2 h-5 w-5" aria-hidden="true" />
           {copy.submit}
         </button>
-      </section>
-    </div>
+    </ModalDialog>
   );
 };

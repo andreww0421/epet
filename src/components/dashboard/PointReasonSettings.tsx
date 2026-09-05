@@ -109,7 +109,7 @@ export const PointReasonSettings: React.FC<PointReasonSettingsProps> = ({
               {competencyLabels[option.competency]}
             </span>
             {(option.isPinned || option.isRecent) && (
-              <span className="text-[10px] opacity-70">
+              <span className="text-[10px]">
                 {option.isPinned ? labels.pinnedReason : labels.recentReason}
               </span>
             )}

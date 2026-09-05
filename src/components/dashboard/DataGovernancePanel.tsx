@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../auth/AuthProvider';
 import { AccountDeletionDialog } from '../AccountDeletionDialog';
+import { handleTabKeyDown } from '../tabKeyboard';
 import type { ClassData } from '../../store/types';
 import {
   exportStudentPrivacyData,
@@ -571,7 +572,7 @@ export const DataGovernancePanel = ({
         </div>
       </header>
 
-      <div className="grid grid-cols-2 border-b border-white/10 lg:grid-cols-4" role="tablist">
+      <div className="grid grid-cols-2 border-b border-white/10 lg:grid-cols-4" role="tablist" aria-label={copy.title}>
         {([
           ['revisions', copy.revisions, History],
           ['student-export', copy.studentExport, UserRoundSearch],
@@ -582,7 +583,11 @@ export const DataGovernancePanel = ({
             key={itemView}
             type="button"
             role="tab"
+            id={`governance-tab-${itemView}`}
             aria-selected={view === itemView}
+            aria-controls="governance-panel"
+            tabIndex={view === itemView ? 0 : -1}
+            onKeyDown={handleTabKeyDown}
             onClick={() => setView(itemView)}
             className={`group relative flex min-h-16 items-center justify-center gap-3 border-white/10 px-4 text-sm font-black transition sm:border-r ${
               view === itemView
@@ -597,7 +602,7 @@ export const DataGovernancePanel = ({
         ))}
       </div>
 
-      <div className="bg-[#f2efe6] text-slate-950">
+      <div className="bg-[#f2efe6] text-slate-950" id="governance-panel" role="tabpanel" aria-labelledby={`governance-tab-${view}`} tabIndex={0}>
         {view === 'revisions' && (
           <div className="grid min-h-[34rem] lg:grid-cols-[minmax(280px,0.82fr)_minmax(0,1.4fr)]">
             <aside className="border-b border-slate-300 bg-[#e9e4d8] p-5 lg:border-b-0 lg:border-r lg:p-6">

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import type { AppData } from '../store/types';
 import {
   BackendAuthRequired,
@@ -9,7 +9,11 @@ import {
   saveBackendState,
 } from '../services/backendApi';
 import { normalizeAppData } from '../store/utils';
-import { useStore } from '../store/useStore';
+import {
+  getStoreSessionGeneration,
+  resetStoreForSession,
+  useStore,
+} from '../store/useStore';
 
 export type BackendSyncStatus =
   | 'checking'
@@ -36,6 +40,7 @@ export type BackendSyncController = {
 
 const DRAFT_STORAGE_PREFIX = 'epet-unsynced-workspace-v1:';
 const RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000] as const;
+let storeWorkspaceId: string | null = null;
 
 const createRequestId = () =>
   globalThis.crypto?.randomUUID?.()
@@ -102,11 +107,13 @@ export const useBackendSync = (
   canWrite = true,
 ): BackendSyncController => {
   const [status, setStatus] = useState<BackendSyncStatus>('checking');
-  const flushRef = useRef<() => Promise<boolean>>(async () => true);
+  const flushRef = useRef<() => Promise<boolean>>(async () => false);
 
   const flush = useCallback(() => flushRef.current(), []);
 
-  useEffect(() => {
+  // Detach the previous workspace before clearing its view. Do the small
+  // synchronous handoff before paint; network loading remains asynchronous.
+  useLayoutEffect(() => {
     let disposed = false;
     let revision = 0;
     let saveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -115,6 +122,7 @@ export const useBackendSync = (
     let pendingDraft: PendingWorkspaceDraft | null = null;
     let saveInFlight: Promise<boolean> | null = null;
     let retryAttempt = 0;
+    let loaded = false;
 
     if (!enabled || !workspaceId) {
       setStatus('checking');
@@ -124,23 +132,36 @@ export const useBackendSync = (
       };
     }
 
+    setStatus('checking');
+    // Auth refreshes temporarily unmount this hook. Preserve local UI state
+    // when remounting the same workspace, but isolate every actual workspace
+    // transition before the new remote snapshot is loaded.
+    if (storeWorkspaceId !== workspaceId) {
+      resetStoreForSession();
+      storeWorkspaceId = workspaceId;
+    }
+    const generation = getStoreSessionGeneration();
+    const isCurrent = () =>
+      !disposed && generation === getStoreSessionGeneration();
+
     const persistPendingDraft = () => {
       if (pendingDraft) writePendingDraft(pendingDraft);
     };
 
     const scheduleRetry = (runSave: () => Promise<boolean>) => {
-      if (disposed || retryTimer || !pendingDraft) return;
+      if (!isCurrent() || retryTimer || !pendingDraft) return;
       const delay = RETRY_DELAYS_MS[
         Math.min(retryAttempt, RETRY_DELAYS_MS.length - 1)
       ];
       retryAttempt += 1;
       retryTimer = setTimeout(() => {
         retryTimer = undefined;
-        if (!disposed) void runSave();
+        if (isCurrent()) void runSave();
       }, delay);
     };
 
     const handleFailure = (error: unknown) => {
+      if (!isCurrent()) return;
       if (error instanceof BackendAuthRequired) {
         if (!disposed) setStatus('session-expired');
         onAuthenticationInvalid?.();
@@ -154,10 +175,10 @@ export const useBackendSync = (
     };
 
     const runSave = async (): Promise<boolean> => {
-      if (disposed) return false;
+      if (!isCurrent()) return false;
       if (saveInFlight) {
         const completed = await saveInFlight;
-        if (!completed) return false;
+        if (!completed || !isCurrent()) return false;
         return pendingDraft ? runSave() : true;
       }
       if (!pendingDraft) return true;
@@ -171,7 +192,9 @@ export const useBackendSync = (
             draft.data,
             draft.baseRevision,
             draft.requestId,
+            workspaceId,
           );
+          if (!isCurrent()) return false;
           revision = saved.revision;
           retryAttempt = 0;
           if (pendingDraft) {
@@ -187,6 +210,7 @@ export const useBackendSync = (
           if (!disposed) setStatus('connected');
           return true;
         } catch (error) {
+          if (!isCurrent()) return false;
           if (
             error instanceof BackendRevisionConflict &&
             sameWorkspaceData(error.current.data, draft.data)
@@ -263,8 +287,8 @@ export const useBackendSync = (
       })();
 
       const completed = await saveInFlight;
-      if (completed && pendingDraft && !disposed) return runSave();
-      return completed && !pendingDraft;
+      if (completed && pendingDraft && isCurrent()) return runSave();
+      return completed && !pendingDraft && isCurrent();
     };
 
     const queueSave = (data: AppData, delay = 600) => {
@@ -279,11 +303,12 @@ export const useBackendSync = (
       if (saveTimer) clearTimeout(saveTimer);
       saveTimer = setTimeout(() => {
         saveTimer = undefined;
-        if (!disposed) void runSave();
+        if (isCurrent()) void runSave();
       }, delay);
     };
 
     flushRef.current = async () => {
+      if (!isCurrent() || !loaded) return false;
       if (saveTimer) clearTimeout(saveTimer);
       saveTimer = undefined;
       if (retryTimer) clearTimeout(retryTimer);
@@ -300,14 +325,17 @@ export const useBackendSync = (
     globalThis.addEventListener?.('beforeunload', handleBeforeUnload);
 
     const start = async () => {
-      if (!(await probeBackend()) || disposed) {
-        if (!disposed) setStatus('offline');
+      if (!(await probeBackend()) || !isCurrent()) {
+        if (isCurrent()) setStatus('offline');
         return;
       }
       try {
-        const remote = await loadBackendState();
+        const remote = await loadBackendState(workspaceId);
+        if (!isCurrent()) return;
         revision = remote.revision;
-        const recoveredDraft = readPendingDraft(workspaceId);
+        // Preserve any old writable draft, but never replay it as a viewer.
+        const recoveredDraft = canWrite ? readPendingDraft(workspaceId) : null;
+        loaded = true;
         if (
           recoveredDraft &&
           recoveredDraft.baseRevision === remote.revision
@@ -343,14 +371,16 @@ export const useBackendSync = (
             useStore.getState().data,
             revision,
             createRequestId(),
+            workspaceId,
           );
+          if (!isCurrent()) return;
           revision = saved.revision;
         }
-        if (disposed) return;
+        if (!isCurrent()) return;
         setStatus('connected');
         if (!canWrite) return;
         unsubscribe = useStore.subscribe((state, previousState) => {
-          if (state.data === previousState.data || disposed) return;
+          if (state.data === previousState.data || !isCurrent()) return;
           queueSave(state.data);
         });
         if (pendingDraft) void runSave();
@@ -367,7 +397,7 @@ export const useBackendSync = (
       persistPendingDraft();
       unsubscribe?.();
       globalThis.removeEventListener?.('beforeunload', handleBeforeUnload);
-      flushRef.current = async () => !pendingDraft && !saveInFlight;
+      flushRef.current = async () => false;
     };
   }, [canWrite, enabled, onAuthenticationInvalid, workspaceId]);
 

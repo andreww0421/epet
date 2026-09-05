@@ -215,6 +215,7 @@ export class BackendApiError extends Error {
 type RequestOptions = {
   auth?: boolean;
   workspace?: boolean;
+  workspaceId?: string;
 };
 
 const request = async <T>(
@@ -234,8 +235,9 @@ const request = async <T>(
       headers.set('x-csrf-token', csrfToken);
     }
     if (options.workspace !== false) {
-      if (!activeWorkspaceId) throw new BackendAuthRequired();
-      headers.set('x-epet-workspace', activeWorkspaceId);
+      const requestWorkspaceId = options.workspaceId ?? activeWorkspaceId;
+      if (!requestWorkspaceId) throw new BackendAuthRequired();
+      headers.set('x-epet-workspace', requestWorkspaceId);
     }
     const response = await fetch(path, {
       ...init,
@@ -464,8 +466,8 @@ export const clearAuthentication = () => {
   backendAvailable = false;
 };
 
-export const loadBackendState = () =>
-  request<BackendStateSnapshot>('/api/v1/state');
+export const loadBackendState = (workspaceId?: string) =>
+  request<BackendStateSnapshot>('/api/v1/state', {}, { workspaceId });
 
 export const exportWorkspacePrivacyData = () =>
   request<WorkspacePrivacyExport>('/api/v1/privacy/export');
@@ -586,6 +588,7 @@ export const saveBackendState = (
   data: AppData,
   baseRevision: number,
   requestId?: string,
+  workspaceId?: string,
 ) =>
   request<BackendStateSnapshot>('/api/v1/state', {
     method: 'PUT',
@@ -593,7 +596,7 @@ export const saveBackendState = (
       ? { 'x-request-id': requestId }
       : undefined,
     body: JSON.stringify({ data, baseRevision }),
-  });
+  }, { workspaceId });
 
 export const loadStudentAnalytics = (
   classId: string,

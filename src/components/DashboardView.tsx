@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store/useStore';
+import { handleTabKeyDown } from './tabKeyboard';
 import { translations, petNames, POINT_REASON_OPTIONS } from '../i18n/translations';
 import { PET_TYPES, DEFAULT_BATTLE_MODE, DEFAULT_MAX_TEAM_SIZE } from '../store/constants';
 import { normalizeAppData, applyDecay, getSettingsImpactPreview } from '../store/utils';
@@ -967,7 +968,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             key={section}
             type="button"
             role="tab"
+            id={`dashboard-tab-${section}`}
             aria-selected={dashboardSection === section}
+            aria-controls="dashboard-panel"
+            tabIndex={dashboardSection === section ? 0 : -1}
+            onKeyDown={handleTabKeyDown}
             onClick={() => setDashboardSection(section)}
             className={`inline-flex min-h-11 items-center justify-center gap-2 border-b-2 px-4 py-2 text-sm font-bold transition-colors ${
               dashboardSection === section
@@ -981,6 +986,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         ))}
       </div>
 
+      <div
+        id="dashboard-panel"
+        role="tabpanel"
+        aria-labelledby={`dashboard-tab-${dashboardSection}`}
+        tabIndex={0}
+      >
       {readOnly && (
         <div
           className="mb-6 border-l-4 border-sky-500 bg-sky-50 px-4 py-4 text-sky-950"
@@ -1120,7 +1131,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     store.resetSeason();
                   }
                 }}
-                className="inline-flex items-center px-4 py-2 border border-slate-300 rounded-md shadow-sm text-sm font-medium text-amber-600 bg-white hover:bg-amber-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-500 transition-colors"
+                className="inline-flex items-center px-4 py-2 border border-slate-300 rounded-md shadow-sm text-sm font-medium text-amber-700 bg-white hover:bg-amber-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-500 transition-colors"
               >
                 <RefreshCw className="h-4 w-4 mr-2" />
                 {tLang.resetSeason}
@@ -1141,10 +1152,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       {/* Add Student Form */}
       {!readOnly && (
       <div className={`${dashboardSection === 'students' ? '' : 'hidden'} bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200 mb-6 p-5`}>
-        <h3 className="text-lg font-medium text-slate-900 mb-4 flex items-center">
+        <h2 className="text-lg font-medium text-slate-900 mb-4 flex items-center">
           <Users className="h-5 w-5 mr-2 text-indigo-500" />
           {tLang.addStudent}
-        </h3>
+        </h2>
         <div className="flex flex-col sm:flex-row gap-4 items-end">
           <div className="flex-1 w-full">
             <label htmlFor="studentName" className="block text-sm font-medium text-slate-700 mb-1">{tLang.studentName}</label>
@@ -1179,13 +1190,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       <div className={`${dashboardSection === 'rewards' ? '' : 'hidden'} bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200`}>
         <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h3 className="text-base font-semibold text-slate-900">{tLang.pointManagement}</h3>
+            <h2 className="text-base font-semibold text-slate-900">{tLang.pointManagement}</h2>
             <p className="mt-1 text-xs text-slate-500">{tLang.airdropHint}</p>
           </div>
           <button
             onClick={() => setPointAdjustmentTarget({ kind: 'class', count: currentStudents.length })}
             disabled={currentStudents.length === 0}
-            className="inline-flex items-center justify-center rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+            className="inline-flex items-center justify-center rounded-md bg-emerald-700 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-300"
           >
             <Gift className="mr-2 h-4 w-4" />
             {tLang.airdropAll}
@@ -1319,7 +1330,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         </div>
                         <div className="mt-1 flex flex-wrap gap-1">
                           <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-bold ${
-                            warningPoints > 0 ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-500'
+                            warningPoints > 0 ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-600'
                           }`}>
                             <AlertCircle className="mr-1 h-3 w-3" />
                             {tLang.warningPoints} {warningPoints}/{WARNING_THRESHOLD}
@@ -1362,7 +1373,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm font-bold text-amber-600">Lv. {student.pet.level || 1}</div>
+                        <div className="text-sm font-bold text-amber-700">Lv. {student.pet.level || 1}</div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="text-sm font-bold text-indigo-600">{student.points} / {data.settings?.maxPoints ?? 700}</div>
@@ -1387,7 +1398,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                         <div className="flex justify-end items-center space-x-3">
                           <div className="flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 p-2">
+                            <label htmlFor={`point-reason-${student.id}`} className="text-xs text-slate-700">
+                              {tLang.fixedReason ?? '固定原因'}
+                            </label>
                             <select
+                              id={`point-reason-${student.id}`}
                               value={selectedReasons[student.id] ?? defaultPointReasonId}
                               onChange={(e) =>
                                 setSelectedReasons((prev) => ({
@@ -1528,10 +1543,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       <section className={`${dashboardSection === 'activities' ? '' : 'hidden'} border border-emerald-200 bg-white p-5 shadow-sm`}>
         <div className="mb-5 flex flex-col gap-2 border-b border-emerald-100 pb-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h3 className="flex items-center text-lg font-semibold text-slate-900">
+            <h2 className="flex items-center text-lg font-semibold text-slate-900">
               <Target className="mr-2 h-5 w-5 text-emerald-600" />
               {tLang.classGoal}
-            </h3>
+            </h2>
             <p className="mt-1 text-sm text-slate-500">{tLang.classGoalHint}</p>
           </div>
           <div className="text-sm font-bold text-emerald-700">
@@ -1686,10 +1701,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       </section>
 
       <div className={`${dashboardSection === 'activities' ? '' : 'hidden'} mt-6 bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200 p-5`}>
-        <h3 className="text-lg font-medium text-slate-900 mb-4 flex items-center">
+        <h2 className="text-lg font-medium text-slate-900 mb-4 flex items-center">
           <BookOpen className="h-5 w-5 mr-2 text-emerald-500" />
           {tLang.guideTitle}
-        </h3>
+        </h2>
         <div className="grid gap-4 lg:grid-cols-2">
           <div className="rounded-2xl border border-emerald-100 bg-emerald-50/70 p-4">
             <div className="mb-3 flex items-center text-sm font-bold text-emerald-800">
@@ -1724,16 +1739,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       {/* Boss Management */}
       <div className={`${dashboardSection === 'activities' ? '' : 'hidden'} bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200 mt-6 p-5`}>
-        <h3 className="text-lg font-medium text-amber-900 mb-4 flex items-center">
+        <h2 className="text-lg font-medium text-amber-900 mb-4 flex items-center">
           <Skull className="h-5 w-5 mr-2 text-rose-500" />
           {tLang.bossManagement ?? '魔王副本管理'}
-        </h3>
+        </h2>
         {currentClass?.activeBoss?.isActive ? (
           <div className="bg-rose-50 border border-rose-200 rounded-lg p-4 flex flex-col md:flex-row items-center justify-between gap-4">
             <div className="flex-1 w-full">
-              <h4 className="text-lg font-bold text-rose-800 flex items-center mb-2">
+              <h3 className="text-lg font-bold text-rose-800 flex items-center mb-2">
                 {currentClass.activeBoss.name}
-              </h4>
+              </h3>
               <div className="w-full bg-slate-200 rounded-full h-4 relative overflow-hidden">
                 <div 
                   className="bg-rose-500 h-4 rounded-full transition-all duration-300" 
@@ -1778,7 +1793,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
             <div className="grid gap-4 md:grid-cols-2">
               <div className="border-l-4 border-emerald-500 bg-emerald-50 p-4">
-                <h4 className="text-sm font-bold text-emerald-900">{tLang.bossParticipationReward}</h4>
+                <h3 className="text-sm font-bold text-emerald-900">{tLang.bossParticipationReward}</h3>
                 <p className="mt-1 text-xs text-emerald-800">{tLang.bossParticipationRewardHint}</p>
                 <div className="mt-3 grid grid-cols-3 gap-3">
                   <label className="text-xs font-medium text-slate-700">
@@ -1814,7 +1829,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
               </div>
               <div className="border-l-4 border-sky-500 bg-sky-50 p-4">
-                <h4 className="text-sm font-bold text-sky-900">{tLang.bossImprovementReward}</h4>
+                <h3 className="text-sm font-bold text-sky-900">{tLang.bossImprovementReward}</h3>
                 <p className="mt-1 text-xs text-sky-800">{tLang.bossImprovementRewardHint}</p>
                 <div className="mt-3 grid grid-cols-3 gap-3">
                   <label className="text-xs font-medium text-slate-700">
@@ -1888,10 +1903,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       {/* System Settings */}
       <div className={`${dashboardSection === 'rules' ? '' : 'hidden'} bg-white shadow-sm rounded-lg overflow-hidden border border-slate-200 mt-6 p-5`}>
-        <h3 className="text-lg font-medium text-slate-900 mb-6 flex items-center">
+        <h2 className="text-lg font-medium text-slate-900 mb-6 flex items-center">
           <Settings className="h-5 w-5 mr-2 text-indigo-500" />
           {tLang.systemSettings}
-        </h3>
+        </h2>
 
         {canAdministerWorkspace && (
           <WorkspaceAccessPanel
@@ -1947,7 +1962,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
         <div className="mb-6 grid gap-5 border-y border-slate-200 py-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(300px,1fr)]">
           <div>
-            <h4 className="text-sm font-bold text-slate-800">{tLang.settingsPresets}</h4>
+            <h3 className="text-sm font-bold text-slate-800">{tLang.settingsPresets}</h3>
             <p className="mt-1 text-xs text-slate-500">{tLang.settingsPresetsHint}</p>
             <div className="mt-3 flex flex-wrap gap-2">
               {[
@@ -1970,7 +1985,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
           </div>
           <div>
-            <h4 className="text-sm font-bold text-slate-800">{tLang.settingsImpact}</h4>
+            <h3 className="text-sm font-bold text-slate-800">{tLang.settingsImpact}</h3>
             <div className="mt-3 grid grid-cols-2 gap-px bg-slate-200">
               <div className="bg-white p-3">
                 <p className="text-xs text-slate-500">{tLang.currentAverageFullness}</p>
@@ -2020,10 +2035,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
         <div className="mb-6 border-y border-slate-200 py-5">
           <div>
-            <h4 className="flex items-center text-sm font-bold text-slate-800">
+            <h3 className="flex items-center text-sm font-bold text-slate-800">
               <Shield className="mr-2 h-4 w-4 text-emerald-600" />
               {tLang.educationSafetySettings}
-            </h4>
+            </h3>
             <p className="mt-1 text-xs text-slate-500">{tLang.educationSafetyHint}</p>
           </div>
           <div className="mt-4 flex items-start justify-between gap-4 border-l-4 border-emerald-400 bg-emerald-50 px-4 py-3">
@@ -2132,9 +2147,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-6">
           {/* 基本規則 */}
           <div className="space-y-4 bg-slate-50 p-4 rounded-xl border border-slate-200">
-            <h4 className="text-sm font-bold text-slate-700 pb-2 border-b border-slate-200">
+            <h3 className="text-sm font-bold text-slate-700 pb-2 border-b border-slate-200">
               {lang === 'en' ? 'General Rules' : '基本規則'}
-            </h4>
+            </h3>
             <div className="flex flex-col gap-1">
               <label htmlFor="language" className="text-sm font-medium text-slate-700">{tLang.language}</label>
               <select
@@ -2185,9 +2200,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
           {/* 互動設定 */}
           <div className="space-y-4 bg-slate-50 p-4 rounded-xl border border-slate-200">
-            <h4 className="text-sm font-bold text-slate-700 pb-2 border-b border-slate-200">
+            <h3 className="text-sm font-bold text-slate-700 pb-2 border-b border-slate-200">
               {lang === 'en' ? 'Economy & Interactions' : '經濟與互動數值'}
-            </h4>
+            </h3>
             <div className="flex flex-col gap-1">
               <label htmlFor="feedCost" className="text-sm font-medium text-slate-700">{tLang.feedCost}</label>
               <input type="number" id="feedCost" min="1" value={feedCost} onChange={(e) => setFeedCost(Number(e.target.value))} className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2" />
@@ -2214,10 +2229,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
           {/* 魔王設定 */}
           <div className="space-y-4 bg-rose-50 p-4 rounded-xl border border-rose-200">
-            <h4 className="text-sm font-bold text-rose-800 pb-2 border-b border-rose-200 flex items-center">
+            <h3 className="text-sm font-bold text-rose-800 pb-2 border-b border-rose-200 flex items-center">
               <Crosshair className="mr-2 h-4 w-4" />
               {tLang.bossAttackSettings}
-            </h4>
+            </h3>
             <div className="flex flex-col gap-1">
               <label htmlFor="bossAttackMode" className="text-sm font-medium text-slate-700">
                 {tLang.bossAttackMode}
@@ -2233,7 +2248,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <option value="shared">{tLang.bossAttackShared}</option>
                 <option value="random">{tLang.bossAttackRandom}</option>
               </select>
-              <p className="text-xs text-slate-500">
+              <p className="text-xs text-slate-600">
                 {bossAttackMode === 'recoverable'
                   ? tLang.bossAttackRecoverableHint
                   : bossAttackMode === 'shared'
@@ -2254,7 +2269,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <option key={count} value={count}>{tLang.bossTargetCountOption.replace('{count}', count.toString())}</option>
                 ))}
               </select>
-              <p className="text-xs text-slate-500">{tLang.bossAttackMaxTargetsHint}</p>
+              <p className="text-xs text-slate-600">{tLang.bossAttackMaxTargetsHint}</p>
               </div>
             )}
             <div className="flex flex-col gap-1">
@@ -2273,7 +2288,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 onChange={(e) => setBossAttackDamage(Number(e.target.value))}
                 className="w-full rounded-md border border-slate-300 bg-white p-2 text-sm shadow-sm focus:border-rose-500 focus:ring-rose-500"
               />
-              <p className="text-xs text-slate-500">
+              <p className="text-xs text-slate-600">
                 {bossAttackMode === 'recoverable'
                   ? tLang.bossAttackRecoverableHint
                   : bossAttackMode === 'shared'
@@ -2306,9 +2321,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
           {/* 對戰設定 */}
           <div className="space-y-4 bg-slate-50 p-4 rounded-xl border border-slate-200">
-            <h4 className="text-sm font-bold text-slate-700 pb-2 border-b border-slate-200">
+            <h3 className="text-sm font-bold text-slate-700 pb-2 border-b border-slate-200">
               {lang === 'en' ? 'Battle Settings' : '對戰與組隊設定'}
-            </h4>
+            </h3>
             <div className="flex items-start justify-between gap-4 rounded-md border border-slate-200 bg-white p-3">
               <div>
                 <p className="text-sm font-bold text-slate-800">{tLang.battleEnabled}</p>
@@ -2460,7 +2475,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       : '隊伍賽依每位成員在本場的角色扣除飽食度，不受勝敗結果影響。'}
                   </p>
                   <div className="space-y-3">
-                    <h5 className="text-xs font-bold text-slate-600">{lang === 'en' ? 'Attacking Team' : '攻擊方'}</h5>
+                    <h4 className="text-xs font-bold text-slate-600">{lang === 'en' ? 'Attacking Team' : '攻擊方'}</h4>
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                       <div className="flex flex-col gap-1">
                         <label htmlFor="teamBattleAttackerFullnessCost" className="text-sm font-medium text-slate-700">
@@ -2477,7 +2492,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     </div>
                   </div>
                   <div className="space-y-3 border-t border-slate-200 pt-3">
-                    <h5 className="text-xs font-bold text-slate-600">{lang === 'en' ? 'Defending Team' : '防守方'}</h5>
+                    <h4 className="text-xs font-bold text-slate-600">{lang === 'en' ? 'Defending Team' : '防守方'}</h4>
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                       <div className="flex flex-col gap-1">
                         <label htmlFor="teamBattleDefenderFullnessCost" className="text-sm font-medium text-slate-700">
@@ -2537,9 +2552,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
           {/* 段位與賽季設定 */}
           <div className="space-y-4 bg-slate-50 p-4 rounded-xl border border-slate-200">
-            <h4 className="text-sm font-bold text-slate-700 pb-2 border-b border-slate-200">
+            <h3 className="text-sm font-bold text-slate-700 pb-2 border-b border-slate-200">
               {lang === 'en' ? 'Rank & Season Settings' : '段位與賽季設定'}
-            </h4>
+            </h3>
             
             <div className="flex flex-col gap-1">
               <label className="text-sm font-medium text-slate-700">{lang === 'en' ? 'Rank Thresholds' : '排位門檻 (RP)'}</label>
@@ -2579,6 +2594,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             {tLang.saveSettings}
           </button>
         </div>
+      </div>
+
       </div>
 
       <AddClassDialog

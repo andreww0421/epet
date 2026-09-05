@@ -2650,7 +2650,13 @@ export const useStore = create<StoreState>()(
   )
 );
 
+// In-memory lifecycle marker, never part of AppData or persisted student data.
+// Reset notifications must invalidate old sync work before setState notifies it.
+let storeSessionGeneration = 0;
+export const getStoreSessionGeneration = () => storeSessionGeneration;
+
 export const resetStoreForSession = (now = Date.now()) => {
+  storeSessionGeneration += 1;
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = undefined;
   petAnimationTimers.forEach((timer) => clearTimeout(timer));

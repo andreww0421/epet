@@ -338,7 +338,8 @@ export const ClassroomView: React.FC = () => {
           <div className="mt-6 flex flex-wrap justify-center gap-2">
             <button
               onClick={() => setViewMode('grid')}
-              className={`px-4 py-2 rounded-full font-medium transition-colors ${viewMode === 'grid' ? 'bg-amber-500 text-white shadow-md' : 'bg-white text-amber-700 hover:bg-amber-100'}`}
+              aria-pressed={viewMode === 'grid'}
+              className={`px-4 py-2 rounded-full font-medium transition-colors ${viewMode === 'grid' ? 'bg-amber-700 text-white shadow-md' : 'bg-white text-amber-700 hover:bg-amber-100'}`}
             >
               <Users className="h-4 w-4 inline mr-2" />
               {tLang.classroomTitle}
@@ -346,7 +347,8 @@ export const ClassroomView: React.FC = () => {
             {publicLeaderboardMode !== 'hidden' && (
               <button
                 onClick={() => setViewMode('leaderboard')}
-                className={`px-4 py-2 rounded-full font-medium transition-colors ${viewMode === 'leaderboard' ? 'bg-amber-500 text-white shadow-md' : 'bg-white text-amber-700 hover:bg-amber-100'}`}
+                aria-pressed={viewMode === 'leaderboard'}
+                className={`px-4 py-2 rounded-full font-medium transition-colors ${viewMode === 'leaderboard' ? 'bg-amber-700 text-white shadow-md' : 'bg-white text-amber-700 hover:bg-amber-100'}`}
               >
                 <BarChart3 className="h-4 w-4 inline mr-2" />
                 {publicLeaderboardMode === 'growth' ? tLang.leaderboardGrowth : tLang.leaderboard}
@@ -354,7 +356,8 @@ export const ClassroomView: React.FC = () => {
             )}
             <button
               onClick={() => setViewMode('teams')}
-              className={`px-4 py-2 rounded-full font-medium transition-colors ${viewMode === 'teams' ? 'bg-amber-500 text-white shadow-md' : 'bg-white text-amber-700 hover:bg-amber-100'}`}
+              aria-pressed={viewMode === 'teams'}
+              className={`px-4 py-2 rounded-full font-medium transition-colors ${viewMode === 'teams' ? 'bg-amber-700 text-white shadow-md' : 'bg-white text-amber-700 hover:bg-amber-100'}`}
             >
               <Users className="h-4 w-4 inline mr-2" />
               {lang === 'en' ? 'Team Leaderboard' : '隊伍排行榜'}
