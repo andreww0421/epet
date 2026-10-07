@@ -1,22 +1,23 @@
 import { mkdir, writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
 import { createEpetServer } from '../../../server/app';
 import type { WorkspaceInvitationDelivery } from '../../../server/auth';
 import {
   E2E_BASE_URL,
+  E2E_DIST_DIRECTORY,
   getE2eRuntimePaths,
   getE2eInvitationFile,
 } from './paths';
 
-const projectRoot = resolve(process.cwd());
 const {
   directory: e2eRuntimeDirectory,
   dataFile: e2eDataFile,
   invitationOutboxDirectory,
+  serverPidFile,
 } = getE2eRuntimePaths();
 // Refuse to reuse an existing directory, including an interrupted older run.
 await mkdir(e2eRuntimeDirectory);
 await mkdir(invitationOutboxDirectory);
+await writeFile(serverPidFile, String(process.pid), { encoding: 'utf8', flag: 'wx' });
 
 // Each fixture uses a unique recipient. Write one immutable delivery per file
 // so Windows readers never race an atomic replacement of a shared outbox.
@@ -28,7 +29,7 @@ const captureInvitation = (delivery: WorkspaceInvitationDelivery) =>
 
 const { server, repository } = createEpetServer({
   dataFile: e2eDataFile,
-  distDirectory: resolve(projectRoot, 'dist'),
+  distDirectory: E2E_DIST_DIRECTORY,
   botProtectionRequired: false,
   emailVerificationRequired: false,
   forgotResponseFloorMs: 0,
@@ -36,8 +37,14 @@ const { server, repository } = createEpetServer({
   workspaceInvitationMailer: captureInvitation,
 });
 
+let stopping = false;
 const stop = () => {
+  if (stopping) return;
+  stopping = true;
   server.close(() => process.exit(0));
+  // Browser keep-alive sockets can otherwise leave Playwright's webServer
+  // teardown waiting indefinitely after every assertion has completed.
+  server.closeAllConnections();
 };
 
 process.once('SIGINT', stop);

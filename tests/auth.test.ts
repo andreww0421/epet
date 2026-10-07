@@ -4,10 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
+  AuthForbiddenError,
   AuthService,
   AuthValidationError,
   createPasswordCredential,
   DEFAULT_PASSWORD_ITERATIONS,
+  hashOpaqueToken,
   InvalidCredentialsError,
   InvalidPasswordResetTokenError,
   InvalidSessionError,
@@ -15,6 +17,7 @@ import {
 } from '../server/auth';
 import {
   EmailAlreadyExistsError,
+  InvalidWorkspaceInvitationError,
   WorkspaceAlreadyClaimedError,
 } from '../server/contracts';
 import { JsonWorkspaceRepository } from '../server/repository';
@@ -254,6 +257,164 @@ test('password reset tokens are hashed, expire once, and revoke every session', 
       ),
       InvalidPasswordResetTokenError,
     );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('expired sessions fail closed at the expiry boundary and are persistently revoked', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'epet-session-expiry-'));
+  const filePath = join(directory, 'auth.json');
+  let now = 1_700_000_000_000;
+  const sessionTtlMs = 60_000;
+  const repository = new JsonWorkspaceRepository(filePath);
+  const auth = new AuthService(repository, {
+    now: () => now,
+    passwordIterations: 1_000,
+    sessionTtlMs,
+  });
+
+  try {
+    const registered = await auth.register(
+      registerInput('expiry@example.com', 'Expiry Teacher'),
+    );
+    const tokenHash = await hashOpaqueToken(registered.sessionToken);
+    const readPersistedSession = async () => {
+      const database = JSON.parse(await readFile(filePath, 'utf8')) as {
+        sessions: Record<string, {
+          expiresAt: number;
+          revokedAt: number | null;
+        }>;
+      };
+      return database.sessions[tokenHash];
+    };
+
+    assert.equal((await readPersistedSession()).expiresAt, now + sessionTtlMs);
+    assert.equal((await readPersistedSession()).revokedAt, null);
+
+    now += sessionTtlMs;
+    await assert.rejects(
+      auth.getSession(registered.sessionToken),
+      InvalidSessionError,
+    );
+    assert.equal((await readPersistedSession()).revokedAt, now);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('unknown-account and wrong-password login both execute one PBKDF2 derivation', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'epet-login-timing-'));
+  const filePath = join(directory, 'auth.json');
+  const baseCrypto = globalThis.crypto;
+  let deriveBitsCalls = 0;
+  const monitoredSubtle = new Proxy(baseCrypto.subtle, {
+    get(target, property) {
+      if (property === 'deriveBits') {
+        return (...args: Parameters<SubtleCrypto['deriveBits']>) => {
+          deriveBitsCalls += 1;
+          return Reflect.apply(target.deriveBits, target, args);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  const monitoredCrypto = new Proxy(baseCrypto, {
+    get(target, property) {
+      if (property === 'subtle') return monitoredSubtle;
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  const repository = new JsonWorkspaceRepository(filePath);
+  const auth = new AuthService(repository, {
+    crypto: monitoredCrypto,
+    passwordIterations: 1_000,
+  });
+
+  try {
+    await auth.register(registerInput('known@example.com', 'Known Teacher'));
+
+    deriveBitsCalls = 0;
+    await assert.rejects(
+      auth.login({
+        email: 'missing@example.com',
+        password: 'a plausible wrong password',
+      }),
+      InvalidCredentialsError,
+    );
+    const unknownAccountDerivations = deriveBitsCalls;
+
+    deriveBitsCalls = 0;
+    await assert.rejects(
+      auth.login({
+        email: 'known@example.com',
+        password: 'a plausible wrong password',
+      }),
+      InvalidCredentialsError,
+    );
+    const wrongPasswordDerivations = deriveBitsCalls;
+
+    assert.equal(unknownAccountDerivations, 1);
+    assert.equal(wrongPasswordDerivations, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('membership removal immediately revokes workspace access from an issued session', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'epet-membership-revoke-'));
+  const filePath = join(directory, 'auth.json');
+  const repository = new JsonWorkspaceRepository(filePath);
+  const auth = new AuthService(repository, { passwordIterations: 1_000 });
+
+  try {
+    const owner = await auth.register(
+      registerInput('owner@example.com', 'Workspace Owner'),
+    );
+    const workspaceId = owner.session.activeWorkspaceId;
+    assert.ok(workspaceId);
+
+    const invitation = await auth.createWorkspaceInvitation(
+      owner.sessionToken,
+      workspaceId,
+      'viewer@example.com',
+      'viewer',
+      ['class-a'],
+    );
+    assert.equal(
+      (await readFile(filePath, 'utf8')).includes(invitation.token),
+      false,
+    );
+
+    const viewer = await auth.acceptWorkspaceInvitation(
+      invitation.token,
+      'Classroom Viewer',
+      'another correct horse battery staple',
+    );
+    await assert.rejects(
+      auth.acceptWorkspaceInvitation(
+        invitation.token,
+        'Replay Attempt',
+        'another correct horse battery staple',
+      ),
+      InvalidWorkspaceInvitationError,
+    );
+    await auth.authorizeWorkspace(viewer.sessionToken, workspaceId, 'viewer');
+
+    await auth.removeWorkspaceMember(
+      owner.sessionToken,
+      workspaceId,
+      viewer.session.user.id,
+    );
+    await assert.rejects(
+      auth.authorizeWorkspace(viewer.sessionToken, workspaceId, 'viewer'),
+      AuthForbiddenError,
+    );
+    const refreshedSession = await auth.getSession(viewer.sessionToken);
+    assert.equal(refreshedSession.activeWorkspaceId, null);
+    assert.deepEqual(refreshedSession.workspaces, []);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

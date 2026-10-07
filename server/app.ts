@@ -3,6 +3,13 @@ import { stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { Readable } from 'node:stream';
+import {
+  createResponseSecurityHeaders,
+  DOCUMENT_CACHE_CONTROL,
+  IMMUTABLE_ASSET_CACHE_CONTROL,
+  PRIVATE_RESPONSE_CACHE_CONTROL,
+  secureResponse,
+} from '../shared/security/responsePolicy';
 import { createApiHandler, type ApiOptions } from './api';
 import { JsonWorkspaceRepository } from './repository';
 
@@ -43,23 +50,17 @@ const serveStatic = async (
   } catch {
     filePath = join(distDirectory, 'index.html');
   }
+  const isDocument = filePath.endsWith('index.html');
   response.writeHead(200, {
     'content-type': MIME_TYPES[extname(filePath)] ?? 'application/octet-stream',
-    'cache-control': filePath.endsWith('index.html')
-      ? 'no-store'
-      : 'public, max-age=31536000, immutable',
-    'x-content-type-options': 'nosniff',
-    'referrer-policy': 'no-referrer',
-    'permissions-policy': 'camera=(), microphone=(), geolocation=()',
-    'cross-origin-opener-policy': 'same-origin',
-    'cross-origin-resource-policy': 'same-origin',
-    'content-security-policy':
-      "default-src 'self'; connect-src 'self'; img-src 'self' data:; " +
-      "font-src 'self'; style-src 'self' 'unsafe-inline'; " +
-      "script-src 'self' https://challenges.cloudflare.com; " +
-      "frame-src https://challenges.cloudflare.com; " +
-      "base-uri 'self'; form-action 'self'; frame-ancestors 'none'; " +
-      "object-src 'none'",
+    ...Object.fromEntries(
+      createResponseSecurityHeaders({
+        cacheControl: isDocument
+          ? DOCUMENT_CACHE_CONTROL
+          : IMMUTABLE_ASSET_CACHE_CONTROL,
+        document: isDocument,
+      }).entries(),
+    ),
   });
   createReadStream(filePath).pipe(response);
   return true;
@@ -127,7 +128,10 @@ export const createEpetServer = (options: EpetServerOptions) => {
           : undefined,
         ...(hasBody ? { duplex: 'half' } : {}),
       } as RequestInit);
-      const webResponse = await handleApi(webRequest);
+      const webResponse = secureResponse(
+        await handleApi(webRequest),
+        { cacheControl: PRIVATE_RESPONSE_CACHE_CONTROL },
+      );
       const responseHeaders: Record<string, string | string[]> =
         Object.fromEntries(webResponse.headers.entries());
       const setCookies = (
@@ -150,7 +154,14 @@ export const createEpetServer = (options: EpetServerOptions) => {
     ) {
       return;
     }
-    response.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });
+    response.writeHead(404, {
+      'content-type': 'application/json; charset=utf-8',
+      ...Object.fromEntries(
+        createResponseSecurityHeaders({
+          cacheControl: PRIVATE_RESPONSE_CACHE_CONTROL,
+        }).entries(),
+      ),
+    });
     response.end(JSON.stringify({ error: 'NOT_FOUND' }));
   });
 

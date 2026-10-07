@@ -1,0 +1,7 @@
+# Vite fingerprints files under /assets/. These requests intentionally bypass
+# the Worker in wrangler.jsonc, so Cloudflare Static Assets applies this policy.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+  Cross-Origin-Resource-Policy: same-origin
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  X-Content-Type-Options: nosniff

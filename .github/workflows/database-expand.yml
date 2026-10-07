@@ -1,0 +1,47 @@
+name: Expand production D1 schema
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialize database changes with application deployment across workflows.
+concurrency:
+  group: cloudflare-production
+  cancel-in-progress: false
+
+jobs:
+  expand:
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: production
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify release and migration policy
+        run: npm run verify
+
+      - name: Apply only pending compatible expansions
+        run: npm run db:migrate:remote
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      - name: Verify migration ledger
+        run: npm run db:check:remote
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

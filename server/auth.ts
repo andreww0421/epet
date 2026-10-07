@@ -1,4 +1,18 @@
 import type { AppData } from '../src/store/types';
+import type {
+  AccountLifecycleDelivery,
+  EmailVerificationDelivery,
+  PasswordResetDelivery,
+  WorkspaceInvitationDelivery,
+} from '../shared/contracts/authDelivery';
+import { CLOUD_WORKSPACE_PATTERN } from '../shared/domain/workspaceIdentifiers';
+import {
+  base64UrlToBytes,
+  bytesToBase64Url,
+  constantTimeBytesEqual as constantTimeEqual,
+  getWebCrypto as getCrypto,
+  hashOpaqueToken,
+} from '../shared/security/tokens';
 import {
   EmailAlreadyExistsError,
   InvalidWorkspaceInvitationError,
@@ -18,6 +32,15 @@ import {
   type WorkspaceRole,
 } from './contracts';
 
+export type {
+  AccountLifecycleDelivery,
+  AccountLifecycleEventKind,
+  EmailVerificationDelivery,
+  PasswordResetDelivery,
+  WorkspaceInvitationDelivery,
+} from '../shared/contracts/authDelivery';
+export { hashOpaqueToken } from '../shared/security/tokens';
+
 // Cloudflare Workers rejects PBKDF2 iteration counts above 100,000.
 // The per-account value is persisted so it can be upgraded later.
 export const DEFAULT_PASSWORD_ITERATIONS = 100_000;
@@ -25,7 +48,7 @@ export const DEFAULT_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const DEFAULT_PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
 export const DEFAULT_EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_WORKSPACE_INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-export const CLOUD_WORKSPACE_ID_PATTERN = /^ws_[a-zA-Z0-9_-]{24,61}$/;
+export const CLOUD_WORKSPACE_ID_PATTERN = CLOUD_WORKSPACE_PATTERN;
 export const PASSWORD_RESET_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 export const EMAIL_VERIFICATION_TOKEN_PATTERN = PASSWORD_RESET_TOKEN_PATTERN;
 
@@ -58,37 +81,8 @@ export type AuthSessionEnvelope = {
   session: AuthSessionView;
 };
 
-export type EmailVerificationDelivery = {
-  email: string;
-  displayName: string;
-  token: string;
-  expiresAt: number;
-};
-
 export type AuthRegistrationEnvelope = AuthSessionEnvelope & {
   emailVerification?: EmailVerificationDelivery;
-};
-
-export type AccountLifecycleEventKind =
-  | 'email_verified'
-  | 'password_changed'
-  | 'workspace_joined'
-  | 'workspace_role_changed'
-  | 'workspace_removed'
-  | 'ownership_transferred'
-  | 'ownership_received'
-  | 'workspace_deleted'
-  | 'account_deleted';
-
-export type AccountLifecycleDelivery = {
-  eventId: string;
-  kind: AccountLifecycleEventKind;
-  email: string;
-  displayName: string;
-  occurredAt: number;
-  workspaceName?: string;
-  previousRole?: WorkspaceRole;
-  role?: WorkspaceRole;
 };
 
 export type RegisterInput = {
@@ -102,22 +96,6 @@ export type RegisterInput = {
 export type LoginInput = {
   email: string;
   password: string;
-};
-
-export type PasswordResetDelivery = {
-  email: string;
-  displayName: string;
-  token: string;
-  expiresAt: number;
-};
-
-export type WorkspaceInvitationDelivery = {
-  invitationId: string;
-  email: string;
-  workspaceName: string;
-  role: Exclude<WorkspaceRole, 'owner'>;
-  token: string;
-  expiresAt: number;
 };
 
 export type AuthorizedWorkspace = {
@@ -185,39 +163,6 @@ export class EmailVerificationRequiredError extends Error {
   }
 }
 
-const bytesToBase64Url = (bytes: Uint8Array) => {
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary)
-    .replaceAll('+', '-')
-    .replaceAll('/', '_')
-    .replace(/=+$/, '');
-};
-
-const base64UrlToBytes = (value: string) => {
-  const normalized = value.replaceAll('-', '+').replaceAll('_', '/');
-  const padding = '='.repeat((4 - (normalized.length % 4)) % 4);
-  const binary = atob(`${normalized}${padding}`);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
-};
-
-const constantTimeEqual = (left: Uint8Array, right: Uint8Array) => {
-  if (left.length !== right.length) return false;
-  let difference = 0;
-  for (let index = 0; index < left.length; index += 1) {
-    difference |= left[index] ^ right[index];
-  }
-  return difference === 0;
-};
-
-const getCrypto = (provided?: Crypto) => {
-  const implementation = provided ?? globalThis.crypto;
-  if (!implementation?.subtle || !implementation.getRandomValues) {
-    throw new Error('Web Crypto is required for authentication');
-  }
-  return implementation;
-};
-
 const randomToken = (cryptoImplementation: Crypto, byteLength = 32) => {
   const bytes = new Uint8Array(byteLength);
   cryptoImplementation.getRandomValues(bytes);
@@ -269,17 +214,6 @@ export const isPasswordResetToken = (value: string) =>
 
 export const isEmailVerificationToken = (value: string) =>
   EMAIL_VERIFICATION_TOKEN_PATTERN.test(value);
-
-export const hashOpaqueToken = async (
-  token: string,
-  cryptoImplementation = getCrypto(),
-) => {
-  const digest = await cryptoImplementation.subtle.digest(
-    'SHA-256',
-    textEncoder.encode(token),
-  );
-  return bytesToBase64Url(new Uint8Array(digest));
-};
 
 export const createPasswordCredential = async (
   password: string,

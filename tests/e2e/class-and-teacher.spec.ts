@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import {
   E2eApiSession,
   addClassViaUi,
@@ -7,20 +7,35 @@ import {
   loginViaUi,
   performSyncedAction,
   selectDashboardTab,
+  selectTeacherDestination,
+  switchWorkspaceViaUi,
   testAccount,
 } from './support/fixtures';
+
+let featureOwner: E2eApiSession;
+
+// Reuse one legitimate account without increasing production registration
+// quotas. Every test still gets its own workspace and exercises the login UI.
+test.beforeAll(async () => {
+  featureOwner = await E2eApiSession.register(testAccount('class-teacher-feature-owner'));
+});
+test.afterAll(async () => { await featureOwner.dispose(); });
+
+const openIsolatedWorkspace = async (page: Page, name: string) => {
+  const created = await featureOwner.createWorkspace(name);
+  const workspaceId = created.session.activeWorkspaceId;
+  if (!workspaceId) throw new Error('Workspace is missing');
+  await loginViaUi(page, featureOwner.account);
+  await switchWorkspaceViaUi(page, workspaceId);
+  return workspaceId;
+};
 
 test.describe('Class management', () => {
   test('create class, create/import students, and delete a student', async ({
     context,
     page,
   }) => {
-    const account = testAccount('class-management');
-    const setup = await E2eApiSession.register(account);
-    const workspaceId = setup.session.activeWorkspaceId;
-    if (!workspaceId) throw new Error('Workspace is missing');
-    await setup.dispose();
-    await loginViaUi(page, account);
+    const workspaceId = await openIsolatedWorkspace(page, 'class-management');
 
     const className = 'E2E 測試班';
     await addClassViaUi(page, className);
@@ -73,12 +88,7 @@ test.describe('Teacher operations', () => {
     context,
     page,
   }) => {
-    const account = testAccount('teacher-operations');
-    const setup = await E2eApiSession.register(account);
-    const workspaceId = setup.session.activeWorkspaceId;
-    if (!workspaceId) throw new Error('Workspace is missing');
-    await setup.dispose();
-    await loginViaUi(page, account);
+    const workspaceId = await openIsolatedWorkspace(page, 'teacher-operations');
 
     const studentName = 'E2E 教師操作學生';
     await addStudentViaUi(page, studentName);
@@ -102,7 +112,7 @@ test.describe('Teacher operations', () => {
     studentRow = page.getByRole('row', { name: new RegExp(studentName) });
     await expect(studentRow).toContainText('210 / 700');
 
-    await selectDashboardTab(page, '紀錄');
+    await selectTeacherDestination(page, 'Class', '每日評語');
     const feedbackSection = page.locator('section').filter({
       has: page.getByRole('heading', { name: '導師每日評語' }),
     });
@@ -117,7 +127,7 @@ test.describe('Teacher operations', () => {
     }).click());
     await expect(page.getByText('已儲存今日導師評語')).toBeVisible();
 
-    await selectDashboardTab(page, '個人分析');
+    await selectTeacherDestination(page, 'Learning', '學習證據');
     await page.getByLabel('選擇學生').selectOption({ label: studentName });
     const evidenceForm = page.getByRole('heading', {
       name: '新增學習證據',

@@ -18,6 +18,7 @@ import {
   DEFAULT_DAILY_CATCH_UP_BONUS,
   isDateKey, normalizeDateKeyList, normalizeSchoolTimeZone, normalizeSchoolWeekdays,
   normalizeDailyTaskMakeupWindowDays, getWeekStartDate, getWeekStartDateFromDateKey,
+  getPetUpgradeCost, PET_MAX_LEVEL,
 } from '../gameRules';
 import {
   AppData, Student, DisciplineRecord, PointAdjustmentRecord, WorldBoss, ClassGoal,
@@ -1123,11 +1124,11 @@ export const getSettingsImpactPreview = (
   const projectedAverageFullness = average(
     students.map((student) => clamp(student.pet.fullness - sevenDayDecay, 0, 100)),
   );
-  const studentsBelowMaxLevel = students.filter((student) => student.pet.level < 10);
+  const studentsBelowMaxLevel = students.filter((student) => student.pet.level < PET_MAX_LEVEL);
   const averagePointGap = studentsBelowMaxLevel.length === 0
     ? 0
     : average(studentsBelowMaxLevel.map((student) => {
-        const upgradeCost = 100 + (student.pet.level - 1) * 50;
+        const upgradeCost = getPetUpgradeCost(student.pet.level);
         const feedCount = Math.ceil(
           Math.max(0, 100 - student.pet.fullness) / Math.max(1, settings.feedGain),
         );

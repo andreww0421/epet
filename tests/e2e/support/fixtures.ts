@@ -289,7 +289,21 @@ export const loginViaUi = async (page: Page, account: TestAccount) => {
   await page.locator('#auth-password').fill(account.password);
   await page.getByRole('button', { name: '登入並繼續帶班' }).click();
   await expect(page.getByRole('button', { name: '登出' })).toBeVisible();
-  await page.getByRole('button', { name: '導師控制台', exact: true }).click();
+  // Teacher Today is the real post-login landing page, not a fixture redirect.
+  await expect(page.getByRole('heading', { name: 'Today', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '導師控制台' })).toBeVisible();
+  await waitForBackendSync(page);
+};
+
+/**
+ * Feature suites can reuse a legitimately issued API session while creating a
+ * fresh workspace for every test. This avoids exhausting production auth quotas
+ * through setup traffic; authentication tests still exercise the login UI.
+ */
+export const openConsoleWithApiSession = async (page: Page, session: E2eApiSession) => {
+  await page.context().addCookies((await session.context.storageState()).cookies);
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Today', exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: '導師控制台' })).toBeVisible();
   await waitForBackendSync(page);
 };
@@ -315,8 +329,36 @@ export const performSyncedAction = async (
   await waitForBackendSync(page);
 };
 
+export type TeacherConsoleArea =
+  | 'Today' | 'Class' | 'Learning' | 'Activities' | 'Insights' | 'Settings';
+
+export const selectTeacherDestination = async (
+  page: Page,
+  area: TeacherConsoleArea,
+  destination?: string,
+) => {
+  await page.getByRole('navigation', { name: 'Teacher Console', exact: true })
+    .getByRole('button', { name: area, exact: true }).click();
+  if (destination) {
+    await page.getByRole('tab', { name: destination, exact: true }).click();
+  }
+};
+
+// Existing task-oriented fixtures may retain their domain names while the
+// console groups destinations under its new primary navigation.
 export const selectDashboardTab = async (page: Page, name: string) => {
-  await page.getByRole('tab', { name, exact: true }).click();
+  const destinations: Record<string, [TeacherConsoleArea, string]> = {
+    '學生': ['Class', '學生'],
+    '獎勵': ['Class', '獎勵'],
+    '活動': ['Learning', '本週學習目標'],
+    '個人分析': ['Insights', '個人分析'],
+    '規則': ['Settings', '規則'],
+    '紀錄': ['Class', '紀錄'],
+    '資料治理': ['Settings', '資料治理'],
+  };
+  const destination = destinations[name];
+  if (!destination) throw new Error(`Unknown Teacher Console destination: ${name}`);
+  await selectTeacherDestination(page, ...destination);
 };
 
 export const switchWorkspaceViaUi = async (page: Page, workspaceId: string) => {

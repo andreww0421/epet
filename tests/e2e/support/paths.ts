@@ -4,6 +4,8 @@ import { resolve } from 'node:path';
 
 // Intentionally not configurable: fixture mutations must never target production.
 export const E2E_BASE_URL = 'http://127.0.0.1:3100';
+// Never place synthetic monitoring/analytics builds in deployable dist assets.
+export const E2E_DIST_DIRECTORY = resolve(process.cwd(), 'output/playwright/server-dist');
 
 export const initializeE2eRun = () => {
   // Playwright propagates this identifier to its webServer and test workers.
@@ -22,6 +24,7 @@ export const getE2eRuntimePaths = () => {
     directory,
     dataFile: resolve(directory, 'runtime.json'),
     invitationOutboxDirectory: resolve(directory, 'invitations'),
+    serverPidFile: resolve(directory, 'server.pid'),
   };
 };
 

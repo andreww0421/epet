@@ -7,7 +7,9 @@
 - 正式網站：[https://epet-api.jtwen12345us.workers.dev/](https://epet-api.jtwen12345us.workers.dev/)
 - GitHub Repo: [https://github.com/andreww0421/epet](https://github.com/andreww0421/epet)
 
-推送到 `main` 後，GitHub Actions 會先驗證、套用 D1 migration，再將前端靜態資源與 API 一起部署到 Cloudflare Worker。
+推送到 `main` 後，GitHub Actions 會先驗證程式與已套用的 D1 migration，再將前端靜態資源與 API 一起部署到 Cloudflare Worker。Schema expansion 由獨立手動 workflow 執行；資料搬移與 destructive contract 操作依 [`docs/database-migration-policy.md`](docs/database-migration-policy.md) 分階段處理。
+
+推送到 `staging`，或在非 `main` branch 手動執行 `staging.yml`，會使用獨立的 `epet-staging` Worker／D1／GitHub environment，並執行唯讀 Playwright smoke。Production 的 Worker 名稱、URL、D1 與 workflow 保持不變；staging 尚需管理員設定獨立資源與 secrets，不能共用或複製正式學生資料。設定方式、部署邊界與 `npm run test:e2e:staging` 見 [`docs/staging-deployment.md`](docs/staging-deployment.md)。
 
 ## 目前功能
 
@@ -155,7 +157,7 @@ Playwright 會自動執行 `npm run build`，再於 `127.0.0.1:3100` 啟動專�
 npx playwright test --headed
 ```
 
-既有 `npm test` 仍只執行快速的 rules/import/auth/server/D1 tests，不會隱含啟動 browser；E2E 需明確執行 `npm run test:e2e`。
+既有 `npm test` 會執行快速的 rules/import/auth/dashboard/server/D1 tests，不會隱含啟動 browser；E2E 需明確執行 `npm run test:e2e`。
 
 測試檔位於 `tests/e2e/`，目前的 regression coverage：
 
@@ -167,6 +169,7 @@ npx playwright test --headed
 | `exam.spec.ts` | 建立考試、貼上匯入成績、超過滿分的輸入不得套用 |
 | `permissions.spec.ts` | viewer 拒絕寫入、teacher 班級範圍、admin 新增班級、owner 移轉所有權、CSRF／Origin 拒絕 |
 | `data-safety.spec.ts` | 已同步資料的工作區往返保護、真實 revision conflict、禁止不安全切換、草稿下載與重載後恢復同步、不污染另一工作區 |
+| `dashboard-refactor.spec.ts` | 每週學習目標、設定儲存、Boss 建立、全班積分空投與 undo 的 feature wiring／持久化 |
 
 可用 `npm run test:e2e -- tests/e2e/authentication.spec.ts` 執行單一檔案，或用 `npx playwright show-report output/playwright/report` 查看最近報告。suite 固定單一 worker；每個案例使用獨立、隨機命名的虛構帳號，透過正式 API 與邀請流程建立角色，不直接注入前端 store 或繞過權限檢查。資料安全案例僅攔截網路以製造延遲／斷線，衝突回應由真實 API 產生。不要將測試 server 暴露至網際網路；不要用真實師生資料執行測試或分享含 session 資訊的 trace。
 
@@ -211,12 +214,24 @@ npx playwright show-report output/playwright/accessibility/report
 src/
   App.tsx
   components/
+    DashboardView.tsx
+    ui/
+      DashboardTabs.tsx
+      DeleteConfirmationDialog.tsx
     dashboard/
-      BossRewardSettings.tsx
-      DashboardDialogs.tsx
-      DashboardRecordsPanel.tsx
-      PointReasonSettings.tsx
-      StudentAnalyticsPanel.tsx
+      ...                         # 舊 import path 的 compatibility re-exports
+  features/
+    analytics/components/
+    boss/components/
+    exams/{components,model}/
+    learning/{components,model}/
+    penalties/components/
+    records/{components,model}/
+    rewards/{components,model}/
+    settings/{components,hooks}/
+    students/{components,model}/
+    workspace/{components,hooks}/
+  studentEnrollment.ts
   hooks/useBackendSync.ts
   services/backendApi.ts
   gameRules.ts
@@ -249,6 +264,8 @@ vite.config.ts
 wrangler.jsonc
 ```
 
+Dashboard 的 feature 邊界、component responsibilities 與後續拆分項目見 [`docs/dashboard-refactor.md`](docs/dashboard-refactor.md)。
+
 ## 資料保存
 
 - 正式網站與 API：`https://epet-api.jtwen12345us.workers.dev/` 與同站 `/api/`
@@ -274,7 +291,7 @@ wrangler.jsonc
 
 ## Cloudflare 部署
 
-D1 資料庫名稱為 `epet-production`。Cloudflare Workers Static Assets 會將前端與 API 發布成同一個不可分割的部署；順序為先 migration，再部署 Worker 與靜態資源。
+D1 資料庫名稱為 `epet-production`。Worker 與前端靜態資源隨同一版本發布，D1 schema／資料則具有獨立生命週期。Application deploy workflow 只讀 migration ledger，若有缺少的 migration 就在部署前停止。先以 `database-expand.yml` 的手動流程完成與目前 Worker 相容的 expansion，再重跑 application deploy；完整規範見 [`docs/database-migration-policy.md`](docs/database-migration-policy.md)。
 
 正式環境要先設定寄件服務。`RESEND_API_KEY` 必須使用 Worker secret，不可寫入 `wrangler.jsonc`：
 
@@ -291,7 +308,14 @@ npx wrangler secret put TURNSTILE_SITE_KEY
 
 Worker 每日由 cron 清理到期驗證資料，並分批對帳／修復正規化投影。正式上線前還必須依 [`docs/p0-operations-runbook.md`](docs/p0-operations-runbook.md) 完成備份還原演練並核定 RPO／RTO；正規化切讀與 blob 退場見 [`docs/p1-normalized-read-cutover.md`](docs/p1-normalized-read-cutover.md)。GitHub Actions 的 production environment 必須設定 `CLOUDFLARE_ACCOUNT_ID` 與具 Workers／D1 部署權限的 `CLOUDFLARE_API_TOKEN`。
 
-套用 migration：
+驗證 migration 分類／checksum，及 production 是否已具備此版本需要的 migrations：
+
+```bash
+npm run db:validate:migrations
+npm run db:check:remote
+```
+
+在 production environment 完成核准後，透過 GitHub Actions 手動執行 `database-expand.yml`。下列操作只允許套用尚未執行、且符合 policy 的 expansion；歷史 migration 若仍 pending，須依 policy 另外完成 operator-reviewed bootstrap，不能直接重放 SQL：
 
 ```bash
 npm run db:migrate:remote

@@ -21,8 +21,11 @@ import {
   normalizePointReasonOptions, normalizeClassDailyTaskCalendar,
 } from './utils';
 import { normalizeExamRecords } from '../examAnalytics';
+import { createEnrolledStudent } from '../studentEnrollment';
 import { getPublicStudentName } from '../studentPresentation';
 import { resolveBossRewardsOnBackend } from '../services/backendApi';
+import { trackAnalytics } from '../analytics';
+import { recordPointActionCompleted } from '../analytics/actions';
 import { 
   applyFeedToStudent, applyPlayWithPet, claimDailyTaskForStudent,
   saveMentorDailyFeedbackForStudent,
@@ -52,6 +55,7 @@ import {
   normalizeDateKeyList, normalizeSchoolTimeZone, normalizeSchoolWeekdays,
   normalizeDailyTaskMakeupWindowDays, isDateKey,
   isLearningCompetency, getActiveClassGoals, getWeekStartDate,
+  getPetUpgradeBlockedReason, getPetUpgradeCost, PET_GACHA_COST,
   type PointGuardrailOptions, type PointGuardrailOutcome,
   type ParticipationSupportOptions,
 } from '../gameRules';
@@ -222,25 +226,6 @@ const PII_CACHE_ENABLED = (
 const normalizeImportedStudentName = (name: string) =>
   name.normalize('NFKC').trim().replace(/\s+/g, ' ');
 
-const createNewStudent = (student: Student): Student => ({
-  ...student,
-  points: 200,
-  pet: { ...student.pet, type: 'egg' },
-  stats: { wins: 0, losses: 0 },
-  rankPoints: 0,
-  warningPoints: 0,
-  nextUpgradeGachaLevel: 2,
-  penaltyStatus: undefined,
-  disciplineRecords: [],
-  pointAdjustmentRecords: [],
-  economyEventRecords: [],
-  bossRewardRecords: [],
-  dailyProgress: { streak: 0 },
-  bossRecovery: undefined,
-  teamId: undefined,
-  badges: [],
-});
-
 const syncMentorFeedbackEvidence = (
   records: LearningEvidenceRecord[],
   classId: string,
@@ -263,7 +248,7 @@ const syncMentorFeedbackEvidence = (
 ].slice(0, MAX_LEARNING_EVIDENCE_RECORDS);
 
 const createStudentFromImportedName = (name: string, index: number): Student =>
-  createNewStudent({
+  createEnrolledStudent({
     id: `student-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
     name,
     points: 200,
@@ -495,7 +480,7 @@ export const useStore = create<StoreState>()(
   persist(
     (set, get) => ({
       data: normalizeAppData({}),
-      view: 'classroom',
+      view: 'dashboard',
       animatingPets: {},
       toast: null,
       upgradeReward: null,
@@ -540,18 +525,21 @@ export const useStore = create<StoreState>()(
         data: { ...state.data, currentClassId: classId }
       })),
 
-      addClass: (name) => set((state) => {
-        const newClass = {
-          id: Date.now().toString(),
-          name,
-          students: [],
-          dailyTaskCalendar: normalizeClassDailyTaskCalendar(undefined, state.data.settings),
-          learningEvidenceRecords: [],
-          examRecords: [],
-        };
-        get().showToast(`${translations[state.data.settings?.language || 'zh'].classAdded}${name}`);
-        return { data: { ...state.data, classes: [...state.data.classes, newClass], currentClassId: newClass.id } };
-      }),
+      addClass: (name) => {
+        set((state) => {
+          const newClass = {
+            id: Date.now().toString(),
+            name,
+            students: [],
+            dailyTaskCalendar: normalizeClassDailyTaskCalendar(undefined, state.data.settings),
+            learningEvidenceRecords: [],
+            examRecords: [],
+          };
+          get().showToast(`${translations[state.data.settings?.language || 'zh'].classAdded}${name}`);
+          return { data: { ...state.data, classes: [...state.data.classes, newClass], currentClassId: newClass.id } };
+        });
+        trackAnalytics('class_created', {});
+      },
 
       deleteClass: (classId) => set((state) => {
         if (state.data.classes.length <= 1) return state;
@@ -840,41 +828,48 @@ export const useStore = create<StoreState>()(
         return { data: { ...state.data, classes: nextClasses } };
       }),
 
-      saveExamRecord: (exam) => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(
-          (classData) => classData.id === state.data.currentClassId,
-        );
-        if (currentClassIndex === -1) return state;
-        const currentClass = state.data.classes[currentClassIndex];
-        const now = Date.now();
-        const normalizedExam = normalizeExamRecords(
-          [{ ...exam, updatedAt: now }],
-          new Set(currentClass.students.map((student) => student.id)),
-          now,
-        )[0];
-        if (!normalizedExam || normalizedExam.items.length === 0) return state;
+      saveExamRecord: (exam) => {
+        let created = false;
+        set((state) => {
+          const currentClassIndex = state.data.classes.findIndex(
+            (classData) => classData.id === state.data.currentClassId,
+          );
+          if (currentClassIndex === -1) return state;
+          const currentClass = state.data.classes[currentClassIndex];
+          const now = Date.now();
+          const normalizedExam = normalizeExamRecords(
+            [{ ...exam, updatedAt: now }],
+            new Set(currentClass.students.map((student) => student.id)),
+            now,
+          )[0];
+          if (!normalizedExam || normalizedExam.items.length === 0) return state;
+          created = !(currentClass.examRecords ?? []).some(
+            (candidate) => candidate.id === normalizedExam.id,
+          );
 
-        const nextClasses = [...state.data.classes];
-        nextClasses[currentClassIndex] = {
-          ...currentClass,
-          examRecords: [
-            normalizedExam,
-            ...(currentClass.examRecords ?? []).filter(
-              (candidate) => candidate.id !== normalizedExam.id,
+          const nextClasses = [...state.data.classes];
+          nextClasses[currentClassIndex] = {
+            ...currentClass,
+            examRecords: [
+              normalizedExam,
+              ...(currentClass.examRecords ?? []).filter(
+                (candidate) => candidate.id !== normalizedExam.id,
+              ),
+            ].sort(
+              (left, right) =>
+                right.examDate.localeCompare(left.examDate) ||
+                right.createdAt - left.createdAt,
             ),
-          ].sort(
-            (left, right) =>
-              right.examDate.localeCompare(left.examDate) ||
-              right.createdAt - left.createdAt,
-          ),
-        };
-        const lang = state.data.settings?.language || 'zh';
-        get().showToast(
-          lang === 'en' ? 'Assessment saved.' : '考試成績已保存。',
-          'success',
-        );
-        return { data: { ...state.data, classes: nextClasses } };
-      }),
+          };
+          const lang = state.data.settings?.language || 'zh';
+          get().showToast(
+            lang === 'en' ? 'Assessment saved.' : '考試成績已保存。',
+            'success',
+          );
+          return { data: { ...state.data, classes: nextClasses } };
+        });
+        if (created) trackAnalytics('exam_created', {});
+      },
 
       deleteExamRecord: (examId) => set((state) => {
         const currentClassIndex = state.data.classes.findIndex(
@@ -904,7 +899,7 @@ export const useStore = create<StoreState>()(
         const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
         if (currentClassIndex === -1) return state;
 
-        const newStudent = createNewStudent(student);
+        const newStudent = createEnrolledStudent(student);
         
         const nextClasses = [...state.data.classes];
         nextClasses[currentClassIndex] = {
@@ -957,6 +952,9 @@ export const useStore = create<StoreState>()(
           );
           return { data: { ...state.data, classes: nextClasses } };
         });
+        if (addedCount > 0) {
+          trackAnalytics('student_import_completed', { student_count: addedCount });
+        }
         return addedCount;
       },
 
@@ -1023,6 +1021,7 @@ export const useStore = create<StoreState>()(
 
       addPoints: (studentId, pointsToAdd, source = 'quick', reason) => {
         let createdUndoId = '';
+        let acceptedCount = 0;
         let adjustmentNotice = '';
         let adjustmentNoticeType: 'success' | 'error' = 'success';
         set((state) => {
@@ -1047,6 +1046,9 @@ export const useStore = create<StoreState>()(
             getPointGuardrailOptions(state.data.settings),
             getParticipationSupportOptions(state.data.settings),
           );
+          acceptedCount = result.applications.filter(
+            (application) => application.outcome !== 'blocked',
+          ).length;
           const lang = state.data.settings?.language || 'zh';
           const guardrailNotice = getPointGuardrailNotice(lang, result.applications);
           adjustmentNotice = [
@@ -1092,6 +1094,7 @@ export const useStore = create<StoreState>()(
             },
           };
         });
+        recordPointActionCompleted(source, pointsToAdd, acceptedCount);
         if (createdUndoId) {
           schedulePointUndoExpiry(createdUndoId, (undoId) => {
             set((state) => state.undoAction?.id === undoId ? { undoAction: null } : {});
@@ -1102,6 +1105,7 @@ export const useStore = create<StoreState>()(
 
       adjustPointsForStudents: (studentIds, pointsToAdd, source = 'manual', reason) => {
         let createdUndoId = '';
+        let acceptedCount = 0;
         let toastMessage = '';
         let toastType: 'success' | 'error' = 'success';
         set((state) => {
@@ -1136,6 +1140,7 @@ export const useStore = create<StoreState>()(
           const adjustedStudentCount = result.applications.filter(
             (application) => application.outcome !== 'blocked',
           ).length;
+          acceptedCount = adjustedStudentCount;
           const nextClasses = [...state.data.classes];
           nextClasses[currentClassIndex] = { ...currentClass, students: result.students };
           const guardrailNotice = getPointGuardrailNotice(lang, result.applications);
@@ -1176,6 +1181,7 @@ export const useStore = create<StoreState>()(
             },
           };
         });
+        recordPointActionCompleted(source, pointsToAdd, acceptedCount);
         if (createdUndoId) {
           schedulePointUndoExpiry(createdUndoId, (undoId) => {
             set((state) => state.undoAction?.id === undoId ? { undoAction: null } : {});
@@ -1186,6 +1192,7 @@ export const useStore = create<StoreState>()(
 
       airdropPoints: (pointsToAdd, reasonLabel, competency) => {
         let createdUndoId = '';
+        let acceptedCount = 0;
         let toastMessage = '';
         let toastType: 'success' | 'error' = 'success';
         set((state) => {
@@ -1211,6 +1218,9 @@ export const useStore = create<StoreState>()(
             getParticipationSupportOptions(state.data.settings),
           );
           if (result.applications.length === 0) return state;
+          acceptedCount = result.applications.filter(
+            (application) => application.outcome !== 'blocked',
+          ).length;
 
           const undoId = result.entries.length > 0
             ? `undo-airdrop-${now}-${Math.random().toString(36).slice(2, 8)}`
@@ -1256,6 +1266,7 @@ export const useStore = create<StoreState>()(
             },
           };
         });
+        recordPointActionCompleted('airdrop', pointsToAdd, acceptedCount);
         if (createdUndoId) {
           schedulePointUndoExpiry(createdUndoId, (undoId) => {
             set((state) => state.undoAction?.id === undoId ? { undoAction: null } : {});
@@ -1966,39 +1977,44 @@ export const useStore = create<StoreState>()(
         return { data: { ...state.data, classes: nextClasses } };
       }),
 
-      addLearningEvidence: (studentId, evidence) => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(
-          (classData) => classData.id === state.data.currentClassId,
-        );
-        if (currentClassIndex === -1 || !evidence.title.trim()) return state;
-        const currentClass = state.data.classes[currentClassIndex];
-        const targetStudent = currentClass.students.find((student) => student.id === studentId);
-        if (!targetStudent) return state;
+      addLearningEvidence: (studentId, evidence) => {
+        let created = false;
+        set((state) => {
+          const currentClassIndex = state.data.classes.findIndex(
+            (classData) => classData.id === state.data.currentClassId,
+          );
+          if (currentClassIndex === -1 || !evidence.title.trim()) return state;
+          const currentClass = state.data.classes[currentClassIndex];
+          const targetStudent = currentClass.students.find((student) => student.id === studentId);
+          if (!targetStudent) return state;
 
-        const now = Date.now();
-        const record = createLearningEvidenceRecord(
-          currentClass.id,
-          studentId,
-          {
-            ...evidence,
-            actor: 'mentor',
-            source: 'manual',
-            rubricVersion: evidence.rubricVersion ?? '1.0',
-          },
-          now,
-        );
-        const nextClasses = [...state.data.classes];
-        nextClasses[currentClassIndex] = {
-          ...currentClass,
-          learningEvidenceRecords: [
-            record,
-            ...(currentClass.learningEvidenceRecords ?? []),
-          ].slice(0, MAX_LEARNING_EVIDENCE_RECORDS),
-        };
-        const lang = state.data.settings?.language || 'zh';
-        get().showToast(translations[lang].learningEvidenceSaved, 'success');
-        return { data: { ...state.data, classes: nextClasses } };
-      }),
+          const now = Date.now();
+          const record = createLearningEvidenceRecord(
+            currentClass.id,
+            studentId,
+            {
+              ...evidence,
+              actor: 'mentor',
+              source: 'manual',
+              rubricVersion: evidence.rubricVersion ?? '1.0',
+            },
+            now,
+          );
+          const nextClasses = [...state.data.classes];
+          nextClasses[currentClassIndex] = {
+            ...currentClass,
+            learningEvidenceRecords: [
+              record,
+              ...(currentClass.learningEvidenceRecords ?? []),
+            ].slice(0, MAX_LEARNING_EVIDENCE_RECORDS),
+          };
+          const lang = state.data.settings?.language || 'zh';
+          get().showToast(translations[lang].learningEvidenceSaved, 'success');
+          created = true;
+          return { data: { ...state.data, classes: nextClasses } };
+        });
+        if (created) trackAnalytics('learning_evidence_created', {});
+      },
 
       revivePet: (studentId) => set((state) => {
         const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
@@ -2037,12 +2053,13 @@ export const useStore = create<StoreState>()(
 
         const tLang = translations[state.data.settings?.language || 'zh'];
         const currentLevel = student.pet.level || 1;
-        if (currentLevel >= 10) { get().showToast(tLang.petMaxLevel, 'error'); return state; }
-        if (student.pet.fullness < 100) { get().showToast(tLang.fullnessNeed100, 'error'); return state; }
-        if ((student.pet.happiness || 0) < 40) { get().showToast(tLang.moodLowPenalty, 'error'); return state; }
-        
-        const upgradeCost = 100 + (currentLevel - 1) * 50;
-        if (student.points < upgradeCost) {
+        const blocked = getPetUpgradeBlockedReason(student);
+        if (blocked === 'maxLevel') { get().showToast(tLang.petMaxLevel, 'error'); return state; }
+        if (blocked === 'fullness') { get().showToast(tLang.fullnessNeed100, 'error'); return state; }
+        if (blocked === 'happiness') { get().showToast(tLang.moodLowPenalty, 'error'); return state; }
+
+        const upgradeCost = getPetUpgradeCost(currentLevel);
+        if (blocked === 'points') {
           get().showToast(tLang.upgradeNeedPoints.replace('{cost}', upgradeCost.toString()), 'error'); return state;
         }
 
@@ -2080,7 +2097,7 @@ export const useStore = create<StoreState>()(
         const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
         if (currentClassIndex === -1) return state;
         const student = state.data.classes[currentClassIndex].students.find(s => s.id === studentId);
-        if (!student || student.points < 200) return state;
+        if (!student || student.points < PET_GACHA_COST) return state;
 
         const newPetType = getRandomPetType(true);
         const now = Date.now();
@@ -2092,8 +2109,8 @@ export const useStore = create<StoreState>()(
           students: nextClasses[currentClassIndex].students.map(s =>
             s.id === studentId
               ? appendEconomyEventToStudent(
-                  { ...s, points: s.points - 200, pet: { ...s.pet, type: newPetType } },
-                  createEconomyEventRecord('spend', 'gacha', -200, now, {
+                  { ...s, points: s.points - PET_GACHA_COST, pet: { ...s.pet, type: newPetType } },
+                  createEconomyEventRecord('spend', 'gacha', -PET_GACHA_COST, now, {
                     previousPetType: s.pet.type,
                     newPetType,
                   }),
@@ -2358,39 +2375,44 @@ export const useStore = create<StoreState>()(
         rewardTiers,
         participationReward = DEFAULT_BOSS_PARTICIPATION_REWARD,
         improvementReward = DEFAULT_BOSS_IMPROVEMENT_REWARD,
-      ) => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
-        if (currentClassIndex === -1) return state;
+      ) => {
+        let started = false;
+        set((state) => {
+          const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+          if (currentClassIndex === -1) return state;
 
-        const now = Date.now();
-        const safeMaxHp = Math.max(1, Math.floor(toFiniteNumber(maxHp, 1)));
-        const activeBoss = normalizeWorldBoss(
-          {
-            id: `boss-${now}`,
-            name,
-            maxHp: safeMaxHp,
-            currentHp: safeMaxHp,
-            rewardTiers,
-            participationReward,
-            improvementReward,
-            contributions: {},
-            attackCounts: {},
-            isActive: true,
-          },
-          currentClassIndex,
-          now,
-        );
-        if (!activeBoss) return state;
+          const now = Date.now();
+          const safeMaxHp = Math.max(1, Math.floor(toFiniteNumber(maxHp, 1)));
+          const activeBoss = normalizeWorldBoss(
+            {
+              id: `boss-${now}`,
+              name,
+              maxHp: safeMaxHp,
+              currentHp: safeMaxHp,
+              rewardTiers,
+              participationReward,
+              improvementReward,
+              contributions: {},
+              attackCounts: {},
+              isActive: true,
+            },
+            currentClassIndex,
+            now,
+          );
+          if (!activeBoss) return state;
 
-        const nextClasses = [...state.data.classes];
-        nextClasses[currentClassIndex] = {
-          ...nextClasses[currentClassIndex],
-          activeBoss,
-        };
-        const lang = state.data.settings?.language || 'zh';
-        get().showToast(lang === 'en' ? `Summoned Boss: ${activeBoss.name}` : `已召喚魔王：${activeBoss.name}`, 'success');
-        return { data: { ...state.data, classes: nextClasses } };
-      }),
+          const nextClasses = [...state.data.classes];
+          nextClasses[currentClassIndex] = {
+            ...nextClasses[currentClassIndex],
+            activeBoss,
+          };
+          const lang = state.data.settings?.language || 'zh';
+          get().showToast(lang === 'en' ? `Summoned Boss: ${activeBoss.name}` : `已召喚魔王：${activeBoss.name}`, 'success');
+          started = true;
+          return { data: { ...state.data, classes: nextClasses } };
+        });
+        if (started) trackAnalytics('boss_started', {});
+      },
 
       removeBoss: () => set((state) => {
         const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
@@ -2672,7 +2694,7 @@ export const resetStoreForSession = (now = Date.now()) => {
 
   useStore.setState({
     data: normalizeAppData({}, now),
-    view: 'classroom',
+    view: 'dashboard',
     animatingPets: {},
     toast: null,
     upgradeReward: null,

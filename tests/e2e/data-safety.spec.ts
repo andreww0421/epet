@@ -6,6 +6,7 @@ import {
   loadBrowserState,
   loginViaUi,
   performSyncedAction,
+  selectDashboardTab,
   switchWorkspaceViaUi,
   testAccount,
   waitForBackendSync,
@@ -54,7 +55,7 @@ test.describe('Data safety', () => {
     }
     await switchWorkspaceViaUi(page, originalWorkspaceId);
     await page.getByRole('button', { name: '導師控制台', exact: true }).click();
-    await page.getByRole('tab', { name: '獎勵', exact: true }).click();
+    await selectDashboardTab(page, '獎勵');
     await expect.soft(page.getByRole('row', { name: new RegExp(studentName) })).toBeVisible();
     const afterSwitch = await loadBrowserState(context, originalWorkspaceId);
     expect(afterSwitch.data?.classes[0]?.students.some(
@@ -104,7 +105,7 @@ test.describe('Data safety', () => {
       await route.continue();
     });
     try {
-      await page.getByRole('tab', { name: '學生', exact: true }).click();
+      await selectDashboardTab(page, '學生');
       const panel = page.getByRole('heading', { name: '新增學生' }).locator('..');
       await panel.getByLabel('學生姓名').fill('E2E 儲存中學生');
       await panel.getByRole('button', { name: '新增', exact: true }).click();
@@ -234,7 +235,7 @@ test.describe('Data safety', () => {
     });
 
     const localStudent = 'E2E 未同步衝突學生';
-    await page.getByRole('tab', { name: '學生', exact: true }).click();
+    await selectDashboardTab(page, '學生');
     const addPanel = page.getByRole('heading', {
       name: '新增學生',
     }).locator('..');
@@ -257,6 +258,8 @@ test.describe('Data safety', () => {
     await expect(page.getByText(
       '雲端已有較新的工作區版本，請重新整理後再繼續操作。',
     )).toBeVisible();
+    await expect(page.getByRole('alert', { name: '同步或權限警示', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '給予積分', exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', {
       name: '下載本機草稿',
     })).toBeVisible();
@@ -304,7 +307,7 @@ test.describe('Data safety', () => {
       }
       await route.continue();
     });
-    await page.getByRole('tab', { name: '學生', exact: true }).click();
+    await selectDashboardTab(page, '學生');
     const addPanel = page.getByRole('heading', {
       name: '新增學生',
     }).locator('..');

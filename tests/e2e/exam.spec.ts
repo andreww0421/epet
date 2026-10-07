@@ -5,7 +5,7 @@ import {
   loadBrowserState,
   loginViaUi,
   performSyncedAction,
-  selectDashboardTab,
+  selectTeacherDestination,
   testAccount,
 } from './support/fixtures';
 
@@ -35,7 +35,7 @@ test.describe('Exam assessment', () => {
 
     await addStudentViaUi(page, 'E2E 成績學生甲');
     await addStudentViaUi(page, 'E2E 成績學生乙');
-    await selectDashboardTab(page, '個人分析');
+    await selectTeacherDestination(page, 'Learning', '考試分析');
     await expect(page.getByRole('heading', {
       name: '考試趨勢與個別報告',
     })).toBeVisible();

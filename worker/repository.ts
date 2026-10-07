@@ -11,7 +11,14 @@ import type {
 import {
   findPermanentlyDeletedStudentIds,
   purgeStudentsFromWorkspaceData,
-} from '../server/studentPrivacy';
+} from '../shared/domain/studentPrivacy';
+import {
+  AUTH_RATE_LIMIT_RETENTION_MS,
+  clampAuditQueryLimit,
+  createEmptyStoredWorkspace,
+  MAX_STORED_REVISIONS,
+  utf8Size,
+} from '../shared/domain/repositoryPolicy';
 import {
   auditStatement,
   projectionGateStatement,
@@ -62,7 +69,6 @@ import {
 } from '../server/contracts';
 
 const MAX_D1_STATE_BYTES = 900 * 1024;
-const MAX_STORED_REVISIONS = 25;
 
 type WorkspaceRow = {
   revision: number;
@@ -208,14 +214,8 @@ type InvitationRow = {
   revoked_at: number | null;
 };
 
-const emptyWorkspace = (): StoredWorkspace => ({
-  revision: 0,
-  updatedAt: 0,
-  data: null,
-});
-
 const decodeWorkspace = (row: WorkspaceRow | null): StoredWorkspace => {
-  if (!row) return emptyWorkspace();
+  if (!row) return createEmptyStoredWorkspace();
   return {
     revision: row.revision,
     updatedAt: row.updated_at,
@@ -371,7 +371,7 @@ const decodeInvitation = (row: InvitationRow): WorkspaceInvitationRecord => ({
 
 const serializeWorkspace = (data: AppData) => {
   const dataJson = JSON.stringify(data);
-  const dataSizeBytes = new TextEncoder().encode(dataJson).byteLength;
+  const dataSizeBytes = utf8Size(dataJson);
   if (dataSizeBytes > MAX_D1_STATE_BYTES) {
     throw new WorkspaceDataTooLargeError();
   }
@@ -399,7 +399,7 @@ implements WorkspaceRepository, AuthRepository {
       )
       .bind(workspaceId)
       .first<WorkspaceMetadataRow>();
-    if (!metadata) return emptyWorkspace();
+    if (!metadata) return createEmptyStoredWorkspace();
     if (this.options.readMode === 'blob') {
       return this.getBlobWorkspace(workspaceId);
     }
@@ -439,11 +439,8 @@ implements WorkspaceRepository, AuthRepository {
           return blob;
         }
       }
-    } catch (error) {
-      console.error('Normalized workspace read failed; using blob fallback', {
-        workspaceId,
-        error: error instanceof Error ? error.message : 'unknown error',
-      });
+    } catch {
+      console.error('Normalized workspace read failed; using blob fallback');
     }
     return this.getBlobWorkspace(workspaceId);
   }
@@ -1514,7 +1511,7 @@ implements WorkspaceRepository, AuthRepository {
           `DELETE FROM auth_rate_limits
            WHERE blocked_until <= ? AND window_started_at <= ?`,
         )
-        .bind(now, now - 86_400_000),
+        .bind(now, now - AUTH_RATE_LIMIT_RETENTION_MS),
       this.database
         .prepare(
           `DELETE FROM workspace_invitations
@@ -2383,10 +2380,7 @@ implements WorkspaceRepository, AuthRepository {
         query.cursor.id,
       );
     }
-    const safeLimit = Math.max(
-      1,
-      Math.min(201, Math.floor(query.limit ?? 50)),
-    );
+    const safeLimit = clampAuditQueryLimit(query.limit);
     bindings.push(safeLimit);
     const result = await this.database
       .prepare(

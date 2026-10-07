@@ -9,6 +9,8 @@ output/playwright/
 *.log
 .env*
 !.env.example
+.dev.vars*
+wrangler.staging.generated.jsonc
 server/data/*.json
 server/data/*.tmp
 .wrangler/

@@ -1,0 +1,105 @@
+name: Deploy Epet staging
+
+on:
+  push:
+    branches:
+      - staging
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One persistent synthetic-only staging environment, not one DB per branch.
+concurrency:
+  group: cloudflare-staging
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.ref_type == 'branch' && github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout selected branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Verify application and staging boundaries
+        run: npm run verify
+        env:
+          VITE_MONITORING_ENABLED: "false"
+          VITE_MONITORING_ENVIRONMENT: staging
+          VITE_MONITORING_RELEASE: ${{ github.sha }}
+      - name: Verify isolated staging Worker bundle (no remote resources)
+        run: npm run check:worker:staging
+
+  deploy-and-smoke:
+    needs: verify
+    if: github.ref_type == 'branch' && github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: staging
+      url: ${{ vars.STAGING_BASE_URL }}
+    steps:
+      - name: Checkout selected branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build Worker static assets
+        run: npm run build
+        env:
+          VITE_MONITORING_ENABLED: ${{ vars.EPET_MONITORING_ENABLED }}
+          VITE_MONITORING_ENVIRONMENT: staging
+          VITE_MONITORING_RELEASE: ${{ github.sha }}
+      - name: Install smoke-test browser
+        run: npx playwright install --with-deps chromium
+      - name: Validate all staging settings before remote operations
+        run: npm run staging:preflight
+        env:
+          STAGING_D1_DATABASE_ID: ${{ vars.STAGING_D1_DATABASE_ID }}
+          STAGING_BASE_URL: ${{ vars.STAGING_BASE_URL }}
+          STAGING_PASSWORD_RESET_FROM: ${{ vars.STAGING_PASSWORD_RESET_FROM }}
+          STAGING_CLOUDFLARE_ACCOUNT_ID: ${{ secrets.STAGING_CLOUDFLARE_ACCOUNT_ID }}
+          STAGING_CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CLOUDFLARE_API_TOKEN }}
+          STAGING_TURNSTILE_SITE_KEY: ${{ secrets.STAGING_TURNSTILE_SITE_KEY }}
+          STAGING_TURNSTILE_SECRET_KEY: ${{ secrets.STAGING_TURNSTILE_SECRET_KEY }}
+          STAGING_RESEND_API_KEY: ${{ secrets.STAGING_RESEND_API_KEY }}
+      - name: Bootstrap or migrate only the synthetic staging database
+        run: npm run db:migrate:staging
+        env:
+          STAGING_D1_DATABASE_ID: ${{ vars.STAGING_D1_DATABASE_ID }}
+          STAGING_BASE_URL: ${{ vars.STAGING_BASE_URL }}
+          STAGING_PASSWORD_RESET_FROM: ${{ vars.STAGING_PASSWORD_RESET_FROM }}
+          STAGING_CLOUDFLARE_ACCOUNT_ID: ${{ secrets.STAGING_CLOUDFLARE_ACCOUNT_ID }}
+          STAGING_CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CLOUDFLARE_API_TOKEN }}
+      - name: Deploy only staging Worker with independent secrets
+        run: npm run deploy:staging
+        env:
+          STAGING_D1_DATABASE_ID: ${{ vars.STAGING_D1_DATABASE_ID }}
+          STAGING_BASE_URL: ${{ vars.STAGING_BASE_URL }}
+          STAGING_PASSWORD_RESET_FROM: ${{ vars.STAGING_PASSWORD_RESET_FROM }}
+          STAGING_CLOUDFLARE_ACCOUNT_ID: ${{ secrets.STAGING_CLOUDFLARE_ACCOUNT_ID }}
+          STAGING_CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CLOUDFLARE_API_TOKEN }}
+          STAGING_TURNSTILE_SITE_KEY: ${{ secrets.STAGING_TURNSTILE_SITE_KEY }}
+          STAGING_TURNSTILE_SECRET_KEY: ${{ secrets.STAGING_TURNSTILE_SECRET_KEY }}
+          STAGING_RESEND_API_KEY: ${{ secrets.STAGING_RESEND_API_KEY }}
+      - name: Run read-only staging E2E smoke tests
+        run: npm run test:e2e:staging
+        env:
+          STAGING_BASE_URL: ${{ vars.STAGING_BASE_URL }}
+      # No traces, screenshots, cookies, or secrets are uploaded as artifacts.

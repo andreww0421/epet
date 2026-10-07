@@ -1,8 +1,13 @@
+import { monitoringMethod, monitoringRouteGroup } from '../../shared/observability/policy';
+import { markReportedApiError, reportFrontendError } from './monitoring';
+import { trackAnalytics } from '../analytics';
 import type {
   ClassEffectivenessMetrics,
   LearningEvidenceRecord,
   StudentLearningAnalytics,
 } from '../../shared/education';
+import { CLOUD_WORKSPACE_PATTERN } from '../../shared/domain/workspaceIdentifiers';
+import type { WorkspaceRole } from '../../shared/contracts/workspace';
 import type {
   AppData,
   BossVictoryResult,
@@ -18,7 +23,6 @@ const runtimeEnv = (
 ).env ?? {};
 const CONFIGURED_WORKSPACE_ID = runtimeEnv.VITE_EPET_WORKSPACE?.trim();
 const WORKSPACE_STORAGE_KEY = 'epet-cloud-workspace-v1';
-const CLOUD_WORKSPACE_PATTERN = /^ws_[a-zA-Z0-9_-]{24,61}$/;
 const REQUEST_TIMEOUT_MS = 6000;
 
 const getLegacyWorkspaceId = () => {
@@ -36,7 +40,7 @@ const LEGACY_WORKSPACE_ID = getLegacyWorkspaceId();
 export const hasClaimableLegacyWorkspace =
   Boolean(LEGACY_WORKSPACE_ID && CLOUD_WORKSPACE_PATTERN.test(LEGACY_WORKSPACE_ID));
 
-export type WorkspaceRole = 'owner' | 'admin' | 'teacher' | 'viewer';
+export type { WorkspaceRole } from '../../shared/contracts/workspace';
 
 export type WorkspaceMember = {
   userId: string;
@@ -239,13 +243,25 @@ const request = async <T>(
       if (!requestWorkspaceId) throw new BackendAuthRequired();
       headers.set('x-epet-workspace', requestWorkspaceId);
     }
-    const response = await fetch(path, {
-      ...init,
-      credentials: 'same-origin',
-      headers,
-      signal: controller.signal,
+    const metadata = { route: monitoringRouteGroup(path), method: monitoringMethod(method) };
+    let response: Response;
+    try {
+      response = await fetch(path, {
+        ...init,
+        credentials: 'same-origin',
+        headers,
+        signal: controller.signal,
+      });
+    } catch (error) {
+      reportFrontendError({ ...metadata, category: controller.signal.aborted ? 'frontend.api.timeout' : 'frontend.api.network' });
+      markReportedApiError(error);
+      throw error;
+    }
+    if (response.status >= 500) reportFrontendError({ ...metadata, category: 'frontend.api.http', status: response.status });
+    const body = await response.json().catch(() => {
+      if (response.ok) reportFrontendError({ ...metadata, category: 'frontend.api.response' });
+      return {};
     });
-    const body = await response.json().catch(() => ({}));
     if (response.status === 409 && body?.current) {
       throw new BackendRevisionConflict(body.current as BackendStateSnapshot);
     }
@@ -257,10 +273,12 @@ const request = async <T>(
       throw new BackendForbidden();
     }
     if (!response.ok) {
-      throw new BackendApiError(
+      const error = new BackendApiError(
         response.status,
         typeof body?.error === 'string' ? body.error : `HTTP_${response.status}`,
       );
+      if (response.status >= 500) markReportedApiError(error);
+      throw error;
     }
     backendAvailable = true;
     return body as T;
@@ -361,7 +379,9 @@ export const registerAccount = async (input: {
     },
     { auth: false, workspace: false },
   );
-  return applyAuthResponse(response);
+  const session = applyAuthResponse(response);
+  trackAnalytics('workspace_created', { creation_source: 'registration' });
+  return session;
 };
 
 export const acceptWorkspaceInvitation = async (input: {
@@ -457,6 +477,7 @@ export const createWorkspace = async (name: string) => {
     { workspace: false },
   );
   activeWorkspaceId = response.session.activeWorkspaceId;
+  trackAnalytics('workspace_created', { creation_source: 'explicit' });
   return response.session;
 };
 

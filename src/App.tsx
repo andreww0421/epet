@@ -19,10 +19,12 @@ import {
   canExportWorkspace,
   canWriteWorkspace,
 } from './auth/workspaceAccess';
+import { usePresentationMode } from './features/classroom/hooks/usePresentationMode';
+import { ClassroomPresentationShell, PresentationPaused } from './features/classroom/components/ClassroomPresentationShell';
 
-const ClassroomView = lazy(() =>
-  import('./components/ClassroomView').then((module) => ({
-    default: module.ClassroomView,
+const ClassroomPresentation = lazy(() =>
+  import('./features/classroom/components/ClassroomPresentation').then((module) => ({
+    default: module.ClassroomPresentation,
   })),
 );
 const DashboardView = lazy(() =>
@@ -110,7 +112,10 @@ const EmptyWorkspaceView = ({
   );
 };
 
-function WorkspaceApp() {
+function WorkspaceApp({ presentationMode, onEndPresentation }: {
+  presentationMode: boolean;
+  onEndPresentation: () => void;
+}) {
   const { session, logout, selectWorkspace, invalidateSession } = useAuth();
   const workspaceSwitchInFlight = useRef(false);
   const [switchingWorkspace, setSwitchingWorkspace] = useState(false);
@@ -144,6 +149,8 @@ function WorkspaceApp() {
     setUpgradeReward,
     rerollPetFromUpgrade,
     showToast,
+    allowUnmaskedNames,
+    allowRankedLeaderboard,
   } = useStore(
     useShallow((state) => ({
       view: state.view,
@@ -155,6 +162,8 @@ function WorkspaceApp() {
       setUpgradeReward: state.setUpgradeReward,
       rerollPetFromUpgrade: state.rerollPetFromUpgrade,
       showToast: state.showToast,
+      allowUnmaskedNames: state.data.settings?.inclusiveMode === false && state.data.settings.publicNameMode === 'full',
+      allowRankedLeaderboard: state.data.settings?.inclusiveMode === false && state.data.settings.publicLeaderboardMode === 'rank',
     })),
   );
   const tLang = translations[lang];
@@ -215,6 +224,18 @@ function WorkspaceApp() {
       setSwitchingWorkspace(false);
     }
   }, [activeWorkspaceId, flushBackendChanges, lang, selectWorkspace, showToast]);
+
+  // A separate shell, not CSS hiding: no teacher DOM, arbitrary transient
+  // messages, raw-name rewards or full-data recovery controls are mounted.
+  if (presentationMode) {
+    return <ClassroomPresentationShell language={lang} allowUnmaskedNames={allowUnmaskedNames} allowRankedLeaderboard={allowRankedLeaderboard} onExit={onEndPresentation}>
+      {(options) => workspaceReady && canManage && activeWorkspaceId ? (
+        <Suspense fallback={<PresentationPaused language={lang} />}>
+          <ClassroomPresentation options={options} />
+        </Suspense>
+      ) : <PresentationPaused language={lang} />}
+    </ClassroomPresentationShell>;
+  }
 
   if (session && session.workspaces.length === 0) {
     return (
@@ -355,6 +376,7 @@ function WorkspaceApp() {
       {(backendStatus === 'conflict' || backendStatus === 'forbidden') && (
         <div
           role="alert"
+          aria-label={lang === 'en' ? 'Synchronization or access alert' : '同步或權限警示'}
           className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-center text-sm font-bold text-amber-900"
         >
           {backendStatus === 'conflict'
@@ -376,16 +398,14 @@ function WorkspaceApp() {
               </div>
             )}
           >
-            {effectiveView === 'dashboard'
-              ? (
-                  <DashboardView
+            <DashboardView
+                    workspaceName={activeWorkspaceName}
+                    syncStatus={backendStatus}
                     readOnly={!canManage}
                     canExportFullData={canExportFullData}
                     canAdministerWorkspace={canAdminister}
                     flushChanges={flushBackendChanges}
-                  />
-                )
-              : <ClassroomView />}
+            />
           </Suspense>
         ) : (
           <section
@@ -513,6 +533,9 @@ function WorkspaceApp() {
 
 const AuthenticatedApp = () => {
   const { status, session } = useAuth();
+  const presentation = usePresentationMode();
+  const requestedPresentation = useStore((state) => state.view === 'classroom');
+  const language = useStore((state) => state.data.settings?.language ?? 'zh');
   const [verificationRoute, setVerificationRoute] = useState(
     readEmailVerificationRoute,
   );
@@ -527,13 +550,27 @@ const AuthenticatedApp = () => {
       window.removeEventListener('popstate', updateRoute);
     };
   }, []);
+  useEffect(() => {
+    if (requestedPresentation && !presentation.active) presentation.enter();
+  }, [requestedPresentation, presentation.active, presentation.enter]);
+  const endPresentation = () => {
+    useStore.getState().setView('dashboard');
+    presentation.leave();
+  };
+  const presentationActive = presentation.active || requestedPresentation;
+  const verificationRequired = verificationRoute.active ||
+    (status === 'authenticated' && session?.user.emailVerified === false);
+  if (presentationActive && (status !== 'authenticated' || verificationRequired)) {
+    return <ClassroomPresentationShell language={language} onExit={endPresentation}>
+      {() => <PresentationPaused language={language} />}
+    </ClassroomPresentationShell>;
+  }
   if (
-    verificationRoute.active ||
-    (status === 'authenticated' && session?.user.emailVerified === false)
+    verificationRequired
   ) {
     return <EmailVerificationScreen token={verificationRoute.token} />;
   }
-  return status === 'authenticated' ? <WorkspaceApp /> : <AuthScreen />;
+  return status === 'authenticated' ? <WorkspaceApp presentationMode={presentationActive} onEndPresentation={endPresentation} /> : <AuthScreen />;
 };
 
 export default function App() {

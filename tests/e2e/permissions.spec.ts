@@ -11,6 +11,7 @@ import {
   loadBrowserState,
   loginViaUi,
   selectDashboardTab,
+  selectTeacherDestination,
   testAccount,
 } from './support/fixtures';
 
@@ -95,11 +96,12 @@ test.describe('Permissions', () => {
 
     const teacherBrowser = await newUserPage(browser);
     await loginViaUi(teacherBrowser.page, teacherAccount);
+    await selectDashboardTab(teacherBrowser.page, '學生');
     await expect(teacherBrowser.page.locator('#classSelect option'))
       .toHaveCount(1);
-    await expect(teacherBrowser.page.getByRole('tab', {
-      name: '規則',
-    })).toHaveCount(0);
+    await expect(teacherBrowser.page.getByRole('navigation', {
+      name: 'Teacher Console', exact: true,
+    }).getByRole('button', { name: 'Settings', exact: true })).toHaveCount(0);
     await addStudentViaUi(teacherBrowser.page, 'E2E 教師授權學生');
     const teacherState = await loadBrowserState(
       teacherBrowser.context,
@@ -113,16 +115,18 @@ test.describe('Permissions', () => {
 
     const adminBrowser = await newUserPage(browser);
     await loginViaUi(adminBrowser.page, adminAccount);
-    await expect(adminBrowser.page.getByRole('tab', {
-      name: '規則',
-    })).toBeVisible();
+    await expect(adminBrowser.page.getByRole('navigation', {
+      name: 'Teacher Console', exact: true,
+    }).getByRole('button', { name: 'Settings', exact: true })).toBeVisible();
+    await selectDashboardTab(adminBrowser.page, '規則');
+    await expect(adminBrowser.page.getByRole('tab', { name: '規則', exact: true })).toBeVisible();
     await expect(adminBrowser.page.getByRole('tab', {
       name: '資料治理',
     })).toBeVisible();
     await addClassViaUi(adminBrowser.page, 'E2E 管理員新增班級');
     const adminState = await loadBrowserState(adminBrowser.context, workspaceId);
     expect(adminState.data?.classes).toHaveLength(3);
-    await selectDashboardTab(adminBrowser.page, '規則');
+    await selectTeacherDestination(adminBrowser.page, 'Settings', '工作區與使用者');
     await expect(adminBrowser.page.getByRole('heading', {
       name: '工作區權限',
     })).toBeVisible();
@@ -139,7 +143,7 @@ test.describe('Permissions', () => {
 
     const ownerBrowser = await newUserPage(browser);
     await loginViaUi(ownerBrowser.page, ownerAccount);
-    await selectDashboardTab(ownerBrowser.page, '規則');
+    await selectTeacherDestination(ownerBrowser.page, 'Settings', '工作區與使用者');
     await expect(ownerBrowser.page.getByRole('button', {
       name: '永久刪除工作區',
     })).toBeVisible();
@@ -156,10 +160,10 @@ test.describe('Permissions', () => {
     );
     await teacherMember.getByRole('button', { name: '移轉所有權' }).click();
     expect((await transferring).status()).toBe(200);
-    await expect(ownerBrowser.page.getByRole('navigation')
+    await expect(ownerBrowser.page.locator('nav').first()
       .getByText('admin', { exact: true })).toBeVisible();
     // Refreshing the session remounts the dashboard on its default tab.
-    await selectDashboardTab(ownerBrowser.page, '規則');
+    await selectTeacherDestination(ownerBrowser.page, 'Settings', '工作區與使用者');
     await expect(ownerBrowser.page.getByRole('heading', {
       name: '工作區權限',
     })).toBeVisible();

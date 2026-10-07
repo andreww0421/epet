@@ -24,7 +24,7 @@ export default defineConfig({
     video: 'retain-on-failure',
   },
   webServer: {
-    command: 'npm run build && npm run test:e2e:server',
+    command: 'node --import tsx tests/e2e/support/web-server.ts',
     url: `${E2E_BASE_URL}/api/v1/health`,
     reuseExistingServer: false,
     stdout: 'pipe',

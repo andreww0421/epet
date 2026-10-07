@@ -5,8 +5,8 @@ import {
   createEmailVerificationMailer,
   createPasswordResetMailer,
   createWorkspaceInvitationMailer,
-} from '../worker/passwordResetEmail';
-import { createTurnstileVerifier } from '../worker/turnstile';
+} from '../shared/services/accountEmail';
+import { createTurnstileVerifier } from '../shared/services/turnstile';
 
 const port = Math.max(1, Number(process.env.PORT) || 8787);
 const dataFile = resolve(
@@ -35,8 +35,8 @@ const { server, repository } = createEpetServer({
 });
 
 const cleanupExpiredAuthenticationData = () => {
-  void repository.cleanupExpiredAuthData(Date.now()).catch((error: unknown) => {
-    console.error('Expired authentication data cleanup failed', error);
+  void repository.cleanupExpiredAuthData(Date.now()).catch(() => {
+    console.error('Expired authentication data cleanup failed');
   });
 };
 cleanupExpiredAuthenticationData();

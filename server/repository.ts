@@ -4,7 +4,14 @@ import type { AppData } from '../src/store/types';
 import {
   findPermanentlyDeletedStudentIds,
   purgeStudentsFromWorkspaceData,
-} from './studentPrivacy';
+} from '../shared/domain/studentPrivacy';
+import {
+  AUTH_RATE_LIMIT_RETENTION_MS,
+  clampAuditQueryLimit,
+  createEmptyStoredWorkspace,
+  jsonUtf8Size,
+  MAX_STORED_REVISIONS,
+} from '../shared/domain/repositoryPolicy';
 import {
   EmailAlreadyExistsError,
   InvalidWorkspaceInvitationError,
@@ -108,15 +115,6 @@ const workspaceClassIds = (workspace?: StoredWorkspace): string[] =>
 
 const rateLimitKey = (scope: string, subjectHash: string) =>
   `${scope}:${subjectHash}`;
-
-const dataSizeBytes = (data: AppData) =>
-  new TextEncoder().encode(JSON.stringify(data)).byteLength;
-
-const emptyWorkspace = (): StoredWorkspace => ({
-  revision: 0,
-  updatedAt: 0,
-  data: null,
-});
 
 export class JsonWorkspaceRepository
 implements WorkspaceRepository, AuthRepository {
@@ -244,13 +242,13 @@ implements WorkspaceRepository, AuthRepository {
             workspaceId,
             revision: workspace.revision,
             updatedAt: workspace.updatedAt,
-            dataSizeBytes: dataSizeBytes(workspace.data),
+            dataSizeBytes: jsonUtf8Size(workspace.data),
             data: structuredClone(workspace.data),
           });
         }
         database.workspaceRevisions[workspaceId] = revisions
           .sort((left, right) => right.revision - left.revision)
-          .slice(0, 25);
+          .slice(0, MAX_STORED_REVISIONS);
       }
       for (const membership of Object.values(database.memberships)) {
         if (
@@ -326,7 +324,9 @@ implements WorkspaceRepository, AuthRepository {
   async get(workspaceId: string): Promise<StoredWorkspace> {
     await this.mutationQueue;
     const database = await this.load();
-    return structuredClone(database.workspaces[workspaceId] ?? emptyWorkspace());
+    return structuredClone(
+      database.workspaces[workspaceId] ?? createEmptyStoredWorkspace(),
+    );
   }
 
   async put(
@@ -336,7 +336,8 @@ implements WorkspaceRepository, AuthRepository {
     context: WorkspaceWriteContext = {},
   ): Promise<StoredWorkspace> {
     return this.mutate((database) => {
-      const current = database.workspaces[workspaceId] ?? emptyWorkspace();
+      const current = database.workspaces[workspaceId] ??
+        createEmptyStoredWorkspace();
       if (
         baseRevision != null &&
         (!Number.isInteger(baseRevision) || baseRevision !== current.revision)
@@ -383,7 +384,7 @@ implements WorkspaceRepository, AuthRepository {
           return {
             ...snapshot,
             data: purgedData,
-            dataSizeBytes: dataSizeBytes(purgedData),
+            dataSizeBytes: jsonUtf8Size(purgedData),
           };
         });
         database.auditEvents.push({
@@ -402,7 +403,7 @@ implements WorkspaceRepository, AuthRepository {
         revision: next.revision,
         updatedAt: next.updatedAt,
         actorUserId: context.actorUserId,
-        dataSizeBytes: dataSizeBytes(data),
+        dataSizeBytes: jsonUtf8Size(data),
         data: structuredClone(data),
       };
       database.workspaceRevisions[workspaceId] = [
@@ -410,7 +411,7 @@ implements WorkspaceRepository, AuthRepository {
         ...(database.workspaceRevisions[workspaceId] ?? []).filter(
           (candidate) => candidate.revision !== revision.revision,
         ),
-      ].slice(0, 25);
+      ].slice(0, MAX_STORED_REVISIONS);
       if (context.action) {
         database.auditEvents.push({
           id:
@@ -508,7 +509,7 @@ implements WorkspaceRepository, AuthRepository {
       revision: 1,
       updatedAt: workspace.createdAt,
       actorUserId: membership.userId,
-      dataSizeBytes: dataSizeBytes(workspace.data),
+      dataSizeBytes: jsonUtf8Size(workspace.data),
       data: structuredClone(workspace.data),
     }];
     database.workspaceClaims[workspace.id] = {
@@ -749,7 +750,10 @@ implements WorkspaceRepository, AuthRepository {
         emailVerificationTokens += 1;
       }
       for (const [key, limit] of Object.entries(database.authRateLimits)) {
-        if (limit.blockedUntil > now || limit.windowStartedAt + 86_400_000 > now) {
+        if (
+          limit.blockedUntil > now ||
+          limit.windowStartedAt + AUTH_RATE_LIMIT_RETENTION_MS > now
+        ) {
           continue;
         }
         delete database.authRateLimits[key];
@@ -1124,10 +1128,7 @@ implements WorkspaceRepository, AuthRepository {
   ): Promise<AuditEventRecord[]> {
     await this.mutationQueue;
     const database = await this.load();
-    const safeLimit = Math.max(
-      1,
-      Math.min(201, Math.floor(query.limit ?? 50)),
-    );
+    const safeLimit = clampAuditQueryLimit(query.limit);
     return database.auditEvents
       .filter((event) => event.workspaceId === workspaceId)
       .filter((event) => !query.action || event.action === query.action)

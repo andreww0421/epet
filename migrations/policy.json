@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "historical": {
+    "0001_create_workspaces.sql": "5f21ae80c2ac65c5fd7642f99a6318fc53ee135d8e9df2e022e99309bb43ed13",
+    "0002_auth_rbac.sql": "0d5cad34acdc9042c10dad7b7cc57916ff0bb9ca5fe47d55df32ef185f42a336",
+    "0003_core_entities.sql": "36704bef6bbe3080f1397fb437718b0a451ae6107ad2bbbabcded5093f368128",
+    "0004_workspace_class_assignments.sql": "2708642762eb97959a0d1f60732f70be42c4ff908590a691b3738e16c3a67c31",
+    "0005_workspace_invitations.sql": "65b60c5ccffc2efe69f33b664c47fd4dac5f2388bd79c7c22692b6367e3acba4",
+    "0006_projection_read_model.sql": "e9b8991caacde4a0598ccda9a5f206737d7f4e0124b5d595740ddb7eba2e07f2",
+    "0007_email_verification.sql": "d27b8fac626827742cde2046352a9405ae365a43542137326c893e42486c3efa"
+  },
+  "expansions": {}
+}

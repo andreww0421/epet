@@ -1,11 +1,17 @@
 import assert from 'node:assert/strict';
 
 import {
+  BOSS_ATTACK_FULLNESS_COST,
+  PET_GACHA_COST,
+  PET_MAX_LEVEL,
+  PET_UPGRADE_FULLNESS_REQUIREMENT,
+  PET_UPGRADE_MIN_HAPPINESS,
   PET_DEATH_DELAY_MS,
   REVIVE_COST,
   applyDecayToStudent,
   applyBossContributionRewards,
   applyFeedToStudent,
+  applyPlayWithPet,
   applyPointGuardrail,
   applyPointAdjustmentToStudent,
   applyParticipationSupportToStudent,
@@ -15,7 +21,14 @@ import {
   createPenaltyStatus,
   createPointAdjustmentRecord,
   createEconomyEventRecord,
+  appendRecord,
+  getBattleBlockedReason,
   getDailyTaskClaimPlan,
+  getBossAttackBlockedReason,
+  getPetUpgradeBlockedReason,
+  getPetUpgradeCost,
+  getNextUpgradeGachaLevel,
+  getUpcomingUpgradeGachaLevel,
   getDailyTeacherPointTotals,
   getMedianPoints,
   getParticipationSupportPlan,
@@ -34,6 +47,9 @@ import {
   reviveStudentPet,
   saveMentorDailyFeedbackForStudent,
   isBossRecoveryActive,
+  isPenaltyActive,
+  normalizePenaltyStatus,
+  syncPetLifeState,
   type BossRewardRecord,
   type EconomyEventRecord,
   type StudentRuleState,
@@ -134,6 +150,194 @@ const createBoss = () => ({
   contributions: {},
   attackCounts: {},
   isActive: true,
+});
+
+test('pet upgrade and gacha rules preserve the established costs and thresholds', () => {
+  assert.equal(getPetUpgradeCost(1), 100);
+  assert.equal(getPetUpgradeCost(5), 300);
+  assert.equal(getPetUpgradeCost(PET_MAX_LEVEL), 550);
+  assert.equal(PET_GACHA_COST, 200);
+  assert.equal(PET_UPGRADE_FULLNESS_REQUIREMENT, 100);
+  assert.equal(PET_UPGRADE_MIN_HAPPINESS, 40);
+
+  const eligible = {
+    ...createStudent(),
+    points: 200,
+    pet: {
+      ...createStudent().pet,
+      level: 1,
+      fullness: PET_UPGRADE_FULLNESS_REQUIREMENT,
+      happiness: PET_UPGRADE_MIN_HAPPINESS,
+    },
+  };
+  assert.equal(getPetUpgradeBlockedReason(eligible), null);
+  assert.equal(getPetUpgradeBlockedReason({ ...eligible, points: 99 }), 'points');
+  assert.equal(getPetUpgradeBlockedReason({
+    ...eligible,
+    pet: { ...eligible.pet, happiness: PET_UPGRADE_MIN_HAPPINESS - 1 },
+  }), 'happiness');
+  assert.equal(getPetUpgradeBlockedReason({
+    ...eligible,
+    pet: { ...eligible.pet, fullness: PET_UPGRADE_FULLNESS_REQUIREMENT - 1 },
+  }), 'fullness');
+  assert.equal(getPetUpgradeBlockedReason({
+    ...eligible,
+    pet: { ...eligible.pet, level: PET_MAX_LEVEL },
+  }), 'maxLevel');
+});
+
+test('upgrade gacha milestone helpers distinguish current and next rewards', () => {
+  assert.equal(getUpcomingUpgradeGachaLevel(1), 2);
+  assert.equal(getUpcomingUpgradeGachaLevel(2), 2);
+  assert.equal(getUpcomingUpgradeGachaLevel(9), null);
+  assert.equal(getNextUpgradeGachaLevel(2), 4);
+  assert.equal(getNextUpgradeGachaLevel(8), null);
+});
+
+test('battle readiness keeps blocker precedence and threshold behavior stable', () => {
+  const now = 10_000;
+  const ready = {
+    ...createStudent(),
+    pet: { ...createStudent().pet, fullness: 50, happiness: 30 },
+  };
+  const allBlocked = {
+    ...ready,
+    penaltyStatus: createPenaltyStatus('discipline', now),
+    pet: { ...ready.pet, fullness: 0, happiness: 0, isDead: true },
+  };
+
+  assert.equal(getBattleBlockedReason(allBlocked, now), 'dead');
+  assert.equal(getBattleBlockedReason({ ...ready, penaltyStatus: createPenaltyStatus('discipline', now) }, now), 'penalty');
+  assert.equal(getBattleBlockedReason({ ...ready, pet: { ...ready.pet, happiness: 29 } }, now), 'happiness');
+  assert.equal(getBattleBlockedReason({ ...ready, pet: { ...ready.pet, fullness: 49 } }, now), 'fullness');
+  assert.equal(getBattleBlockedReason(ready, now), null);
+  assert.equal(
+    getBattleBlockedReason(
+      { ...ready, pet: { ...ready.pet, fullness: 0 } },
+      now,
+      { ignoreFullness: true },
+    ),
+    null,
+  );
+});
+
+test('penalty normalization preserves coercion and expiry boundaries', () => {
+  assert.deepEqual(
+    normalizePenaltyStatus({ source: 'discipline', until: '2000' }, 1_999),
+    { source: 'discipline', until: 2_000 },
+  );
+  assert.equal(normalizePenaltyStatus({ source: 'discipline', until: 2_000 }, 2_000), undefined);
+  assert.equal(normalizePenaltyStatus({ source: 'unknown', until: 3_000 }, 2_000), undefined);
+  assert.equal(normalizePenaltyStatus({ source: 'discipline', until: 'invalid' }, 2_000), undefined);
+  assert.equal(isPenaltyActive({ source: 'discipline', until: 2_000 }, 2_000), false);
+});
+
+test('play records only the actual spend and leaves dead pets untouched', () => {
+  const student = {
+    ...createStudent(),
+    points: 5,
+    pet: { ...createStudent().pet, happiness: 98 },
+  };
+  const played = applyPlayWithPet(student, 10, 20, 1_000);
+
+  assert.equal(played.points, 0);
+  assert.equal(played.pet.happiness, 100);
+  assert.equal(played.economyEventRecords?.[0]?.amount, -5);
+  assert.equal(played.economyEventRecords?.[0]?.source, 'play');
+
+  const deadStudent = {
+    ...student,
+    pet: { ...student.pet, isDead: true },
+  };
+  assert.equal(applyPlayWithPet(deadStudent, 10, 20, 1_000), deadStudent);
+});
+
+test('record ledgers stay newest-first, capped, and immutable', () => {
+  const original = [
+    { id: 'older', createdAt: 100 },
+    { id: 'oldest', createdAt: 50 },
+  ];
+  const originalSnapshot = original.map((record) => ({ ...record }));
+  const result = appendRecord(original, { id: 'newest', createdAt: 200 }, 2);
+
+  assert.deepEqual(result.map((record) => record.id), ['newest', 'older']);
+  assert.deepEqual(original, originalSnapshot);
+});
+
+test('positive fullness clears stale pet death metadata', () => {
+  const recovered = syncPetLifeState({
+    fullness: 1,
+    isDead: true,
+    zeroFullnessSince: 100,
+  }, 1_000);
+
+  assert.equal(recovered.fullness, 1);
+  assert.equal(recovered.isDead, false);
+  assert.equal(recovered.zeroFullnessSince, undefined);
+});
+
+test('boss attack availability shares the execution rule without changing its cost', () => {
+  const ready = {
+    ...createStudent(),
+    pet: { ...createStudent().pet, fullness: BOSS_ATTACK_FULLNESS_COST },
+  };
+  assert.equal(getBossAttackBlockedReason(ready, 1_000), null);
+  assert.equal(getBossAttackBlockedReason({
+    ...ready,
+    pet: { ...ready.pet, fullness: BOSS_ATTACK_FULLNESS_COST - 1 },
+  }, 1_000), 'fullness');
+  assert.equal(getBossAttackBlockedReason({
+    ...ready,
+    penaltyStatus: createPenaltyStatus('autoPenalty', 1_000),
+  }, 1_001), 'penalty');
+  assert.equal(getBossAttackBlockedReason({
+    ...ready,
+    pet: { ...ready.pet, isDead: true },
+  }, 1_000), 'dead');
+});
+
+test('store pet upgrade and gacha actions keep the shared rule costs', () => {
+  const upgradeStudent = {
+    ...createStudent('pet-actions', 'Pet Actions'),
+    points: 200,
+    pet: {
+      ...createStudent().pet,
+      type: 'cat',
+      level: 1,
+      fullness: PET_UPGRADE_FULLNESS_REQUIREMENT,
+      happiness: PET_UPGRADE_MIN_HAPPINESS,
+    },
+  };
+  useStore.setState({
+    data: normalizeAppData({
+      lastOpened: 1_000,
+      currentClassId: 'pet-rules',
+      classes: [{ id: 'pet-rules', name: 'Pet Rules', students: [upgradeStudent] }],
+    }, 1_000),
+  });
+  useStore.getState().upgradePet(upgradeStudent.id);
+  let savedStudent = useStore.getState().data.classes[0].students[0];
+  assert.equal(savedStudent.pet.level, 2);
+  assert.equal(savedStudent.points, 200 - getPetUpgradeCost(1));
+  assert.equal(savedStudent.economyEventRecords?.[0].amount, -getPetUpgradeCost(1));
+
+  const gachaStudent = {
+    ...createStudent('pet-gacha', 'Pet Gacha'),
+    points: PET_GACHA_COST,
+    pet: { ...createStudent().pet, type: 'egg' },
+  };
+  useStore.setState({
+    data: normalizeAppData({
+      lastOpened: 1_000,
+      currentClassId: 'pet-rules',
+      classes: [{ id: 'pet-rules', name: 'Pet Rules', students: [gachaStudent] }],
+    }, 1_000),
+  });
+  useStore.getState().gachaPet(gachaStudent.id);
+  savedStudent = useStore.getState().data.classes[0].students[0];
+  assert.equal(savedStudent.points, 0);
+  assert.notEqual(savedStudent.pet.type, 'egg');
+  assert.equal(savedStudent.economyEventRecords?.[0].amount, -PET_GACHA_COST);
 });
 
 test('resolveBattle returns draw when scores are equal', () => {
@@ -2793,7 +2997,7 @@ test('PII cache is opt-in and resetStoreForSession clears account-scoped state w
   const state = useStore.getState();
   assert.equal(state.data.classes.length, 1);
   assert.deepEqual(state.data.classes[0].students, []);
-  assert.equal(state.view, 'classroom');
+  assert.equal(state.view, 'dashboard'); // Session reset now opens Teacher Today; cache isolation is unchanged.
   assert.deepEqual(state.animatingPets, {});
   assert.equal(state.toast, null);
   assert.equal(state.upgradeReward, null);

@@ -1,0 +1,35 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "epet-staging",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-07-29",
+  "workers_dev": true,
+  "preview_urls": false,
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/**", "!/assets/**"]
+  },
+  "placement": { "mode": "smart" },
+  "observability": { "enabled": true },
+  "triggers": { "crons": ["47 3 * * *"] },
+  "vars": {
+    "BOT_PROTECTION_REQUIRED": "true",
+    "EMAIL_VERIFICATION_REQUIRED": "true",
+    "MONITORING_ENVIRONMENT": "staging",
+    "PUBLIC_APP_URL": "STAGING_BASE_URL",
+    "REGISTRATION_ENABLED": "false"
+  },
+  "secrets": {
+    "required": ["TURNSTILE_SITE_KEY", "TURNSTILE_SECRET_KEY", "RESEND_API_KEY"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "epet-staging",
+      "database_id": "REPLACE_WITH_STAGING_D1_DATABASE_ID",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

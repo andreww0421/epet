@@ -1,4 +1,7 @@
 import type { AppData } from '../src/store/types';
+import type { WorkspaceRole } from '../shared/contracts/workspace';
+
+export type { WorkspaceRole } from '../shared/contracts/workspace';
 
 export type StoredWorkspace = {
   revision: number;
@@ -22,7 +25,6 @@ export type WorkspaceWriteContext = {
   requestId?: string;
 };
 
-export type WorkspaceRole = 'owner' | 'admin' | 'teacher' | 'viewer';
 export type AuthUserStatus = 'active' | 'disabled';
 export type PasswordAlgorithm = 'PBKDF2-HMAC-SHA256';
 

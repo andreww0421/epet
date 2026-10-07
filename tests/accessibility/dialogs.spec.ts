@@ -3,6 +3,7 @@ import { performSyncedAction, selectDashboardTab } from '../e2e/support/fixtures
 import { scanAccessibility, STUDENT_NAME, test } from './fixtures';
 
 test('Add class dialog: semantics and labels', async ({ teacherPage: page }, info) => {
+  await selectDashboardTab(page, '學生');
   const trigger = page.getByRole('button', { name: '新增班級' });
   await trigger.focus();
   await page.keyboard.press('Enter');

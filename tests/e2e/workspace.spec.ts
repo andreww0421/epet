@@ -11,12 +11,20 @@ import {
   waitForBackendSync,
 } from './support/fixtures';
 
+let workspaceOwner: E2eApiSession;
+
 test.describe('Workspace', () => {
+  // Reuse an authenticated owner, not workspace data, so browser regressions
+  // remain within the real registration limit even when a preceding test retries.
+  test.beforeAll(async () => {
+    workspaceOwner = await E2eApiSession.register(testAccount('workspace-owner'));
+  });
+  test.afterAll(async () => { await workspaceOwner.dispose(); });
+
   test('a user with no workspace can create one and switch workspaces', async ({
     page,
   }) => {
-    const ownerAccount = testAccount('workspace-bootstrap-owner');
-    const owner = await E2eApiSession.register(ownerAccount);
+    const owner = workspaceOwner;
     const ownerWorkspaceId = owner.session.activeWorkspaceId;
     if (!ownerWorkspaceId) throw new Error('Owner workspace is missing');
     const ownerState = await owner.loadState(ownerWorkspaceId);
@@ -36,7 +44,6 @@ test.describe('Workspace', () => {
       invited.session.user.id,
     );
     await invited.dispose();
-    await owner.dispose();
 
     await page.goto('/#/login');
     await page.locator('#auth-email').fill(account.email);
@@ -86,10 +93,9 @@ test.describe('Workspace', () => {
     context,
     page,
   }) => {
-    const owner = await E2eApiSession.register(
-      testAccount('workspace-restriction-owner'),
-    );
-    const workspaceId = owner.session.activeWorkspaceId;
+    const owner = workspaceOwner;
+    const created = await owner.createWorkspace('E2E 班級授權隔離工作區');
+    const workspaceId = created.session.activeWorkspaceId;
     if (!workspaceId) throw new Error('Owner workspace is missing');
     const state = await owner.loadState(workspaceId);
     const allowedClass = state.data?.classes[0];
@@ -111,7 +117,6 @@ test.describe('Workspace', () => {
       [allowedClass.id],
     );
     await teacher.dispose();
-    await owner.dispose();
 
     await loginViaUi(page, teacherAccount);
     const classSelect = page.locator('#classSelect');
