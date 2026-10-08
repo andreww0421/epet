@@ -289,6 +289,8 @@ Dashboard 的 feature 邊界、component responsibilities 與後續拆分項目�
 
 完整會員、安全與舊資料上線設計見 [`docs/membership-and-p0-plan.md`](docs/membership-and-p0-plan.md)；學生資料盤點、保存／刪除與請求處理見 [`docs/privacy-data-governance.md`](docs/privacy-data-governance.md)。同站 session 切換見 [`docs/p1-same-origin-session-cutover.md`](docs/p1-same-origin-session-cutover.md)；Email 驗證、Turnstile 與通知切換見 [`docs/p1-account-security-cutover.md`](docs/p1-account-security-cutover.md)；資料治理管理操作與驗收見 [`docs/p1-data-governance-console.md`](docs/p1-data-governance-console.md)。
 
+Teacher Console → Settings → 資料治理提供 owner/admin 專用的 Data & Privacy 管理：完整工作區／單一學生匯出、雙重確認的學生刪除與去識別化、班級封存／復開、敏感操作稽核及公開展示隱私設定。後端維持租戶、RBAC、CSRF／Origin 與 revision 檢查；不修改 production DB schema。操作範圍、保存限制與架構見 [`docs/data-privacy-management.md`](docs/data-privacy-management.md)，定向回歸使用 `npm run test:privacy`。
+
 ## Cloudflare 部署
 
 D1 資料庫名稱為 `epet-production`。Worker 與前端靜態資源隨同一版本發布，D1 schema／資料則具有獨立生命週期。Application deploy workflow 只讀 migration ledger，若有缺少的 migration 就在部署前停止。先以 `database-expand.yml` 的手動流程完成與目前 Worker 相容的 expansion，再重跑 application deploy；完整規範見 [`docs/database-migration-policy.md`](docs/database-migration-policy.md)。

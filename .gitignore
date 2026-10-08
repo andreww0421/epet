@@ -5,6 +5,8 @@ coverage/
 .tmp-rule-tests/
 .playwright-cli/
 output/playwright/
+output/privacy-test-tmp/
+output/privacy-unit/
 .DS_Store
 *.log
 .env*

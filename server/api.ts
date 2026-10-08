@@ -17,6 +17,7 @@ import { handleAnalyticsRoutes } from './routes/analyticsRoutes';
 import { handleBossRoutes } from './routes/bossRoutes';
 import { handleLearningRoutes } from './routes/learningRoutes';
 import { handleStudentRoutes } from './routes/studentRoutes';
+import { handleClassRoutes } from './routes/classRoutes';
 import { handleSystemRoutes } from './routes/systemRoutes';
 import type {
   AuthenticatedRouteContext,
@@ -130,6 +131,8 @@ export const createApiHandler = (
       if (workspaceResponse) return workspaceResponse;
       const studentResponse = await handleStudentRoutes(workspaceContext);
       if (studentResponse) return studentResponse;
+      const classResponse = await handleClassRoutes(workspaceContext);
+      if (classResponse) return classResponse;
       const analyticsResponse = await handleAnalyticsRoutes(workspaceContext);
       if (analyticsResponse) return analyticsResponse;
       const learningResponse = await handleLearningRoutes(workspaceContext);

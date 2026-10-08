@@ -108,6 +108,8 @@ export type ClassDailyTaskCalendar = {
 export type ClassData = {
   id: string;
   name: string;
+  /** Optional, backward-compatible archive marker; not a deletion/expiry date. */
+  archivedAt?: number;
   students: Student[];
   dailyTaskCalendar?: ClassDailyTaskCalendar;
   activeBoss?: WorldBoss;

@@ -399,6 +399,139 @@ const createPrivacyState = () => {
   };
 };
 
+for (const action of ['delete', 'anonymize'] as const) {
+  test(`student privacy ${action} enforces admin, tenant, CSRF, confirmation and revision boundaries`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), `epet-student-${action}-test-`));
+    const repository = new JsonWorkspaceRepository(join(directory, 'workspaces.json'));
+    await repository.put(LEGACY_WORKSPACE_ID, normalizeAppData(createPrivacyState()), 0);
+    const options = createHandlerOptions([]);
+    const handler = createApiHandler(repository, options);
+    const request = createRequester(handler);
+    const path = `/api/v1/classes/class-a/students/student-a/privacy/${action}`;
+    const confirmation = action === 'delete' ? 'DELETE STUDENT' : 'ANONYMIZE STUDENT';
+    const validBody = JSON.stringify({ expectedRevision: 1, confirmation });
+    try {
+      const registered = await request('/api/v1/auth/register', {
+        method: 'POST', body: JSON.stringify({
+          displayName: 'Privacy admin', email: `${action}-admin@example.test`,
+          password: OWNER_PASSWORD, workspaceName: 'Privacy workspace',
+          legacyWorkspaceId: LEGACY_WORKSPACE_ID,
+        }),
+      });
+      assert.equal(registered.status, 201);
+      const owner = await registered.json() as AuthEnvelope;
+      const init = { method: 'POST', workspaceId: LEGACY_WORKSPACE_ID,
+        sessionToken: owner.sessionToken, body: validBody };
+      assert.equal((await request(path, { ...init, sessionToken: undefined })).status, 401);
+      for (const role of ['teacher', 'viewer'] as const) {
+        const scoped = createRequester(createApiHandler(createRoleScopedRepository(repository, role), options));
+        assert.equal((await scoped(path, { ...init, body: 'invalid JSON' })).status, 403,
+          'permission check must precede student data lookup or payload parsing');
+      }
+      assert.equal((await request(path, { ...init,
+        workspaceId: 'ws_unrelated_workspace_0123456789abcdef' })).status, 403);
+      assert.equal((await request(path, { ...init, headers: { origin: 'https://attacker.example.test' } })).status, 403);
+      const client = testApiClients.get(owner.sessionToken);
+      assert.ok(client);
+      const noCsrf = await handler(new Request(`http://localhost${path}`, {
+        method: 'POST', headers: { cookie: client.cookie, origin: 'http://localhost',
+          'x-epet-workspace': LEGACY_WORKSPACE_ID, 'content-type': 'application/json' }, body: validBody,
+      }));
+      assert.equal(noCsrf.status, 403);
+      const missingConfirmation = await request(path, { ...init,
+        body: JSON.stringify({ expectedRevision: 1 }) });
+      assert.equal(missingConfirmation.status, 400);
+      assert.deepEqual(await missingConfirmation.json(), { error: 'PRIVACY_CONFIRMATION_REQUIRED' });
+      for (const expectedRevision of [undefined, -1, 0, 1.5, '1', Number.MAX_SAFE_INTEGER + 1]) {
+        assert.equal((await request(path, { ...init,
+          body: JSON.stringify({ expectedRevision, confirmation }) })).status, 400);
+      }
+      const stale = await request(path, { ...init,
+        body: JSON.stringify({ expectedRevision: 2, confirmation }) });
+      assert.equal(stale.status, 409);
+      assert.equal((await stale.json() as { error: string }).error, 'REVISION_CONFLICT');
+      assert.equal((await request(path.replace('student-a', 'missing-student'), init)).status, 404);
+      assert.equal((await repository.get(LEGACY_WORKSPACE_ID)).revision, 1);
+      const beforeAudits = await repository.listWorkspaceAuditEvents(LEGACY_WORKSPACE_ID);
+      assert.equal(beforeAudits.some((event) => event.action === `student.privacy.${action}`), false);
+
+      // Admin (not only owner) is authorized. Caller request IDs may contain PII,
+      // so the dedicated privacy mutation must not copy them into its audit.
+      const admin = createRequester(createApiHandler(createRoleScopedRepository(repository, 'admin'), options));
+      assert.equal((await admin(path.replace(`/privacy/${action}`, '/privacy/export'), {
+        sessionToken: owner.sessionToken, workspaceId: LEGACY_WORKSPACE_ID,
+      })).status, 200);
+      const response = await admin(path, { ...init,
+        headers: { 'x-request-id': 'student-private-sensitive-canary' } });
+      assert.equal(response.status, 200);
+      const saved = await response.json() as { action: string; revision: number; data: ReturnType<typeof normalizeAppData> };
+      assert.equal(saved.action, action);
+      assert.equal(saved.revision, 2);
+      assert.equal(saved.data.classes[0].students.some((student) => student.id === 'student-a'), false);
+      assert.equal(saved.data.classes[0].students.some((student) => student.id === 'student-b'), true);
+      if (action === 'anonymize') {
+        const anonymous = saved.data.classes[0].students.find((student) => student.name === 'Anonymous student');
+        assert.ok(anonymous);
+        assert.match(anonymous.id, /^student-anonymous-[0-9a-f-]+$/);
+        assert.equal(anonymous.points, 200);
+        assert.equal(anonymous.pointAdjustmentRecords?.[0].reasonLabel, undefined);
+        assert.equal(anonymous.dailyProgress?.reflections?.[0].text, undefined);
+      }
+      assert.equal(JSON.stringify(saved.data).includes('Alpha private'), false);
+      for (const revision of await repository.listWorkspaceRevisions(LEGACY_WORKSPACE_ID)) {
+        const snapshot = await repository.getWorkspaceRevision(LEGACY_WORKSPACE_ID, revision.revision);
+        assert.ok(snapshot);
+        assert.equal(JSON.stringify(snapshot.data).includes('"student-a"'), false);
+        assert.equal(JSON.stringify(snapshot.data).includes('Alpha private'), false);
+      }
+      const audits = await repository.listWorkspaceAuditEvents(LEGACY_WORKSPACE_ID);
+      const mutationAudit = audits.filter((event) => event.action === `student.privacy.${action}`);
+      assert.equal(mutationAudit.length, 1);
+      assert.equal(mutationAudit[0].actorUserId, owner.session.user.id);
+      assert.equal(mutationAudit[0].workspaceId, LEGACY_WORKSPACE_ID);
+      assert.equal(mutationAudit[0].targetType, 'workspace');
+      assert.equal(JSON.stringify(mutationAudit).includes('student-private-sensitive-canary'), false);
+      assert.equal(JSON.stringify(mutationAudit).includes('student-a'), false);
+      assert.ok(audits.some((event) => event.action === 'privacy.student.purge'));
+      assert.equal(audits.find((event) => event.action === 'student.privacy.export')?.targetId, undefined);
+      assert.equal((await request(path, { ...init,
+        body: JSON.stringify({ expectedRevision: 2, confirmation }) })).status, 404);
+      assert.equal((await repository.get(LEGACY_WORKSPACE_ID)).revision, 2);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+test('concurrent student privacy mutations commit one state and one sensitive action audit', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'epet-student-privacy-race-test-'));
+  const repository = new JsonWorkspaceRepository(join(directory, 'workspaces.json'));
+  await repository.put(LEGACY_WORKSPACE_ID, normalizeAppData(createPrivacyState()), 0);
+  const request = createRequester(createApiHandler(repository, createHandlerOptions([])));
+  try {
+    const registered = await request('/api/v1/auth/register', { method: 'POST', body: JSON.stringify({
+      displayName: 'Privacy race admin', email: 'privacy-race@example.test', password: OWNER_PASSWORD,
+      workspaceName: 'Race workspace', legacyWorkspaceId: LEGACY_WORKSPACE_ID,
+    }) });
+    assert.equal(registered.status, 201);
+    const owner = await registered.json() as AuthEnvelope;
+    const responses = await Promise.all(['delete', 'anonymize'].map((action) => request(
+      `/api/v1/classes/class-a/students/student-a/privacy/${action}`,
+      { method: 'POST', sessionToken: owner.sessionToken, workspaceId: LEGACY_WORKSPACE_ID,
+        body: JSON.stringify({ expectedRevision: 1,
+          confirmation: action === 'delete' ? 'DELETE STUDENT' : 'ANONYMIZE STUDENT' }) },
+    )));
+    assert.equal(responses.filter((response) => response.status === 200).length, 1);
+    assert.equal(responses.filter((response) => response.status === 409).length, 1);
+    assert.equal((await repository.get(LEGACY_WORKSPACE_ID)).revision, 2);
+    const audits = await repository.listWorkspaceAuditEvents(LEGACY_WORKSPACE_ID);
+    assert.equal(audits.filter((event) => ['student.privacy.delete', 'student.privacy.anonymize']
+      .includes(event.action)).length, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('same-origin HttpOnly sessions enforce Origin and double-submit CSRF', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'epet-cookie-test-'));
   const repository = new JsonWorkspaceRepository(join(directory, 'data.json'));

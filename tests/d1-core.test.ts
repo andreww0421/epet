@@ -15,6 +15,11 @@ import {
   WorkspaceDataTooLargeError,
 } from '../server/contracts';
 import { D1WorkspaceRepository } from '../worker/repository';
+import {
+  anonymizeStudentInWorkspaceData,
+  purgeStudentsFromWorkspaceData,
+} from '../shared/domain/studentPrivacy';
+import { updateClassArchive } from '../shared/domain/classArchive';
 
 const migrations = [
   'migrations/0001_create_workspaces.sql',
@@ -1117,6 +1122,147 @@ test('deleting a student purges that student from every retained D1 revision', a
   assert.ok(snapshots.results.every(
     (snapshot) => !snapshot.data_json.includes('student-shared-id'),
   ));
+});
+
+test('D1 normalized records preserve archived classes and reopen without changing educational or game data', async () => {
+  const isolated = await createFixture();
+  try {
+    const repository = new D1WorkspaceRepository(isolated.database, { readMode: 'normalized' });
+    const original = createData('Archive fixture learner', 203);
+    original.classes[0].activeBoss = {
+      id: 'archive-boss', name: 'Archive fixture activity', maxHp: 100, currentHp: 60,
+      contributions: { 'student-shared-id': 40 },
+      attackCounts: { 'student-shared-id': 2 }, rewardTiers: [], isActive: true,
+    };
+    original.classes.push({ id: 'class-still-active', name: 'Active class', students: [] });
+    await repository.put('class-archive-tenant', original, 0);
+    assert.deepEqual((await repository.get('class-archive-tenant')).data, original);
+
+    const archivedAt = 1_700_000_001_000;
+    const archived = updateClassArchive(original, 'class-shared-id', 'archive', archivedAt);
+    await repository.put('class-archive-tenant', archived, 1, {
+      action: 'class.privacy.archive', requestId: 'class-archive-write',
+    });
+    const current = await repository.get('class-archive-tenant');
+    assert.equal(current.revision, 2);
+    assert.deepEqual(current.data, archived);
+    assert.equal(current.data?.currentClassId, 'class-still-active');
+    const archivedProjection = await isolated.database.prepare(
+      'SELECT record_json FROM classes WHERE workspace_id = ? AND class_id = ?',
+    ).bind('class-archive-tenant', 'class-shared-id').first<{ record_json: string }>();
+    assert.ok(archivedProjection);
+    assert.deepEqual(JSON.parse(archivedProjection.record_json), {
+      ...original.classes[0], archivedAt,
+    });
+    const verified = await isolated.database.prepare(
+      'SELECT reconciliation_status FROM workspace_projection_documents WHERE workspace_id = ?',
+    ).bind('class-archive-tenant').first<{ reconciliation_status: string }>();
+    assert.equal(verified?.reconciliation_status, 'verified');
+
+    assert.ok(current.data);
+    const reopened = updateClassArchive(current.data, 'class-shared-id', 'reopen', archivedAt + 1);
+    await repository.put('class-archive-tenant', reopened, current.revision, {
+      action: 'class.privacy.reopen', requestId: 'class-reopen-write',
+    });
+    const reopenedCurrent = await repository.get('class-archive-tenant');
+    assert.equal(reopenedCurrent.revision, 3);
+    assert.deepEqual(reopenedCurrent.data, {
+      ...original, currentClassId: 'class-still-active',
+    });
+    const reopenedProjection = await isolated.database.prepare(
+      'SELECT record_json FROM classes WHERE workspace_id = ? AND class_id = ?',
+    ).bind('class-archive-tenant', 'class-shared-id').first<{ record_json: string }>();
+    assert.ok(reopenedProjection);
+    assert.deepEqual(JSON.parse(reopenedProjection.record_json), original.classes[0]);
+    const archiveRevision = await repository.getWorkspaceRevision('class-archive-tenant', 2);
+    assert.deepEqual(archiveRevision?.data, archived);
+  } finally {
+    await isolated.miniflare.dispose();
+  }
+});
+
+test('D1 privacy anonymization and deletion scrub retained data and audit targets atomically', async () => {
+  const isolated = await createFixture();
+  try {
+    const repository = new D1WorkspaceRepository(isolated.database);
+    const original = createData('Private learner', 203);
+    original.classes[0].name = 'Class A';
+    await repository.put('privacy-tenant', original, 0);
+    await repository.appendAuditEvent({ id: 'privacy-earlier-export', workspaceId: 'privacy-tenant',
+      action: 'student.privacy.export', targetType: 'student', targetId: 'student-shared-id', createdAt: 1 });
+    const anonymized = anonymizeStudentInWorkspaceData(original, 'student-shared-id', 'anonymous-new-id');
+    await repository.put('privacy-tenant', anonymized, 1, {
+      action: 'student.privacy.anonymize', requestId: 'privacy-anonymize',
+    });
+    const current = await repository.get('privacy-tenant');
+    assert.equal(current.revision, 2);
+    assert.equal(current.data?.classes[0].students[0].name, 'Anonymous student');
+    assert.equal(current.data?.classes[0].students[0].points, 203);
+    assert.equal(current.data?.classes[0].students[0].pointAdjustmentRecords?.[0].reasonLabel, undefined);
+    const studentProjection = await isolated.database.prepare(
+      'SELECT name, points FROM students WHERE workspace_id = ? AND student_id = ?',
+    ).bind('privacy-tenant', 'anonymous-new-id').first<{ name: string; points: number }>();
+    assert.deepEqual(studentProjection, { name: 'Anonymous student', points: 203 });
+    const oldProjection = await isolated.database.prepare(
+      'SELECT student_id FROM students WHERE workspace_id = ? AND student_id = ?',
+    ).bind('privacy-tenant', 'student-shared-id').first();
+    assert.equal(oldProjection, null);
+    const exportAudit = await isolated.database.prepare(
+      'SELECT action, target_id FROM audit_events WHERE event_id = ?',
+    ).bind('privacy-earlier-export').first<{ action: string; target_id: string | null }>();
+    assert.deepEqual(exportAudit, { action: 'student.privacy.export', target_id: null });
+    for (const revision of await repository.listWorkspaceRevisions('privacy-tenant')) {
+      const snapshot = await repository.getWorkspaceRevision('privacy-tenant', revision.revision);
+      assert.ok(snapshot);
+      assert.equal(JSON.stringify(snapshot.data).includes('student-shared-id'), false);
+      assert.equal(JSON.stringify(snapshot.data).includes('Private learner'), false);
+    }
+    await assert.rejects(repository.put('privacy-tenant', original, 1, {
+      action: 'student.privacy.delete', requestId: 'stale-privacy-delete',
+    }), WorkspaceConflictError);
+    assert.equal(await isolated.database.prepare('SELECT event_id FROM audit_events WHERE event_id = ?')
+      .bind('stale-privacy-delete').first(), null);
+    assert.ok(current.data);
+    await repository.put('privacy-tenant', purgeStudentsFromWorkspaceData(
+      current.data, new Set(['anonymous-new-id']),
+    ), current.revision, { action: 'student.privacy.delete', requestId: 'privacy-delete' });
+    for (const revision of await repository.listWorkspaceRevisions('privacy-tenant')) {
+      assert.equal((await repository.getWorkspaceRevision('privacy-tenant', revision.revision))
+        ?.data.classes[0].students.length, 0);
+    }
+    const actions = await isolated.database.prepare(
+      "SELECT action FROM audit_events WHERE workspace_id = ? AND action IN ('student.privacy.delete', 'student.privacy.anonymize')",
+    ).bind('privacy-tenant').all<{ action: string }>();
+    assert.equal(actions.results.length, 2);
+  } finally {
+    await isolated.miniflare.dispose();
+  }
+});
+
+test('failed D1 privacy writes cannot scrub prior audit targets or snapshots without committing deletion', async () => {
+  const isolated = await createFixture();
+  try {
+    const repository = new D1WorkspaceRepository(isolated.database);
+    const original = createData('Private rollback learner', 203);
+    await repository.put('privacy-rollback-tenant', original, 0);
+    await repository.appendAuditEvent({ id: 'privacy-rollback-export', workspaceId: 'privacy-rollback-tenant',
+      action: 'student.privacy.export', targetType: 'student', targetId: 'student-shared-id', createdAt: 1 });
+    await isolated.database.prepare('DROP TABLE boss_rewards').run();
+    await assert.rejects(repository.put('privacy-rollback-tenant', purgeStudentsFromWorkspaceData(
+      original, new Set(['student-shared-id']),
+    ), 1, { action: 'student.privacy.delete', requestId: 'failed-privacy-delete' }), /no such table/);
+    const workspace = await isolated.database.prepare(
+      'SELECT revision, data_json FROM workspaces WHERE workspace_id = ?',
+    ).bind('privacy-rollback-tenant').first<{ revision: number; data_json: string }>();
+    assert.equal(workspace?.revision, 1);
+    assert.ok(workspace?.data_json.includes('student-shared-id'));
+    assert.equal((await isolated.database.prepare('SELECT target_id FROM audit_events WHERE event_id = ?')
+      .bind('privacy-rollback-export').first<{ target_id: string }>())?.target_id, 'student-shared-id');
+    assert.equal(await isolated.database.prepare('SELECT event_id FROM audit_events WHERE event_id = ?')
+      .bind('failed-privacy-delete').first(), null);
+  } finally {
+    await isolated.miniflare.dispose();
+  }
 });
 
 test('a projection failure rolls back blob, revision, projection state, and audit', async () => {

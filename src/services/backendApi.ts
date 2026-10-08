@@ -8,6 +8,8 @@ import type {
 } from '../../shared/education';
 import { CLOUD_WORKSPACE_PATTERN } from '../../shared/domain/workspaceIdentifiers';
 import type { WorkspaceRole } from '../../shared/contracts/workspace';
+import type { StudentPrivacyAction } from '../../shared/domain/studentPrivacy';
+import type { ClassArchiveAction } from '../../shared/domain/classArchive';
 import type {
   AppData,
   BossVictoryResult,
@@ -490,8 +492,8 @@ export const clearAuthentication = () => {
 export const loadBackendState = (workspaceId?: string) =>
   request<BackendStateSnapshot>('/api/v1/state', {}, { workspaceId });
 
-export const exportWorkspacePrivacyData = () =>
-  request<WorkspacePrivacyExport>('/api/v1/privacy/export');
+export const exportWorkspacePrivacyData = (workspaceId?: string) =>
+  request<WorkspacePrivacyExport>('/api/v1/privacy/export', {}, { workspaceId });
 
 export const loadWorkspaceRevisions = (limit = 25) =>
   request<{ currentRevision: number; revisions: WorkspaceRevision[] }>(
@@ -517,9 +519,26 @@ export const restoreWorkspaceRevision = (revision: number) =>
 export const exportStudentPrivacyData = (
   classId: string,
   studentId: string,
+  workspaceId?: string,
 ) => request<StudentPrivacyExport>(
   `/api/v1/classes/${encodeURIComponent(classId)}/students/` +
-    `${encodeURIComponent(studentId)}/privacy/export`,
+    `${encodeURIComponent(studentId)}/privacy/export`, {}, { workspaceId },
+);
+
+export type PrivacyMutationInput = { expectedRevision: number; confirmation: string };
+export const manageStudentPrivacy = (
+  classId: string, studentId: string, action: StudentPrivacyAction,
+  input: PrivacyMutationInput, workspaceId?: string,
+) => request<BackendStateSnapshot & { action: StudentPrivacyAction }>(
+  `/api/v1/classes/${encodeURIComponent(classId)}/students/${encodeURIComponent(studentId)}/privacy/${action}`,
+  { method: 'POST', body: JSON.stringify(input) }, { workspaceId },
+);
+export const manageClassArchive = (
+  classId: string, action: ClassArchiveAction,
+  input: PrivacyMutationInput, workspaceId?: string,
+) => request<BackendStateSnapshot & { action: ClassArchiveAction }>(
+  `/api/v1/classes/${encodeURIComponent(classId)}/privacy/${action}`,
+  { method: 'POST', body: JSON.stringify(input) }, { workspaceId },
 );
 
 export const loadWorkspaceAuditEvents = (

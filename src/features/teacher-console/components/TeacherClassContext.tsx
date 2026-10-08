@@ -1,6 +1,7 @@
 import { useStore } from '../../../store/useStore';
 import type { ClassData, Language } from '../../../store/types';
 import { useWorkspaceMutationGuard } from '../../workspace/hooks/useWorkspaceMutationGuard';
+import { getActiveClasses } from '../../../../shared/domain/classArchive';
 
 type Props = { classes: ClassData[]; classId: string; language: Language; readOnly: boolean; workspaceName?: string; onReviewClassChange: (id: string) => void };
 
@@ -21,7 +22,7 @@ export const TeacherClassContext = ({ classes, classId, language, readOnly, work
           if (readOnly) onReviewClassChange(event.target.value);
           else runMutation(() => switchClass(event.target.value));
         }} className="min-h-11 w-full max-w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900">
-          {classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+          {getActiveClasses(classes).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
         </select>
       </label>
       <p className="text-sm text-slate-600">{current?.students.length ?? 0} {language === 'en' ? 'students' : '位學生'}

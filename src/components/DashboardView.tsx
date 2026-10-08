@@ -135,7 +135,7 @@ export const DashboardView = ({ readOnly = false, canExportFullData = false, can
           visible={!readOnly && canAdministerWorkspace && ['rules', 'reward-settings', 'workspace', 'governance'].includes(active)} />
         {!readOnly && canAdministerWorkspace && active === 'security' && <ConsoleSecurityPanel language={lang} onNavigate={navigate} />}
         {!readOnly && canAdministerWorkspace && (visited.governance || governanceVisible) && <div hidden={!governanceVisible}>
-          <Suspense fallback={<DashboardLoading language={lang} />}><DataGovernanceSection classes={data.classes} language={lang} flushChanges={flushChanges} /></Suspense>
+          <Suspense fallback={<DashboardLoading language={lang} />}><DataGovernanceSection classes={data.classes} settings={data.settings} language={lang} flushChanges={flushChanges} /></Suspense>
         </div>}
       </div>
     </div>

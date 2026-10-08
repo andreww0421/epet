@@ -374,6 +374,14 @@ implements WorkspaceRepository, AuthRepository {
         data,
       );
       if (deletedStudentIds.size > 0) {
+        // Keep actor/action/time accountability without retaining the erased
+        // student's stable identifier in earlier privacy-export audit targets.
+        database.auditEvents = database.auditEvents.map((event) =>
+          event.workspaceId === workspaceId && event.targetType === 'student' &&
+            deletedStudentIds.has(event.targetId ?? '')
+            ? { ...event, targetId: undefined }
+            : event,
+        );
         database.workspaceRevisions[workspaceId] = (
           database.workspaceRevisions[workspaceId] ?? []
         ).map((snapshot) => {

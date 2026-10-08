@@ -1,5 +1,6 @@
 import type { AppData, ClassData } from '../src/store/types';
 import type { StoredWorkspace } from './contracts';
+import { getActiveClasses, isArchivedClass } from '../shared/domain/classArchive';
 
 export class WorkspaceScopeViolationError extends Error {
   constructor(readonly code: string) {
@@ -25,14 +26,15 @@ export const scopeWorkspaceData = (
   if (classes.length === 0) {
     throw new WorkspaceScopeViolationError('NO_ASSIGNED_CLASSES');
   }
+  const activeClasses = getActiveClasses(classes);
   return {
     ...data,
     classes: structuredClone(classes),
-    currentClassId: classes.some(
+    currentClassId: activeClasses.some(
       (classData) => classData.id === data.currentClassId,
     )
       ? data.currentClassId
-      : classes[0].id,
+      : activeClasses[0]?.id ?? '',
     settings: data.settings ? structuredClone(data.settings) : undefined,
   };
 };
@@ -51,6 +53,7 @@ export const mergeTeacherWorkspaceData = (
   current: AppData,
   incoming: AppData,
   assignedClassIds: ReadonlySet<string>,
+  archiveSnapshots: { comparison?: AppData; submitted?: AppData } = {},
 ): AppData => {
   const currentAssignedClasses = assignedClasses(current, assignedClassIds);
   if (currentAssignedClasses.length === 0) {
@@ -76,11 +79,30 @@ export const mergeTeacherWorkspaceData = (
   const incomingById = new Map(
     incoming.classes.map((classData) => [classData.id, classData]),
   );
+  const archiveComparison = new Map((archiveSnapshots.comparison ?? current).classes
+    .map((classroom) => [classroom.id, classroom]));
+  const archiveSubmitted = new Map((archiveSnapshots.submitted ?? incoming).classes
+    .map((classroom) => [classroom.id, classroom]));
+  for (const classroom of currentAssignedClasses) {
+    const replacement = incomingById.get(classroom.id);
+    if (classroom.students.some((student) => !replacement?.students.some((item) => item.id === student.id))) {
+      throw new WorkspaceScopeViolationError('STUDENT_PRIVACY_ADMIN_REQUIRED');
+    }
+    const submitted = archiveSubmitted.get(classroom.id);
+    const submittedJson = JSON.stringify(submitted);
+    if (submitted?.archivedAt !== classroom.archivedAt || replacement?.archivedAt !== classroom.archivedAt ||
+      (isArchivedClass(classroom) && submittedJson !== JSON.stringify(classroom) &&
+        submittedJson !== JSON.stringify(archiveComparison.get(classroom.id)))) {
+      throw new WorkspaceScopeViolationError('CLASS_ARCHIVE_CHANGED');
+    }
+  }
   return {
     ...current,
     classes: current.classes.map((classData) => {
       const replacement = incomingById.get(classData.id);
-      return replacement
+      // Validate archived input against the same canonical normalization, but
+      // retain the trusted snapshot itself (including exact game/record data).
+      return replacement && !isArchivedClass(classData)
         ? {
             ...structuredClone(replacement),
             id: classData.id,

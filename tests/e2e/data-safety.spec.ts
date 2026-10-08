@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import {
   E2eApiSession,
@@ -12,19 +12,42 @@ import {
   waitForBackendSync,
 } from './support/fixtures';
 
+let dataSafetyOwner: E2eApiSession;
+
+// Each safety scenario has a fresh workspace, while setup reuses one genuinely
+// registered owner. This leaves production auth quotas unchanged as the suite
+// grows; all six scenarios still exercise the real login UI and original actions.
+test.beforeAll(async () => {
+  dataSafetyOwner = await E2eApiSession.register(testAccount('data-safety-owner'));
+});
+test.afterAll(async () => { await dataSafetyOwner.dispose(); });
+
+const isolatedSafetyWorkspace = async (name: string) => {
+  const created = await dataSafetyOwner.createWorkspace(name);
+  const workspaceId = created.session.activeWorkspaceId;
+  if (!workspaceId) throw new Error('Workspace is missing');
+  return { account: dataSafetyOwner.account, setup: dataSafetyOwner, workspaceId };
+};
+
+const openSafetyWorkspace = async (page: Page, workspaceId: string) => {
+  await loginViaUi(page, dataSafetyOwner.account);
+  if (await page.getByRole('combobox', { name: '工作區', exact: true }).inputValue()
+      !== workspaceId) {
+    await switchWorkspaceViaUi(page, workspaceId);
+  }
+};
+
 test.describe('Data safety', () => {
   test('workspace round-trip preserves already synchronized students', async ({
     context,
     page,
   }) => {
-    const account = testAccount('workspace-round-trip');
-    const setup = await E2eApiSession.register(account);
-    const firstWorkspaceId = setup.session.activeWorkspaceId;
+    const { setup, workspaceId: firstWorkspaceId } =
+      await isolatedSafetyWorkspace('workspace-round-trip');
     const created = await setup.createWorkspace('E2E 往返工作區');
     const secondWorkspaceId = created.session.activeWorkspaceId;
     if (!firstWorkspaceId || !secondWorkspaceId) throw new Error('Workspaces are missing');
-    await setup.dispose();
-    await loginViaUi(page, account);
+    await openSafetyWorkspace(page, firstWorkspaceId);
 
     const select = page.getByRole('combobox', { name: '工作區', exact: true });
     const originalWorkspaceId = await select.inputValue();
@@ -73,14 +96,12 @@ test.describe('Data safety', () => {
     context,
     page,
   }) => {
-    const account = testAccount('switch-during-save');
-    const setup = await E2eApiSession.register(account);
+    const { setup, workspaceId } = await isolatedSafetyWorkspace('switch-during-save');
     const created = await setup.createWorkspace('E2E 儲存中切換');
-    await setup.dispose();
-    await loginViaUi(page, account);
+    await openSafetyWorkspace(page, workspaceId);
     const select = page.getByRole('combobox', { name: '工作區', exact: true });
     const originalId = await select.inputValue();
-    const targetId = created.session.workspaces.find((workspace) => workspace.id !== originalId)?.id;
+    const targetId = created.session.activeWorkspaceId;
     if (!targetId) throw new Error('Target workspace is missing');
     const targetBefore = await loadBrowserState(context, targetId);
     const targetReads: string[] = [];
@@ -139,15 +160,13 @@ test.describe('Data safety', () => {
     context,
     page,
   }) => {
-    const account = testAccount('delayed-workspace-load');
-    const setup = await E2eApiSession.register(account);
+    const { setup, workspaceId } = await isolatedSafetyWorkspace('delayed-workspace-load');
     const created = await setup.createWorkspace('E2E 載入中工作區');
-    await setup.dispose();
-    await loginViaUi(page, account);
+    await openSafetyWorkspace(page, workspaceId);
     await addStudentViaUi(page, 'E2E 舊工作區學生');
     const select = page.getByRole('combobox', { name: '工作區', exact: true });
     const originalId = await select.inputValue();
-    const targetId = created.session.workspaces.find((workspace) => workspace.id !== originalId)?.id;
+    const targetId = created.session.activeWorkspaceId;
     if (!targetId) throw new Error('Target workspace is missing');
     const originalBefore = await loadBrowserState(context, originalId);
     const targetBefore = await loadBrowserState(context, targetId);
@@ -190,12 +209,8 @@ test.describe('Data safety', () => {
   });
 
   test('logout and login do not replay a session reset as an empty draft', async ({ context, page }) => {
-    const account = testAccount('logout-data-safety');
-    const setup = await E2eApiSession.register(account);
-    const workspaceId = setup.session.activeWorkspaceId;
-    if (!workspaceId) throw new Error('Workspace is missing');
-    await setup.dispose();
-    await loginViaUi(page, account);
+    const { account, workspaceId } = await isolatedSafetyWorkspace('logout-data-safety');
+    await openSafetyWorkspace(page, workspaceId);
     await addStudentViaUi(page, 'E2E 重新登入學生');
     const beforeLogout = await loadBrowserState(context, workspaceId);
     await page.getByRole('button', { name: '登出', exact: true }).click();
@@ -209,12 +224,8 @@ test.describe('Data safety', () => {
   test('a sync conflict preserves the unsaved draft and does not overwrite remote data', async ({
     page,
   }) => {
-    const account = testAccount('sync-conflict');
-    const setup = await E2eApiSession.register(account);
-    const workspaceId = setup.session.activeWorkspaceId;
-    if (!workspaceId) throw new Error('Workspace is missing');
-    await setup.dispose();
-    await loginViaUi(page, account);
+    const { account, workspaceId } = await isolatedSafetyWorkspace('sync-conflict');
+    await openSafetyWorkspace(page, workspaceId);
 
     let markPutObserved: (() => void) | undefined;
     let releasePut: (() => void) | undefined;
@@ -281,18 +292,15 @@ test.describe('Data safety', () => {
     context,
     page,
   }) => {
-    const account = testAccount('workspace-switch-safety');
-    const setup = await E2eApiSession.register(account);
-    const firstWorkspaceId = setup.session.activeWorkspaceId;
-    if (!firstWorkspaceId) throw new Error('First workspace is missing');
+    const { setup, workspaceId: firstWorkspaceId } =
+      await isolatedSafetyWorkspace('workspace-switch-safety');
     const secondWorkspaceName = 'E2E 切換目標工作區';
     const created = await setup.createWorkspace(secondWorkspaceName);
     const secondWorkspace = created.session.workspaces.find(
       (workspace) => workspace.name === secondWorkspaceName,
     );
     if (!secondWorkspace) throw new Error('Second workspace is missing');
-    await setup.dispose();
-    await loginViaUi(page, account);
+    await openSafetyWorkspace(page, firstWorkspaceId);
 
     const workspaceSelect = page.getByRole('combobox', { name: '工作區', exact: true });
     const originalWorkspaceId = await workspaceSelect.inputValue();

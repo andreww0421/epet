@@ -26,6 +26,7 @@ import { getPublicStudentName } from '../studentPresentation';
 import { resolveBossRewardsOnBackend } from '../services/backendApi';
 import { trackAnalytics } from '../analytics';
 import { recordPointActionCompleted } from '../analytics/actions';
+import { getActiveClasses, isArchivedClass } from '../../shared/domain/classArchive';
 import { 
   applyFeedToStudent, applyPlayWithPet, claimDailyTaskForStudent,
   saveMentorDailyFeedbackForStudent,
@@ -521,9 +522,13 @@ export const useStore = create<StoreState>()(
         petAnimationTimers.set(studentId, timer);
       },
 
-      switchClass: (classId) => set((state) => ({
-        data: { ...state.data, currentClassId: classId }
-      })),
+      switchClass: (classId) => set((state) => {
+        const selected = state.data.classes.find((classroom) => classroom.id === classId);
+        // Preserve legacy missing-ID semantics; only the new archived state
+        // prevents selection. Missing-target actions already fail safely.
+        if (selected && isArchivedClass(selected)) return state;
+        return { data: { ...state.data, currentClassId: classId } };
+      }),
 
       addClass: (name) => {
         set((state) => {
@@ -542,7 +547,7 @@ export const useStore = create<StoreState>()(
       },
 
       deleteClass: (classId) => set((state) => {
-        if (state.data.classes.length <= 1) return state;
+        if (state.data.classes.length <= 1 || getActiveClasses(state.data.classes.filter((item) => item.id !== classId)).length === 0) return state;
         const className = state.data.classes.find(c => c.id === classId)?.name;
         const newClasses = state.data.classes.filter(c => c.id !== classId);
         get().showToast(`${translations[state.data.settings?.language || 'zh'].classDeleted}${className}`);
@@ -550,7 +555,7 @@ export const useStore = create<StoreState>()(
           data: {
             ...state.data,
             classes: newClasses,
-            currentClassId: state.data.currentClassId === classId ? newClasses[0].id : state.data.currentClassId
+            currentClassId: state.data.currentClassId === classId ? getActiveClasses(newClasses)[0].id : state.data.currentClassId
           }
         };
       }),

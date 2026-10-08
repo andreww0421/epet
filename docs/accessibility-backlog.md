@@ -61,6 +61,13 @@
 - 9 個狀態仍有 `color-contrast` incomplete：原有登入、登入驗證、帳號刪除、評語建議、孵化前／後六個，加上投影大廳、姓名確認、退出確認三個。仍須量測漸層、背景重疊和 native modal 的實際合成對比，不能據此宣稱 WCAG 認證。
 - 已查看真實 Chromium 的桌面 gallery、320px 包容性榜及兩個確認視窗截圖；完整 E2E 34/34 通過。實際輔具、Firefox／WebKit、實體投影裝置與分享畫面驗收仍未完成。詳細資料與風險邊界見 [Classroom presentation boundary](classroom-presentation-boundary.md)。
 
+### Data & Privacy management 後續驗證（2026-10-08）
+
+- 新工作區、學生資料、隱私／保存三個 panels 與刪除／匿名化／封存三個 dialogs 共新增六個 axe 掃描狀態。新 dialogs 使用既有 native `ModalDialog`，驗證 Tab / Shift+Tab containment、Escape、取消不修改資料、關閉後 focus return；不關閉 axe rules 或排除元素。
+- 完整 `npm run test:a11y` 16/16 通過，41 個不同掃描狀態為 0 confirmed violations（包含 moderate／minor），不重複計算附件 JSON。
+- 15 個狀態仍有 `color-contrast` incomplete，包含新六個隱私狀態；漸層 header 與 native modal 背景推斷仍需人工量測。已檢查 workspace / delete dialog 真實 Chromium 截圖，不能據此宣稱 WCAG 認證；既有輔具、跨瀏覽器、放大倍率 backlog 保留。
+- 既有 revision recovery dialog 尚未遷移，仍列於下方 P1；本輪不把新的 privacy dialog coverage 說成全部 destructive dialogs 已驗收。
+
 ### 變更檔案
 
 - 測試與設定：`package.json`、`package-lock.json`、`playwright.a11y.config.ts`、`tests/accessibility/fixtures.ts`、`pages.spec.ts`、`dialogs.spec.ts`、`keyboard.spec.ts`。

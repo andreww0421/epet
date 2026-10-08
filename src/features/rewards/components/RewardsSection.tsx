@@ -388,9 +388,9 @@ export const RewardsSection = ({
                             student={student}
                           />
 
-                          <button onClick={() => setStudentToDelete(student.id)} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors" title={tLang.deleteStudent}>
+                          {canAdministerWorkspace && <button onClick={() => setStudentToDelete(student.id)} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors" title={tLang.deleteStudent}>
                             <Trash2 className="h-4 w-4" />
-                          </button>
+                          </button>}
                         </div>
                       </td>
                     </tr>
@@ -444,11 +444,11 @@ export const RewardsSection = ({
         )}
         onCancel={() => setStudentToDelete(null)}
         onConfirm={() => {
-          if (!studentToDelete) return;
+          if (!studentToDelete || !canAdministerWorkspace) return;
           runMutation(() => deleteStudent(studentToDelete));
           setStudentToDelete(null);
         }}
-        open={visible && canWrite && mode !== 'settings' && Boolean(studentToDelete)}
+        open={visible && canWrite && canAdministerWorkspace && mode !== 'settings' && Boolean(studentToDelete)}
         title={tLang.confirmDelete}
       />
     </>

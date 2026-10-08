@@ -1,4 +1,5 @@
 import { petNames } from '../../../i18n/translations';
+import { isArchivedClass } from '../../../../shared/domain/classArchive';
 import { getPublicStudentName } from '../../../studentPresentation';
 import type { AppData, ClassData, Language, Student } from '../../../store/types';
 import { sortStudentsByRank } from './classroomModels';
@@ -49,7 +50,8 @@ export const buildClassroomPresentation = (
   const leaderboardAuthorized = requestedLeaderboard === 'growth' || requestedLeaderboard === 'rank';
   const ranked = requestedLeaderboard === 'rank' && !inclusiveMode && options.inclusiveLeaderboard === false;
   const leaderboardMode = !leaderboardAuthorized ? 'hidden' : ranked ? 'rank' : 'inclusive';
-  const roster = classData?.students ?? [];
+  const displayedClass = classData && !isArchivedClass(classData) ? classData : undefined;
+  const roster = displayedClass?.students ?? [];
   const projectStudent = (student: Student): ClassroomPresentationStudent => {
     const petType = isTrustedPetType(student.pet.type) ? student.pet.type : 'egg';
     const level = Math.max(1, Math.trunc(finiteNumber(student.pet.level, 1)));
@@ -59,7 +61,7 @@ export const buildClassroomPresentation = (
       ...(ranked ? { rankPoints: finiteNumber(student.rankPoints, 0) } : {}),
     };
   };
-  const activeBoss = classData?.activeBoss;
+  const activeBoss = displayedClass?.activeBoss;
   const maxHp = finiteNumber(activeBoss?.maxHp, 0);
   const boss = activeBoss?.isActive === true && maxHp > 0 &&
     typeof activeBoss.currentHp === 'number' && Number.isFinite(activeBoss.currentHp) ? {

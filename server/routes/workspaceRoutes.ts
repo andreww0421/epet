@@ -115,10 +115,17 @@ export const handleWorkspaceRoutes: RouteHandler<WorkspaceRouteContext> = async 
     if (!current.data) {
       return json({ error: 'STATE_REQUIRED' }, 409, headers);
     }
+    const normalizationTime = Date.now();
     const merged = mergeTeacherWorkspaceData(
       current.data,
-      normalizeAppData(body.data),
+      normalizeAppData(body.data, normalizationTime),
       classScope,
+      {
+        comparison: normalizeAppData(current.data, normalizationTime),
+        // The client already normalized its loaded snapshot once. Compare
+        // before a second normalization can change legacy fallback defaults.
+        submitted: body.data,
+      },
     );
     try {
       const saved = await repository.put(

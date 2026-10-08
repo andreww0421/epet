@@ -26,6 +26,7 @@ import {
   EconomyEventRecord, ClassDailyTaskCalendar,
 } from './types';
 import { normalizeExamRecords } from '../examAnalytics';
+import { normalizeArchivedAt, isArchivedClass } from '../../shared/domain/classArchive';
 import {
   createMentorFeedbackEvidenceRecord,
   normalizeLearningEvidenceRecords,
@@ -748,12 +749,16 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
       ];
 
   const classes = rawClasses.map((classItem: any, index: number) => {
+    const archivedAt = normalizeArchivedAt(classItem?.archivedAt);
+    // Freeze timed normalization for retained archives. Using today's clock
+    // would expire recovery/penalties or change pet life state on every load.
+    const classNow = archivedAt ?? now;
     const classId =
       typeof classItem?.id === 'string' && classItem.id
         ? classItem.id
-        : `class-${now}-${index}`;
+        : `class-${classNow}-${index}`;
     const rawStudents = Array.isArray(classItem?.students) ? classItem.students : [];
-    const students = rawStudents.map((student: any, studentIndex: number) => normalizeStudent(student, studentIndex, now));
+    const students = rawStudents.map((student: unknown, studentIndex: number) => normalizeStudent(student, studentIndex, classNow));
     const studentById = new Map<string, Student>(students.map((student) => [student.id, student] as const));
     const legacyPairs = new Map<string, string>();
     rawStudents.forEach((student: any, studentIndex: number) => {
@@ -785,17 +790,17 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
         id:
           typeof goal.id === 'string' && goal.id
             ? goal.id
-            : `goal-${now}-${index}-${goalIndex}`,
+            : `goal-${classNow}-${index}-${goalIndex}`,
         title:
           typeof goal.title === 'string' && goal.title.trim()
             ? goal.title.trim()
             : 'Class goal',
         competency: goal.competency,
         targetCount: clamp(Math.floor(toFiniteNumber(goal.targetCount, 10)), 1, 10_000),
-        createdAt: toFiniteNumber(goal.createdAt, now),
+        createdAt: toFiniteNumber(goal.createdAt, classNow),
         weekStartDate: isDateKey(goal.weekStartDate)
           ? getWeekStartDateFromDateKey(goal.weekStartDate)
-          : getWeekStartDate(now, schoolTimeZone),
+          : getWeekStartDate(classNow, schoolTimeZone),
       }))
       .filter((goal) => {
         const count = goalsPerWeek.get(goal.weekStartDate ?? '') ?? 0;
@@ -812,7 +817,7 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
       classItem?.learningEvidenceRecords,
       classId,
       validStudentIds,
-      now,
+      classNow,
     );
     const existingSourceIds = new Set(
       explicitEvidence
@@ -846,27 +851,28 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
       [...explicitEvidence, ...migratedEvidence],
       classId,
       validStudentIds,
-      now,
+      classNow,
     );
 
     return {
       id: classId,
       name: typeof classItem?.name === 'string' && classItem.name.trim() ? classItem.name.trim() : DEFAULT_CLASS_NAME,
+      archivedAt,
       students: sanitizedStudents,
       dailyTaskCalendar: normalizeClassDailyTaskCalendar(
         classItem?.dailyTaskCalendar,
         legacyDailyTaskCalendar,
       ),
-      activeBoss: normalizeWorldBoss(classItem?.activeBoss, index, now),
+      activeBoss: normalizeWorldBoss(classItem?.activeBoss, index, classNow),
       classGoals,
       learningEvidenceRecords,
-      examRecords: normalizeExamRecords(classItem?.examRecords, validStudentIds, now),
+      examRecords: normalizeExamRecords(classItem?.examRecords, validStudentIds, classNow),
     };
   });
 
-  const currentClassId = typeof raw?.currentClassId === 'string' && classes.some((classData) => classData.id === raw.currentClassId)
+  const currentClassId = typeof raw?.currentClassId === 'string' && classes.some((classData) => classData.id === raw.currentClassId && !isArchivedClass(classData))
     ? raw.currentClassId
-    : classes[0]?.id ?? initialData.currentClassId;
+    : classes.find((classData) => !isArchivedClass(classData))?.id ?? '';
   const soloBattleFullnessCost = Math.max(
     0,
     toFiniteNumber(rawSettings?.soloBattleFullnessCost, initialData.settings?.soloBattleFullnessCost ?? SOLO_BATTLE_FULLNESS_COST),
@@ -1163,7 +1169,7 @@ export const applyDecay = (appData: AppData, now = Date.now()): AppData => {
     if (allowDeath) return appData;
 
     let changed = false;
-    const classes = appData.classes.map((classData) => ({
+    const classes = appData.classes.map((classData) => isArchivedClass(classData) ? classData : ({
       ...classData,
       students: classData.students.map((student) => {
         if (!student.pet.isDead) return student;
@@ -1192,7 +1198,9 @@ export const applyDecay = (appData: AppData, now = Date.now()): AppData => {
   return {
     ...appData,
     lastOpened: nextLastOpened,
-    classes: appData.classes.map((classData) => ({
+    // Archived records are read-only snapshots. Active classes continue using
+    // the exact existing decay rules; do not create edits in archived classes.
+    classes: appData.classes.map((classData) => isArchivedClass(classData) ? classData : ({
       ...classData,
       students: classData.students.map((student) =>
         applyDecayToStudent(student, decay, now, { allowDeath }),

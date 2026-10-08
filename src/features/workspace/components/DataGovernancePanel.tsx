@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ArchiveRestore,
-  ArrowDownToLine,
   CalendarDays,
   ChevronRight,
   Clock3,
@@ -23,9 +22,12 @@ import {
 import { useAuth } from '../../../auth/AuthProvider';
 import { AccountDeletionDialog } from '../../../components/AccountDeletionDialog';
 import { handleTabKeyDown } from '../../../components/tabKeyboard';
-import type { ClassData } from '../../../store/types';
+import type { AppData, ClassData } from '../../../store/types';
+import { canAdministerWorkspace } from '../../../auth/workspaceAccess';
+import { WorkspaceDataPanel } from './WorkspaceDataPanel';
+import { StudentDataPanel } from './StudentDataPanel';
+import { PrivacyInformationPanel } from './PrivacyInformationPanel';
 import {
-  exportStudentPrivacyData,
   loadWorkspaceAuditEvents,
   loadWorkspaceMembers,
   loadWorkspaceRevision,
@@ -39,6 +41,8 @@ import {
 } from '../../../services/backendApi';
 
 type GovernanceView =
+  | 'workspace'
+  | 'privacy'
   | 'revisions'
   | 'student-export'
   | 'audit'
@@ -48,6 +52,7 @@ type DataGovernancePanelProps = {
   classes: ClassData[];
   language: 'zh' | 'en';
   flushChanges: () => Promise<boolean>;
+  settings?: AppData['settings'];
 };
 
 type AuditFilters = {
@@ -69,6 +74,11 @@ const EMPTY_AUDIT_FILTERS: AuditFilters = {
 const ACTION_OPTIONS = [
   'workspace.revision.restore',
   'student.privacy.export',
+  'student.privacy.delete',
+  'student.privacy.anonymize',
+  'privacy.student.purge',
+  'class.privacy.archive',
+  'class.privacy.reopen',
   'workspace.privacy.export',
   'workspace.state.put',
   'workspace.member.update',
@@ -85,6 +95,11 @@ const ACTION_OPTIONS = [
 const ACTION_LABELS: Record<string, [string, string]> = {
   'workspace.revision.restore': ['復原工作區版本', 'Workspace revision restored'],
   'student.privacy.export': ['匯出單一學生資料', 'Student data exported'],
+  'student.privacy.delete': ['刪除學生資料', 'Student data deleted'],
+  'student.privacy.anonymize': ['匿名化學生', 'Student de-identified'],
+  'privacy.student.purge': ['清除保留版本中的學生資料', 'Student data purged from retained revisions'],
+  'class.privacy.archive': ['封存班級', 'Class archived'],
+  'class.privacy.reopen': ['復開班級', 'Class reopened'],
   'workspace.privacy.export': ['匯出完整工作區', 'Workspace data exported'],
   'workspace.state.put': ['儲存工作區資料', 'Workspace state saved'],
   'workspace.member.update': ['變更成員權限', 'Member access changed'],
@@ -120,20 +135,6 @@ const formatBytes = (bytes: number, language: 'zh' | 'en') => {
     : `${(kilobytes / 1024).toFixed(1)} ${units[1]}`;
 };
 
-const safeFileSegment = (value: string) =>
-  value.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80) || 'record';
-
-const downloadJson = (value: unknown, fileName: string) => {
-  const blob = new Blob([JSON.stringify(value, null, 2)], {
-    type: 'application/json;charset=utf-8',
-  });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = fileName;
-  anchor.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
-};
 
 const localDateBoundary = (date: string, endOfDay: boolean) => {
   if (!date) return undefined;
@@ -168,13 +169,24 @@ const formatMetadataValue = (value: unknown) => {
   return (JSON.stringify(value) ?? String(value)).slice(0, 100);
 };
 
-export const DataGovernancePanel = ({
+/** UX gate is fail-closed; every sensitive API also checks server-side roles. */
+export const DataGovernancePanel = (props: DataGovernancePanelProps) => {
+  const { session, status } = useAuth();
+  const workspace = session?.workspaces.find((item) => item.id === session.activeWorkspaceId);
+  if (status !== 'authenticated' || !workspace || !canAdministerWorkspace(workspace.role)) {
+    return <p role="alert">{props.language === 'en' ? 'Owner or admin access is required.' : '僅限工作區擁有者或管理員使用。'}</p>;
+  }
+  return <div key={workspace.id}><DataGovernanceContent {...props} /></div>;
+};
+
+const DataGovernanceContent = ({
   classes,
   language,
   flushChanges,
+  settings,
 }: DataGovernancePanelProps) => {
   const { session } = useAuth();
-  const [view, setView] = useState<GovernanceView>('revisions');
+  const [view, setView] = useState<GovernanceView>('workspace');
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
   const [revisions, setRevisions] = useState<WorkspaceRevision[]>([]);
   const [currentRevision, setCurrentRevision] = useState(0);
@@ -188,12 +200,6 @@ export const DataGovernancePanel = ({
   const [restoreBusy, setRestoreBusy] = useState(false);
   const [restoreMessage, setRestoreMessage] = useState('');
 
-  const [exportClassId, setExportClassId] = useState(classes[0]?.id ?? '');
-  const initialStudentId = classes[0]?.students[0]?.id ?? '';
-  const [exportStudentId, setExportStudentId] = useState(initialStudentId);
-  const [exportBusy, setExportBusy] = useState(false);
-  const [exportMessage, setExportMessage] = useState('');
-  const [exportError, setExportError] = useState('');
 
   const [auditFilters, setAuditFilters] = useState<AuditFilters>(
     EMPTY_AUDIT_FILTERS,
@@ -211,10 +217,10 @@ export const DataGovernancePanel = ({
   const copy = language === 'en'
     ? {
         eyebrow: 'Operations ledger',
-        title: 'Data governance console',
-        description: 'Controlled recovery, scoped exports, and an accountable history for this workspace.',
+        title: 'Data & Privacy management',
+        description: 'Manage workspace and student data, retention, public display privacy, and sensitive action history.',
         revisions: 'Revision recovery',
-        studentExport: 'Student export',
+        studentExport: 'Student data',
         audit: 'Audit trail',
         accountLifecycle: 'Account lifecycle',
         current: 'Current',
@@ -261,10 +267,10 @@ export const DataGovernancePanel = ({
       }
     : {
         eyebrow: '營運紀錄台',
-        title: '資料治理控制台',
-        description: '以受控復原、限縮匯出與可追溯紀錄，管理目前工作區的高風險資料操作。',
+        title: '資料與隱私管理',
+        description: '管理工作區與學生資料、保存資訊、公開展示隱私，以及敏感操作的稽核紀錄。',
         revisions: 'Revision 復原',
-        studentExport: '單生匯出',
+        studentExport: '學生資料',
         audit: '稽核軌跡',
         accountLifecycle: '帳號生命週期',
         current: '目前版本',
@@ -325,29 +331,6 @@ export const DataGovernancePanel = ({
     return names;
   }, [members, session?.user.displayName, session?.user.email, session?.user.id]);
 
-  const selectedClass = classes.find((classroom) => classroom.id === exportClassId)
-    ?? classes[0];
-  const selectedStudent = selectedClass?.students.find(
-    (student) => student.id === exportStudentId,
-  ) ?? selectedClass?.students[0];
-
-  useEffect(() => {
-    if (classes.some((classroom) => classroom.id === exportClassId)) return;
-    const nextClass = classes[0];
-    setExportClassId(nextClass?.id ?? '');
-    setExportStudentId(nextClass?.students[0]?.id ?? '');
-  }, [classes, exportClassId]);
-
-  useEffect(() => {
-    if (!selectedClass) {
-      setExportStudentId('');
-      return;
-    }
-    if (selectedClass.students.some((student) => student.id === exportStudentId)) {
-      return;
-    }
-    setExportStudentId(selectedClass.students[0]?.id ?? '');
-  }, [exportStudentId, selectedClass]);
 
   const revisionErrorMessage = useCallback((error: unknown) => {
     const code = errorCode(error);
@@ -431,6 +414,10 @@ export const DataGovernancePanel = ({
   }, [activeWorkspaceId]);
 
   useEffect(() => {
+    if (view === 'audit') void runAuditQuery(appliedAuditFilters);
+  }, [view, runAuditQuery]);
+
+  useEffect(() => {
     if (selectedRevision == null) {
       setSnapshot(null);
       return;
@@ -504,37 +491,6 @@ export const DataGovernancePanel = ({
     }
   };
 
-  const exportStudent = async () => {
-    if (!selectedClass || !selectedStudent) return;
-    setExportBusy(true);
-    setExportError('');
-    setExportMessage('');
-    try {
-      const result = await exportStudentPrivacyData(
-        selectedClass.id,
-        selectedStudent.id,
-      );
-      downloadJson(
-        result,
-        `epet-student-${safeFileSegment(selectedStudent.id)}-` +
-          `${new Date().toISOString().slice(0, 10)}.json`,
-      );
-      setExportMessage(language === 'en'
-        ? 'The scoped file was created. The export is recorded in the audit trail.'
-        : '限縮檔案已建立，此次匯出也已寫入稽核軌跡。');
-    } catch (error) {
-      const code = errorCode(error);
-      setExportError(code.includes('STUDENT_NOT_FOUND')
-        ? (language === 'en'
-            ? 'The student no longer exists in the current workspace.'
-            : '這位學生已不在目前工作區中。')
-        : (language === 'en'
-            ? 'The scoped export could not be created.'
-            : '無法建立單生限縮匯出。'));
-    } finally {
-      setExportBusy(false);
-    }
-  };
 
   const actionLabel = (action: string) =>
     ACTION_LABELS[action]?.[language === 'en' ? 1 : 0] ?? action;
@@ -572,11 +528,13 @@ export const DataGovernancePanel = ({
         </div>
       </header>
 
-      <div className="grid grid-cols-2 border-b border-white/10 lg:grid-cols-4" role="tablist" aria-label={copy.title}>
+      <div className="grid grid-cols-2 border-b border-white/10 md:grid-cols-3 lg:grid-cols-6" role="tablist" aria-label={copy.title}>
         {([
-          ['revisions', copy.revisions, History],
+          ['workspace', language === 'en' ? 'Workspace data' : '工作區資料', FileJson2],
           ['student-export', copy.studentExport, UserRoundSearch],
           ['audit', copy.audit, Fingerprint],
+          ['privacy', language === 'en' ? 'Privacy & retention' : '隱私與保存', ShieldCheck],
+          ['revisions', copy.revisions, History],
           ['account-lifecycle', copy.accountLifecycle, UserRoundCog],
         ] as const).map(([itemView, label, Icon]) => (
           <button
@@ -603,6 +561,12 @@ export const DataGovernancePanel = ({
       </div>
 
       <div className="bg-[#f2efe6] text-slate-950" id="governance-panel" role="tabpanel" aria-labelledby={`governance-tab-${view}`} tabIndex={0}>
+        {view === 'workspace' && <WorkspaceDataPanel classes={classes} language={language} flushChanges={flushChanges} />}
+        {view === 'privacy' && <PrivacyInformationPanel language={language} settings={settings} onOpenDisplaySettings={() => {
+          const controls = document.getElementById('privacy-display-settings');
+          controls?.scrollIntoView({ behavior: 'auto', block: 'start' });
+          controls?.focus();
+        }} />}
         {view === 'revisions' && (
           <div className="grid min-h-[34rem] lg:grid-cols-[minmax(280px,0.82fr)_minmax(0,1.4fr)]">
             <aside className="border-b border-slate-300 bg-[#e9e4d8] p-5 lg:border-b-0 lg:border-r lg:p-6">
@@ -752,88 +716,7 @@ export const DataGovernancePanel = ({
           </div>
         )}
 
-        {view === 'student-export' && (
-          <div className="grid min-h-[34rem] lg:grid-cols-[minmax(0,1.15fr)_minmax(280px,0.85fr)]">
-            <div className="p-6 sm:p-9 lg:p-12">
-              <p className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-cyan-800">DATA MINIMIZATION</p>
-              <h3 className="mt-3 max-w-2xl font-serif text-3xl font-black leading-tight sm:text-4xl">{copy.exportTitle}</h3>
-              <p className="mt-4 max-w-2xl text-sm leading-7 text-slate-600">{copy.exportHint}</p>
-              {exportError && <p role="alert" className="mt-5 border-l-4 border-rose-600 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-900">{exportError}</p>}
-              {exportMessage && <p role="status" className="mt-5 border-l-4 border-emerald-600 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-900">{exportMessage}</p>}
-              <div className="mt-7 grid gap-5 sm:grid-cols-2">
-                <label className="text-sm font-black text-slate-800">
-                  {copy.classLabel}
-                  <select
-                    value={selectedClass?.id ?? ''}
-                    onChange={(event) => {
-                      const nextClass = classes.find((item) => item.id === event.target.value);
-                      setExportClassId(event.target.value);
-                      setExportStudentId(nextClass?.students[0]?.id ?? '');
-                      setExportMessage('');
-                      setExportError('');
-                    }}
-                    className="mt-2 block min-h-12 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"
-                  >
-                    {classes.map((classroom) => <option key={classroom.id} value={classroom.id}>{classroom.name}</option>)}
-                  </select>
-                </label>
-                <label className="text-sm font-black text-slate-800">
-                  {copy.studentLabel}
-                  <select
-                    value={selectedStudent?.id ?? ''}
-                    onChange={(event) => {
-                      setExportStudentId(event.target.value);
-                      setExportMessage('');
-                      setExportError('');
-                    }}
-                    disabled={!selectedClass?.students.length}
-                    className="mt-2 block min-h-12 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm disabled:bg-slate-100"
-                  >
-                    {(selectedClass?.students ?? []).map((student) => <option key={student.id} value={student.id}>{student.name}</option>)}
-                  </select>
-                </label>
-              </div>
-              <button
-                type="button"
-                onClick={() => void exportStudent()}
-                disabled={exportBusy || !selectedStudent}
-                className="mt-6 inline-flex min-h-13 items-center gap-3 rounded-xl bg-slate-950 px-6 text-sm font-black text-white shadow-xl shadow-slate-900/15 transition hover:-translate-y-0.5 hover:bg-cyan-950 disabled:translate-y-0 disabled:bg-slate-300"
-              >
-                {exportBusy ? <LoaderCircle className="h-5 w-5 animate-spin" /> : <ArrowDownToLine className="h-5 w-5" />}
-                {copy.exportButton}
-              </button>
-            </div>
-            <aside className="border-t border-slate-300 bg-[#dfd8c8] p-6 lg:border-l lg:border-t-0 lg:p-9">
-              <div className="rounded-[1.5rem] border border-slate-400/50 bg-white/75 p-6 shadow-sm">
-                <FileJson2 className="h-9 w-9 text-cyan-800" />
-                <p className="mt-5 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">EXPORT MANIFEST</p>
-                <h4 className="mt-2 text-xl font-black text-slate-950">{selectedStudent?.name ?? '—'}</h4>
-                <dl className="mt-5 space-y-3 text-xs">
-                  <div className="flex justify-between gap-4 border-b border-slate-200 pb-3">
-                    <dt className="font-bold text-slate-500">{copy.classLabel}</dt>
-                    <dd className="text-right font-black text-slate-800">{selectedClass?.name ?? '—'}</dd>
-                  </div>
-                  <div className="flex justify-between gap-4 border-b border-slate-200 pb-3">
-                    <dt className="font-bold text-slate-500">Student ID</dt>
-                    <dd className="max-w-48 truncate font-mono text-slate-800">{selectedStudent?.id ?? '—'}</dd>
-                  </div>
-                  <div className="flex justify-between gap-4 border-b border-slate-200 pb-3">
-                    <dt className="font-bold text-slate-500">{copy.evidence}</dt>
-                    <dd className="font-black text-slate-800">{(selectedClass?.learningEvidenceRecords ?? []).filter((record) => record.studentId === selectedStudent?.id).length}</dd>
-                  </div>
-                  <div className="flex justify-between gap-4">
-                    <dt className="font-bold text-slate-500">{copy.assessments}</dt>
-                    <dd className="font-black text-slate-800">{(selectedClass?.examRecords ?? []).filter((exam) => exam.results.some((result) => result.studentId === selectedStudent?.id)).length}</dd>
-                  </div>
-                </dl>
-              </div>
-              <div className="mt-5 flex gap-3 rounded-2xl border border-amber-400/60 bg-amber-100 p-4 text-amber-950">
-                <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0" />
-                <p className="text-xs font-bold leading-6">{copy.exportSafety}</p>
-              </div>
-            </aside>
-          </div>
-        )}
+        {view === 'student-export' && <StudentDataPanel classes={classes} language={language} flushChanges={flushChanges} />}
 
         {view === 'audit' && (
           <div className="min-h-[34rem] p-5 sm:p-7 lg:p-9">

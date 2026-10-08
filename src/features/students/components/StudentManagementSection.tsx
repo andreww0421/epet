@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { getActiveClasses } from '../../../../shared/domain/classArchive';
 import { Plus, RefreshCw, Trash2, Users } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { DeleteConfirmationDialog } from '../../../components/ui/DeleteConfirmationDialog';
@@ -67,7 +68,7 @@ export const StudentManagementSection = ({
               onChange={(event) => runMutation(() => switchClass(event.target.value))}
               className="w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
             >
-              {data.classes.map((classData) => (
+              {getActiveClasses(data.classes).map((classData) => (
                 <option key={classData.id} value={classData.id}>{classData.name}</option>
               ))}
             </select>

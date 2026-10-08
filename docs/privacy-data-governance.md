@@ -45,14 +45,17 @@
 
 現行保護：
 
-- 瀏覽器預設不持久保存學生個資。
+- 一般長期 localStorage 學生資料快取預設關閉；既有未同步草稿仍會暫存在分頁的 sessionStorage，成功同步／登出後清除。部署若啟用 `VITE_ALLOW_LOCAL_PII_CACHE`，會產生長期瀏覽器副本。
 - 工作區只保留最近 25 份 revision 快照。
 - 刪除學生會同步移除現行學習證據、考試結果、魔王貢獻與攻擊次數。
 - 刪除學生會將該 student ID 與相關紀錄從所有保留的 D1／JSON revision 快照移除。
 - session、reset、Email verification 與 invitation token 只在資料庫保存雜湊值；Turnstile token 不寫入應用程式資料庫。
 - 到期／撤銷 session、reset／verification token、rate-limit 與邀請由 Worker cron 與 Node 排程每日清理。
 - owner 可在密碼與工作區名雙重確認後刪除工作區；帳號刪除前必須先處理所有 owner 身分。
-- owner／admin 可在資料治理控制台匯出只含單一學生、其學習證據、考試結果與魔王參與的限縮資料集；下載檔名只使用 student ID，不放學生姓名。
+- owner／admin 可在資料治理控制台匯出完整工作區或只含單一學生、其學習證據、考試結果與魔王參與的限縮資料集；下載檔名只包含用途與日期，不放學生姓名或 ID。
+- owner／admin 可經影響檢查、理解勾選與確認字串，刪除或結構化匿名化學生。伺服器檢查權限、Origin／CSRF、revision，原子清理 retained revisions 與先前學生 audit targets，並記錄操作。
+- 匿名化保留數值型遊戲與安全歷史以免重設點數限制／cooldown；這是去識別化，不能保證不可重新識別。其他紀錄中的任意文字提及仍需另行審查。
+- 班級可封存為唯讀快照並復開；封存不是刪除或 age-based expiry，且至少保留一個使用中的班級。
 - owner／admin 可依動作、操作人、對象與日期查詢 workspace audit；查詢本身會留下 audit event，回應端會遞迴排除 token、password、session、cookie 等敏感 metadata key。
 
 仍待完成或核定的公開上架閘門：
@@ -72,8 +75,10 @@
 5. 執行匯出、更正、限制或刪除後，保存操作證明與例外保留依據。
 6. 以驗證過的安全通道交付，不使用公開連結或未加密附件。
 
-單一學生匯出已有 admin-only API 與管理 UI；案件追蹤、安全交付、請求人驗證與完整刪除流程仍是公開上架 blocker。
+完整工作區／單一學生匯出、刪除、去識別化已有 admin-only API 與管理 UI；案件追蹤、安全交付、請求人驗證與外部副本／備份的完整刪除流程仍是公開上架 blocker。
 收到真實請求時應由工程與校方共同審核，不可把整班 JSON 直接寄出。
+
+實作與操作範圍詳見 [Data & Privacy 管理](data-privacy-management.md)。
 
 ## 事件處理
 

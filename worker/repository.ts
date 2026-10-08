@@ -833,6 +833,16 @@ implements WorkspaceRepository, AuthRepository {
     );
     const revisionPurgeStatements: D1PreparedStatement[] = [];
     if (deletedStudentIds.size > 0) {
+      for (const deletedStudentId of deletedStudentIds) {
+        revisionPurgeStatements.push(this.database.prepare(
+          `UPDATE audit_events SET target_id = NULL
+           WHERE workspace_id = ? AND target_type = 'student' AND target_id = ?
+             AND EXISTS (
+               SELECT 1 FROM workspace_projection_state
+               WHERE workspace_id = ? AND source_revision = ? AND write_token = ?
+             )`,
+        ).bind(workspaceId, deletedStudentId, workspaceId, nextRevision, writeToken));
+      }
       const snapshots = await this.database
         .prepare(
           `SELECT workspace_id, revision, updated_at, actor_user_id,

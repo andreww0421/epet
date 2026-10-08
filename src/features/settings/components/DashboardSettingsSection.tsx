@@ -104,7 +104,7 @@ export const DashboardSettingsSection = ({
         />
       </div>
 
-      <div hidden={mode !== 'all' && mode !== 'rules' && mode !== 'governance'}>
+      <div id="privacy-display-settings" tabIndex={-1} hidden={mode !== 'all' && mode !== 'rules' && mode !== 'governance'}>
         <SettingsOverview model={model} mode={mode === 'governance' ? 'governance' : mode === 'rules' ? 'rules' : 'all'} />
       </div>
       <div hidden={mode !== 'all' && mode !== 'rules' && mode !== 'rewards'}>
