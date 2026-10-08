@@ -13,6 +13,85 @@ const getJobBlock = (source: string, jobId: string) => {
   return nextJob === -1 ? source.slice(start) : source.slice(start, start + 1 + nextJob);
 };
 
+interface DependencyManifest {
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+}
+
+interface LockedPackage extends DependencyManifest {
+  version?: string;
+}
+
+interface DependencyLock {
+  packages: Record<string, LockedPackage>;
+}
+
+const readDependencyLock = async (): Promise<DependencyLock> =>
+  JSON.parse(await readSource('package-lock.json')) as DependencyLock;
+
+const stableVersion = (version: string | undefined, label: string): number[] => {
+  assert.ok(version, `${label} must have a locked version`);
+  assert.match(version, /^\d+\.\d+\.\d+$/, `${label} must use a stable release`);
+  return version.split('.').map(Number);
+};
+
+const versionAtLeast = (version: number[], floor: number[]): boolean => {
+  for (let index = 0; index < 3; index += 1) {
+    if (version[index] !== floor[index]) return version[index] > floor[index];
+  }
+  return true;
+};
+
+test('manifest dependency specifications match the lockfile root', async () => {
+  const [manifestSource, lock] = await Promise.all([
+    readSource('package.json'),
+    readDependencyLock(),
+  ]);
+  const manifest = JSON.parse(manifestSource) as DependencyManifest;
+  const rootPackage = lock.packages[''];
+  assert.ok(rootPackage, 'lockfile must include the root package');
+  for (const scope of ['dependencies', 'devDependencies'] as const) {
+    assert.deepEqual(rootPackage[scope] ?? {}, manifest[scope] ?? {}, `${scope} must match`);
+  }
+});
+
+for (const [packageName, patchedFloor] of Object.entries({
+  nanoid: '3.3.18',
+  'source-map-js': '1.2.2',
+  sharp: '0.35.5',
+  undici: '7.29.1',
+})) {
+  test(`every locked ${packageName} instance is stable and above its security patch floor`, async () => {
+    const lock = await readDependencyLock();
+    const instances = Object.entries(lock.packages).filter(([path]) =>
+      path === `node_modules/${packageName}` || path.endsWith(`/node_modules/${packageName}`),
+    );
+    assert.ok(instances.length > 0, `expected at least one locked ${packageName} instance`);
+    const floor = stableVersion(patchedFloor, `${packageName} security patch floor`);
+    for (const [path, lockedPackage] of instances) {
+      const version = stableVersion(lockedPackage.version, path);
+      assert.ok(
+        versionAtLeast(version, floor),
+        `${path} ${lockedPackage.version} must be at least patched release ${patchedFloor}`,
+      );
+    }
+  });
+}
+
+test('locked Wrangler, Miniflare, and workerd releases remain a coherent stable pair', async () => {
+  const lock = await readDependencyLock();
+  const wrangler = lock.packages['node_modules/wrangler'];
+  const miniflare = lock.packages['node_modules/miniflare'];
+  const workerd = lock.packages['node_modules/workerd'];
+  assert.ok(wrangler && miniflare && workerd, 'all Worker toolchain packages must be locked');
+  stableVersion(wrangler.version, 'wrangler');
+  stableVersion(miniflare.version, 'miniflare');
+  stableVersion(workerd.version, 'workerd');
+  assert.equal(wrangler.dependencies?.miniflare, miniflare.version);
+  assert.equal(wrangler.dependencies?.workerd, workerd.version);
+  assert.equal(miniflare.dependencies?.workerd, workerd.version);
+});
+
 test('security workflow uses isolated least-privilege jobs and immutable actions', async () => {
   const source = await readSource('.github/workflows/security.yml');
 

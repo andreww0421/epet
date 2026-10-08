@@ -134,6 +134,16 @@ npm run dev:full
 npm run verify
 ```
 
+### Dependency maintenance
+
+CI/deployment 使用完整 `npm ci`，不得用 `--legacy-peer-deps`、省略 optional dependencies 或跳過 audit 掩蓋 lockfile 問題。更新 manifest 後須同步提交完整 lockfile，並驗證 clean install 不會修改它。
+
+目前保留 Wrangler `4.115.0` / Miniflare `4.20260722.1` / workerd 配對；scoped [npm overrides](https://docs.npmjs.com/cli/v11/configuring-npm/package-json/#overrides) 只將 Miniflare 的 sharp / undici 更新至 stable `0.35.5` / `7.29.1`。Rolldown WASM binding 的 runtime 固定為其相容範圍內的 stable `1.1.6`，避免 `1.2.0` 的 alpha emnapi peers 導致跨平台 `npm ci` 失敗。PostCSS 的 nanoid / source-map-js 則在原有 semver 範圍內更新 lockfile。不得用 `npm audit fix --force` 將 Miniflare 升到 alpha。
+
+這些 overrides **不會改寫 Wrangler CLI 內嵌的 undici `7.28.0`**；audit 通過只代表已解析 npm graph 的已知 advisories 通過。檢查目前 whoami / D1 ledger / deploy 呼叫未發現相關 advisory 要求的 cache/retry/decompress interceptors、BalancedPool 自訂 TLS callbacks 或 Undici WebSocket 呼叫；未來新增命令／plugins 時必須重新評估。待上游提供修補後的穩定完整配對，再更新並移除 overrides，而不是以新版 Wrangler 強行替換 Miniflare major version。
+
+更新依賴後至少執行 `npm ci`、`npm audit --audit-level=high`、`npm run verify`、`npm run check:worker:staging` 及既有 browser regressions；`test:security-ci` 也檢查所有 lockfile 中的受影響套件實例、manifest 一致性與 Worker tooling 配對。Production DB、API 與 secrets 不因依賴修復而變更。
+
 ### Playwright E2E testing
 
 E2E tests 以真實 Chromium 驗證登入、工作區、班級／學生、導師操作、考試、角色權限及同步衝突等 critical user flows。第一次執行前安裝 Playwright browser：
