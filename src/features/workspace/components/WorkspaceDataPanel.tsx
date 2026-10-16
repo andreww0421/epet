@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
-import { Archive, ArchiveRestore, ArrowDownToLine, Database, FileClock, LoaderCircle, ShieldAlert } from 'lucide-react';
+import { Archive, ArchiveRestore, ArrowDownToLine, Database, FileClock, History, LoaderCircle, ShieldAlert, Trash2 } from 'lucide-react';
 import { MAX_STORED_REVISIONS } from '../../../../shared/domain/repositoryPolicy';
-import { CLASS_ARCHIVE_CONFIRMATIONS, getActiveClasses, isArchivedClass } from '../../../../shared/domain/classArchive';
+import { getActiveClasses, isArchivedClass } from '../../../../shared/domain/classArchive';
 import { useAuth } from '../../../auth/AuthProvider';
-import { ModalDialog } from '../../../components/ModalDialog';
-import { exportWorkspacePrivacyData, manageClassArchive, type WorkspacePrivacyExport } from '../../../services/backendApi';
+import { exportWorkspacePrivacyData, type WorkspacePrivacyExport } from '../../../services/backendApi';
 import type { ClassData, Language } from '../../../store/types';
-import { useWorkspacePrivacyOperation } from '../hooks/useWorkspacePrivacyOperation';
+import { useClassLifecycleAction, type ClassLifecycleAction } from '../hooks/useClassLifecycleAction';
 import { downloadPrivacyJson } from '../model/privacyDownloads';
+import { ClassLifecycleDialog } from './ClassLifecycleDialog';
+import { ArchivedClassHistoryPanel } from './ArchivedClassHistoryPanel';
 
 type WorkspaceDataPanelProps = {
   classes: ClassData[];
@@ -24,21 +25,21 @@ export const WorkspaceDataPanel = ({
   onSensitiveActionComplete,
 }: WorkspaceDataPanelProps) => {
   const { session } = useAuth();
-  const { allowed, busy, error, execute } = useWorkspacePrivacyOperation(language, flushChanges);
+  const { workspaceId, allowed, busy, error, execute, runClassAction } = useClassLifecycleAction(language, flushChanges);
   const [message, setMessage] = useState('');
   const [downloadError, setDownloadError] = useState('');
-  const [classAction, setClassAction] = useState<{ kind: 'archive' | 'reopen'; classroom: ClassData } | null>(null);
-  const [confirmation, setConfirmation] = useState('');
+  const [classAction, setClassAction] = useState<{ kind: ClassLifecycleAction; classroom: ClassData; workspaceId: string | null } | null>(null);
+  const [historyClassId, setHistoryClassId] = useState<string | null>(null);
   const zh = language === 'zh';
   const archivedClasses = classes.filter(isArchivedClass);
   const activeClasses = getActiveClasses(classes);
-  const classConfirmation = classAction ? CLASS_ARCHIVE_CONFIRMATIONS[classAction.kind] : '';
+  const historyClass = archivedClasses.find((item) => item.id === historyClassId);
 
   useEffect(() => {
     setMessage('');
     setDownloadError('');
     setClassAction(null);
-    setConfirmation('');
+    setHistoryClassId(null);
   }, [session?.activeWorkspaceId]);
 
   const exportWorkspace = async () => {
@@ -68,23 +69,15 @@ export const WorkspaceDataPanel = ({
   const closeClassAction = () => {
     if (busy) return;
     setClassAction(null);
-    setConfirmation('');
   };
 
-  const confirmClassAction = async () => {
+  const reviewClassAction = (kind: ClassLifecycleAction, classroom: ClassData) => {
+    setClassAction({ kind, classroom, workspaceId });
+  };
+
+  const confirmClassAction = async (confirmation: string, acknowledged: boolean) => {
     if (!classAction || busy) return;
-    const phrase = CLASS_ARCHIVE_CONFIRMATIONS[classAction.kind];
-    if (!allowed || confirmation !== phrase) return;
-    const target = classAction;
-    await execute((workspaceId, revision, data) => {
-      const latestClass = data?.classes.find((item) => item.id === target.classroom.id);
-      if (!latestClass || latestClass.name !== target.classroom.name ||
-          isArchivedClass(latestClass) !== isArchivedClass(target.classroom)) {
-        throw new Error('TARGET_CHANGED');
-      }
-      return manageClassArchive(target.classroom.id, target.kind,
-        { expectedRevision: revision, confirmation }, workspaceId);
-    });
+    await runClassAction(classAction.classroom, classAction.workspaceId, classAction.kind, confirmation, acknowledged);
   };
 
   if (!allowed) return <p role="alert" className="p-6 text-sm font-bold text-slate-700">
@@ -146,7 +139,10 @@ export const WorkspaceDataPanel = ({
           <h4 id="active-class-list-title" className="text-sm font-black text-slate-800">{zh ? '使用中的班級' : 'Active classes'} · {activeClasses.length}</h4>
           <ul className="mt-3 space-y-3">{activeClasses.map((classroom) => <li key={classroom.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-300 bg-white p-4">
             <div className="min-w-0"><p className="break-words text-sm font-black text-slate-950">{classroom.name}</p><p className="mt-1 text-xs text-slate-500">{classroom.students.length} {zh ? '位學生' : 'students'}</p></div>
-            <button type="button" disabled={busy || activeClasses.length <= 1} aria-label={`${zh ? '封存班級' : 'Archive class'} ${classroom.name}`} onClick={() => { setClassAction({ kind: 'archive', classroom }); setConfirmation(''); }} className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 text-sm font-black text-slate-700 hover:border-cyan-800 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-cyan-800 disabled:opacity-50"><Archive className="h-4 w-4" aria-hidden="true" />{zh ? '檢查封存影響' : 'Review archive'}</button>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" disabled={busy || activeClasses.length <= 1} aria-label={`${zh ? '封存班級' : 'Archive class'} ${classroom.name}`} onClick={() => reviewClassAction('archive', classroom)} className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 text-sm font-black text-slate-700 hover:border-cyan-800 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-cyan-800 disabled:opacity-50"><Archive className="h-4 w-4" aria-hidden="true" />{zh ? '檢查封存影響' : 'Review archive'}</button>
+              <button type="button" disabled={busy || activeClasses.length <= 1} aria-label={`${zh ? '永久刪除班級' : 'Permanently delete class'} ${classroom.name}`} onClick={() => reviewClassAction('delete', classroom)} className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-rose-300 bg-white px-4 text-sm font-black text-rose-800 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-cyan-800 disabled:opacity-50"><Trash2 className="h-4 w-4" aria-hidden="true" />{zh ? '檢查永久刪除' : 'Review permanent deletion'}</button>
+            </div>
           </li>)}</ul>
           {activeClasses.length <= 1 && <p className="mt-3 text-xs leading-6 text-slate-600">{zh ? '至少保留一個使用中的班級。' : 'At least one class must remain active.'}</p>}
         </section>
@@ -154,26 +150,22 @@ export const WorkspaceDataPanel = ({
           <h4 id="archived-class-list-title" className="text-sm font-black text-slate-800">{zh ? '已封存班級' : 'Archived classes'} · {archivedClasses.length}</h4>
           {archivedClasses.length === 0 ? <p className="mt-3 rounded-xl border border-dashed border-slate-400 bg-white/60 p-5 text-sm text-slate-600">{zh ? '目前沒有封存班級。' : 'There are no archived classes.'}</p> : <ul className="mt-3 space-y-3">{archivedClasses.map((classroom) => <li key={classroom.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-300 bg-[#dfd8c8]/40 p-4">
             <div className="min-w-0"><p className="break-words text-sm font-black text-slate-950">{classroom.name}</p><p className="mt-1 text-xs text-slate-600">{classroom.students.length} {zh ? '位學生 · 資料仍保留' : 'students · data retained'}</p></div>
-            <button type="button" disabled={busy} aria-label={`${zh ? '重新開啟班級' : 'Reopen class'} ${classroom.name}`} onClick={() => { setClassAction({ kind: 'reopen', classroom }); setConfirmation(''); }} className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-slate-400 bg-white px-4 text-sm font-black text-slate-700 hover:border-cyan-800 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-cyan-800 disabled:opacity-50"><ArchiveRestore className="h-4 w-4" aria-hidden="true" />{zh ? '重新開啟' : 'Reopen'}</button>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" disabled={busy} aria-label={`${zh ? '檢視封存歷史' : 'View archived history'} ${classroom.name}`} onClick={() => setHistoryClassId(classroom.id)} className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-slate-400 bg-white px-4 text-sm font-black text-slate-700 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-cyan-800"><History className="h-4 w-4" aria-hidden="true" />{zh ? '唯讀歷史' : 'Read-only history'}</button>
+              <button type="button" disabled={busy} aria-label={`${zh ? '重新開啟班級' : 'Reopen class'} ${classroom.name}`} onClick={() => reviewClassAction('reopen', classroom)} className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-slate-400 bg-white px-4 text-sm font-black text-slate-700 hover:border-cyan-800 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-cyan-800 disabled:opacity-50"><ArchiveRestore className="h-4 w-4" aria-hidden="true" />{zh ? '重新開啟（還原）' : 'Reopen (restore)'}</button>
+              <button type="button" disabled={busy} aria-label={`${zh ? '永久刪除班級' : 'Permanently delete class'} ${classroom.name}`} onClick={() => reviewClassAction('delete', classroom)} className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-rose-300 bg-white px-4 text-sm font-black text-rose-800 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-cyan-800 disabled:opacity-50"><Trash2 className="h-4 w-4" aria-hidden="true" />{zh ? '檢查永久刪除' : 'Review permanent deletion'}</button>
+            </div>
           </li>)}</ul>}
         </section>
       </div>
     </section>
-    {classAction && <ModalDialog labelledBy="class-lifecycle-title" describedBy="class-lifecycle-impact" onClose={closeClassAction} closeDisabled={busy} className="max-w-lg rounded-2xl p-6 sm:p-7">
-      <ShieldAlert className="h-8 w-8 text-amber-800" aria-hidden="true" />
-      <h3 id="class-lifecycle-title" className="mt-3 font-serif text-2xl font-black text-slate-950">{classAction.kind === 'archive' ? zh ? '確認封存班級' : 'Confirm class archive' : zh ? '確認重新開啟班級' : 'Confirm class reopening'}</h3>
-      <p className="mt-2 break-words text-sm font-black text-slate-800">{classAction.classroom.name}</p>
-      <p id="class-lifecycle-impact" className="mt-3 text-sm leading-7 text-slate-600">{classAction.kind === 'archive'
-        ? zh ? '此班級將不再出現在日常教學與投影選單。所有學生、學習、評量與遊戲資料仍保留，可日後重新開啟。伺服器會檢查權限、檢查 revision 並記錄操作；至少保留一個使用中的班級。' : 'The class will no longer appear in daily teaching or presentation selectors. All student, learning, exam and game data is retained and can be reopened later. The server checks permission and revision and records the action; at least one class must remain active.'
-        : zh ? '此班級會重新出現在日常教學與投影選單，原有資料保持不變。請確認重新使用符合目前的保存政策與投影隱私設定。伺服器會檢查權限、檢查 revision 並記錄操作。' : 'The class will return to daily teaching and presentation selectors with its existing data unchanged. Confirm that reopening meets current retention policy and presentation privacy settings. The server checks permission and revision and records the action.'}</p>
-      {error && <p role="alert" className="mt-4 border-l-4 border-rose-600 bg-rose-50 px-4 py-3 text-sm font-bold leading-6 text-rose-900">{error}</p>}
-      <label className="mt-5 block text-sm font-black text-slate-800">{zh ? '輸入 ' : 'Type '}{classConfirmation}
-        <input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} disabled={busy} autoComplete="off" spellCheck={false} className="mt-2 block min-h-12 w-full rounded-xl border border-slate-300 bg-white px-3 font-mono text-sm" />
-      </label>
-      <div className="mt-6 grid gap-3 sm:grid-cols-2">
-        <button autoFocus type="button" onClick={closeClassAction} disabled={busy} className="min-h-12 rounded-xl border border-slate-300 bg-white px-4 text-sm font-black text-slate-700 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-cyan-800 disabled:opacity-50">{zh ? '取消' : 'Cancel'}</button>
-        <button type="button" onClick={() => void confirmClassAction()} disabled={busy || confirmation !== classConfirmation} className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-cyan-900 px-4 text-sm font-black text-white focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-cyan-800 disabled:bg-slate-400">{busy && <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />}{busy ? zh ? '處理中…' : 'Processing…' : classAction.kind === 'archive' ? zh ? '確認封存' : 'Confirm archive' : zh ? '確認重新開啟' : 'Confirm reopen'}</button>
-      </div>
-    </ModalDialog>}
+    {historyClass && <section className="mt-8 border-t border-slate-300 pt-7" aria-label={zh ? '封存班級歷史' : 'Archived class history'}>
+      <button type="button" onClick={() => setHistoryClassId(null)} className="mb-5 min-h-11 rounded-lg border border-slate-300 bg-white px-4 text-sm font-bold">{zh ? '關閉歷史檢視' : 'Close history'}</button>
+      <ArchivedClassHistoryPanel key={historyClass.id} classroom={historyClass} language={language} />
+    </section>}
+    {classAction && classAction.workspaceId === workspaceId && <div key={classAction.workspaceId + classAction.classroom.id + classAction.kind}><ClassLifecycleDialog
+      classroom={classAction.classroom} action={classAction.kind} language={language}
+      busy={busy} error={error} onClose={closeClassAction}
+      onConfirm={(confirmation, acknowledged) => void confirmClassAction(confirmation, acknowledged)} /></div>}
   </div>;
 };

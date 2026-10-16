@@ -526,6 +526,14 @@ export const exportStudentPrivacyData = (
 );
 
 export type PrivacyMutationInput = { expectedRevision: number; confirmation: string };
+export const importWorkspaceBackup = (
+  data: AppData,
+  input: PrivacyMutationInput & { acknowledgeReplacement: true },
+  workspaceId: string,
+) => request<BackendStateSnapshot>('/api/v1/workspace/import', {
+  method: 'POST', body: JSON.stringify({ data, ...input }),
+}, { workspaceId });
+
 export const manageStudentPrivacy = (
   classId: string, studentId: string, action: StudentPrivacyAction,
   input: PrivacyMutationInput, workspaceId?: string,
@@ -538,6 +546,15 @@ export const manageClassArchive = (
   input: PrivacyMutationInput, workspaceId?: string,
 ) => request<BackendStateSnapshot & { action: ClassArchiveAction }>(
   `/api/v1/classes/${encodeURIComponent(classId)}/privacy/${action}`,
+  { method: 'POST', body: JSON.stringify(input) }, { workspaceId },
+);
+
+export const deleteClassOnBackend = (
+  classId: string,
+  input: PrivacyMutationInput & { acknowledgePermanentDeletion: true },
+  workspaceId?: string,
+) => request<BackendStateSnapshot & { action: 'delete' }>(
+  `/api/v1/classes/${encodeURIComponent(classId)}/privacy/delete`,
   { method: 'POST', body: JSON.stringify(input) }, { workspaceId },
 );
 

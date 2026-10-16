@@ -7,12 +7,14 @@ type ModalDialogProps = {
   onClose: () => void;
   closeDisabled?: boolean;
   className?: string;
+  initialFocusId?: string;
+  returnFocusId?: string;
 };
 
 /** Mount only while open. Native modality makes the background inert, including
  * for assistive technology, and returns focus to the invoking control on close. */
 export const ModalDialog = ({
-  children, labelledBy, describedBy, onClose, closeDisabled = false, className = '',
+  children, labelledBy, describedBy, onClose, closeDisabled = false, className = '', initialFocusId, returnFocusId,
 }: ModalDialogProps) => {
   const dialogRef = useRef<HTMLDialogElement>(null);
 
@@ -21,9 +23,14 @@ export const ModalDialog = ({
     if (!dialog) return;
     const invoker = document.activeElement;
     dialog.showModal();
+    // React autoFocus runs before native showModal(), which can replace it.
+    const initialFocus = initialFocusId ? document.getElementById(initialFocusId) : null;
+    if (initialFocus instanceof HTMLElement && dialog.contains(initialFocus)) initialFocus.focus();
     return () => {
       dialog.close();
-      if (invoker instanceof HTMLElement && invoker.isConnected) invoker.focus();
+      // Async review can temporarily disable its trigger before this mounts.
+      const returnTarget = returnFocusId ? document.getElementById(returnFocusId) : invoker;
+      if (returnTarget instanceof HTMLElement && returnTarget.isConnected) returnTarget.focus();
     };
   }, []);
 

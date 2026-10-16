@@ -1,8 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import { Download, ShieldCheck, Upload } from 'lucide-react';
 import { STORAGE_KEY } from '../store/constants';
 import type { AppData } from '../store/types';
 import { useStore } from '../store/useStore';
+import { useWorkspaceImportReview } from '../features/workspace/hooks/useWorkspaceImportReview';
+import { WorkspaceImportDialog } from '../features/workspace/components/WorkspaceImportDialog';
 
 const DISMISSED_KEY = 'epet-legacy-migration-dismissed-v1';
 
@@ -44,10 +46,13 @@ const downloadJson = (data: AppData) => {
 
 export const LegacyDataMigration = ({
   workspaceName,
+  flushChanges = async () => false,
 }: {
   workspaceName: string;
+  flushChanges?: () => Promise<boolean>;
 }) => {
   const [legacyData] = useState(readLegacyData);
+  const importTriggerId = useId();
   const [dismissed, setDismissed] = useState(() => {
     try {
       return globalThis.sessionStorage?.getItem(DISMISSED_KEY) === 'true';
@@ -55,9 +60,8 @@ export const LegacyDataMigration = ({
       return false;
     }
   });
-  const [queuedForSync, setQueuedForSync] = useState(false);
   const currentData = useStore((state) => state.data);
-  const importData = useStore((state) => state.importData);
+  const importer = useWorkspaceImportReview(currentData.settings?.language ?? 'zh', flushChanges);
   const currentHasData = useMemo(
     () => hasMeaningfulWorkspaceData(currentData),
     [currentData],
@@ -74,7 +78,7 @@ export const LegacyDataMigration = ({
     }
   };
 
-  return (
+  return (<>
     <section
       aria-labelledby="legacy-migration-title"
       className="border-b border-indigo-200 bg-indigo-50 px-4 py-4"
@@ -91,15 +95,11 @@ export const LegacyDataMigration = ({
             <p className="mt-1 max-w-2xl text-sm leading-6 text-indigo-900">
               系統不會自動把可能屬於另一位老師的學生資料掛到會員帳號。
               你可以先下載備份，或明確匯入到「{workspaceName}」。
+              匯入前會列出完整還原的取代與清除影響，並需要額外確認與伺服器稽核。
             </p>
             {currentHasData && (
               <p className="mt-1 text-xs font-bold text-amber-800">
                 目前工作區已有資料；為避免覆寫，請先建立空白工作區或只下載備份。
-              </p>
-            )}
-            {queuedForSync && (
-              <p className="mt-1 text-xs font-bold text-emerald-800" role="status">
-                舊資料已載入，正在等候雲端同步；原本機備份仍保留。
               </p>
             )}
           </div>
@@ -115,11 +115,9 @@ export const LegacyDataMigration = ({
           </button>
           <button
             type="button"
-            disabled={currentHasData || queuedForSync}
-            onClick={() => {
-              importData(legacyData);
-              setQueuedForSync(true);
-            }}
+            disabled={currentHasData || importer.busy || !importer.allowed}
+            id={importTriggerId}
+            onClick={() => void importer.reviewImport(legacyData)}
             className="inline-flex min-h-11 items-center gap-2 rounded-lg bg-indigo-700 px-3 py-2 text-sm font-bold text-white hover:bg-indigo-800 disabled:cursor-not-allowed disabled:bg-indigo-300"
           >
             <Upload className="h-4 w-4" aria-hidden="true" />
@@ -135,5 +133,9 @@ export const LegacyDataMigration = ({
         </div>
       </div>
     </section>
+    {importer.review && <WorkspaceImportDialog review={importer.review} language={currentData.settings?.language ?? 'zh'} returnFocusId={importTriggerId}
+      busy={importer.busy} error={importer.error} onClose={importer.closeReview}
+      onReplace={(confirmation, acknowledged) => void importer.replaceWorkspace(confirmation, acknowledged)} />}
+    </>
   );
 };

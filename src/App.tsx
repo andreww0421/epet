@@ -370,8 +370,8 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
       </nav>
 
       {/* Main Content */}
-      {backendStatus === 'connected' && canAdminister && (
-        <LegacyDataMigration workspaceName={activeWorkspaceName} />
+      {(backendStatus === 'connected' || backendStatus === 'saving') && canAdminister && (
+        <LegacyDataMigration workspaceName={activeWorkspaceName} flushChanges={flushBackendChanges} />
       )}
       {(backendStatus === 'conflict' || backendStatus === 'forbidden') && (
         <div

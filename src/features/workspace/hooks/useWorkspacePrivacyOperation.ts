@@ -65,5 +65,5 @@ export const useWorkspacePrivacyOperation = (
       if (mounted.current) setBusy(false);
     }
   };
-  return { allowed, busy, error, execute };
+  return { workspaceId, allowed, busy, error, execute };
 };

@@ -1,8 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { getActiveClasses } from '../../../../shared/domain/classArchive';
 import { Plus, RefreshCw, Trash2, Users } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
-import { DeleteConfirmationDialog } from '../../../components/ui/DeleteConfirmationDialog';
+import { ClassLifecycleDialog } from '../../workspace/components/ClassLifecycleDialog';
+import { useClassLifecycleAction } from '../../workspace/hooks/useClassLifecycleAction';
+import type { ClassData } from '../../../store/types';
 import { AddClassDialog } from './AddClassDialog';
 import { RosterImportPanel } from './RosterImportPanel';
 import { translations } from '../../../i18n/translations';
@@ -15,6 +17,7 @@ type StudentManagementSectionProps = {
   canWrite: boolean;
   visible: boolean;
   showClassSelector?: boolean;
+  flushChanges?: () => Promise<boolean>;
 };
 
 /** Owns class and roster enrollment UI. Domain mutations remain in the store. */
@@ -23,13 +26,13 @@ export const StudentManagementSection = ({
   canWrite,
   visible,
   showClassSelector = true,
+  flushChanges = async () => false,
 }: StudentManagementSectionProps) => {
   const {
     addClass,
     addStudent,
     addStudentsByName,
     data,
-    deleteClass,
     resetSeason,
     switchClass,
   } = useStore(useShallow((state) => ({
@@ -37,7 +40,6 @@ export const StudentManagementSection = ({
     addStudent: state.addStudent,
     addStudentsByName: state.addStudentsByName,
     data: state.data,
-    deleteClass: state.deleteClass,
     resetSeason: state.resetSeason,
     switchClass: state.switchClass,
   })));
@@ -47,8 +49,10 @@ export const StudentManagementSection = ({
   const currentStudents = currentClass?.students ?? [];
   const [newStudentName, setNewStudentName] = useState('');
   const [showAddClass, setShowAddClass] = useState(false);
-  const [classToDelete, setClassToDelete] = useState<string | null>(null);
+  const [classToDelete, setClassToDelete] = useState<{ classroom: ClassData; workspaceId: string | null } | null>(null);
   const runMutation = useWorkspaceMutationGuard(canWrite);
+  const lifecycle = useClassLifecycleAction(lang, flushChanges);
+  useEffect(() => { setClassToDelete(null); }, [lifecycle.workspaceId]);
 
   const handleAddStudent = () => {
     if (!newStudentName.trim()) return;
@@ -94,8 +98,8 @@ export const StudentManagementSection = ({
                 {tLang.resetSeason}
               </button>
               <button
-                onClick={() => setClassToDelete(data.currentClassId)}
-                disabled={data.classes.length <= 1}
+                onClick={() => currentClass && setClassToDelete({ classroom: currentClass, workspaceId: lifecycle.workspaceId })}
+                disabled={getActiveClasses(data.classes).length <= 1 || lifecycle.busy || !lifecycle.allowed}
                 className="inline-flex items-center px-4 py-2 border border-slate-300 rounded-md shadow-sm text-sm font-medium text-red-600 bg-white hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 <Trash2 className="h-4 w-4 mr-2" />
@@ -150,22 +154,12 @@ export const StudentManagementSection = ({
         tLang={tLang}
       />
 
-      <DeleteConfirmationDialog
-        cancelLabel={tLang.cancel}
-        confirmLabel={tLang.delete}
-        message={tLang.deleteClassWarning.replace(
-          '{name}',
-          data.classes.find((classData) => classData.id === classToDelete)?.name ?? '',
-        )}
-        onCancel={() => setClassToDelete(null)}
-        onConfirm={() => {
-          if (!classToDelete) return;
-          runMutation(() => deleteClass(classToDelete));
-          setClassToDelete(null);
-        }}
-        open={visible && canWrite && Boolean(classToDelete)}
-        title={tLang.deleteClass}
-      />
+      {visible && canWrite && canAdministerWorkspace && lifecycle.allowed && classToDelete?.workspaceId === lifecycle.workspaceId && classToDelete && <div key={classToDelete.workspaceId + classToDelete.classroom.id}><ClassLifecycleDialog
+        classroom={classToDelete.classroom} action="delete" language={lang}
+        busy={lifecycle.busy} error={lifecycle.error}
+        onClose={() => { if (!lifecycle.busy) setClassToDelete(null); }}
+        onConfirm={(confirmation, acknowledged) => void lifecycle.runClassAction(classToDelete.classroom, classToDelete.workspaceId, 'delete', confirmation, acknowledged)}
+      /></div>}
     </>
   );
 };

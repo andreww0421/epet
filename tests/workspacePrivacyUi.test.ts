@@ -8,6 +8,24 @@ import { WorkspaceDataPanel } from '../src/features/workspace/components/Workspa
 import { StudentDataPanel } from '../src/features/workspace/components/StudentDataPanel';
 import { DataGovernancePanel } from '../src/features/workspace/components/DataGovernancePanel';
 import type { ClassData } from '../src/store/types';
+import { matchesReviewedClass } from '../src/features/workspace/model/classLifecycleReview';
+
+test('class reviews cannot target an identical class in another workspace', () => {
+  const classroom: ClassData = { id: 'default', name: 'Same synthetic class', students: [] };
+  assert.equal(matchesReviewedClass(classroom, 'reviewed-workspace', 'reviewed-workspace', classroom, true), true);
+  assert.equal(matchesReviewedClass(classroom, 'reviewed-workspace', 'another-workspace', classroom, true), false);
+  assert.equal(matchesReviewedClass(classroom, null, 'another-workspace', classroom, true), false);
+  assert.equal(matchesReviewedClass(classroom, 'reviewed-workspace', 'reviewed-workspace', undefined, true), false);
+});
+
+test('class deletion reviews expire when the visible target or deletion impact changes', () => {
+  const classroom: ClassData = { id: 'default', name: 'Synthetic class', students: [] };
+  for (const change of [{ name: 'Renamed class' }, { archivedAt: 123 },
+    { students: [{ id: 'synthetic', name: 'Synthetic learner', points: 0,
+      pet: { type: 'egg' as const, level: 1, fullness: 80, happiness: 80 } }] }]) {
+    assert.equal(matchesReviewedClass(classroom, 'workspace', 'workspace', { ...classroom, ...change }, true), false);
+  }
+});
 
 test('a directly mounted workspace data panel fails closed before authentication is resolved', () => {
   let flushCalls = 0;

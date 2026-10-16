@@ -1,16 +1,19 @@
-import { useRef, type ChangeEvent } from 'react';
+import { useId, useRef, type ChangeEvent } from 'react';
 import { Download, Upload } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { runWorkspaceMutation } from '../../../auth/workspaceAccess';
 import { translations } from '../../../i18n/translations';
 import { exportWorkspacePrivacyData } from '../../../services/backendApi';
 import { useStore } from '../../../store/useStore';
+import { useWorkspaceImportReview } from '../hooks/useWorkspaceImportReview';
+import { WorkspaceImportDialog } from './WorkspaceImportDialog';
 
 type DashboardHeaderProps = {
   canAdministerWorkspace: boolean;
   canExportFullData: boolean;
   readOnly: boolean;
   description?: string;
+  flushChanges?: () => Promise<boolean>;
 };
 
 /** Owns workspace import/export affordances and keeps file APIs out of the page shell. */
@@ -19,15 +22,17 @@ export const DashboardHeader = ({
   canExportFullData,
   readOnly,
   description,
+  flushChanges = async () => false,
 }: DashboardHeaderProps) => {
-  const { data, importData, showToast } = useStore(useShallow((state) => ({
+  const { data, showToast } = useStore(useShallow((state) => ({
     data: state.data,
-    importData: state.importData,
     showToast: state.showToast,
   })));
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const importTriggerId = useId();
   const language = data.settings?.language || 'zh';
   const copy = translations[language];
+  const importer = useWorkspaceImportReview(language, flushChanges, canAdministerWorkspace && !readOnly);
 
   const exportData = async () => {
     if (!canExportFullData) return;
@@ -52,29 +57,14 @@ export const DashboardHeader = ({
   const handleImport = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    const reviewedWorkspaceId = importer.workspaceId;
     const reader = new FileReader();
-    reader.onload = (loadEvent) => {
+    reader.onload = async (loadEvent) => {
       try {
         const importedData: unknown = JSON.parse(String(loadEvent.target?.result ?? ''));
-        const record = importedData && typeof importedData === 'object'
-          ? importedData as Record<string, unknown>
-          : null;
-        const hasSupportedShape = Array.isArray(record?.classes) || Array.isArray(record?.students);
-        if (hasSupportedShape) {
-          runWorkspaceMutation(
-            !readOnly,
-            () => {
-              importData(importedData);
-              showToast(copy.importSuccess, 'success');
-            },
-            () => showToast(
-              language === 'en'
-                ? 'This workspace is read-only for your account.'
-                : '目前帳號只能閱讀此工作區。',
-              'error',
-            ),
-          );
-        } else {
+        const reviewed = await runWorkspaceMutation(!readOnly,
+          () => importer.reviewImport(importedData, reviewedWorkspaceId));
+        if (!reviewed) {
           showToast(copy.invalidData, 'error');
         }
       } catch {
@@ -86,7 +76,7 @@ export const DashboardHeader = ({
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  return (
+  return (<>
     <div className="sm:flex sm:items-center sm:justify-between mb-8">
       <div>
         <h1 className="text-2xl font-bold text-slate-900">{copy.dashboard}</h1>
@@ -113,7 +103,13 @@ export const DashboardHeader = ({
               onChange={handleImport}
             />
             <button
+              id={importTriggerId}
+              type="button"
+              disabled={readOnly || importer.busy || !importer.allowed}
               onClick={() => fileInputRef.current?.click()}
+              title={language === 'en'
+                ? 'Review the impact before restoring a complete backup.'
+                : '先檢查取代與清除影響，再完整還原備份。'}
               className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors"
             >
               <Upload className="h-4 w-4 mr-2" />
@@ -123,5 +119,9 @@ export const DashboardHeader = ({
         )}
       </div>
     </div>
+    {importer.review && <WorkspaceImportDialog review={importer.review} language={language} returnFocusId={importTriggerId}
+      busy={importer.busy} error={importer.error} onClose={importer.closeReview}
+      onReplace={(confirmation, acknowledged) => void importer.replaceWorkspace(confirmation, acknowledged)} />}
+    </>
   );
 };

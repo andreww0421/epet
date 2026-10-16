@@ -103,6 +103,7 @@ export const DashboardView = ({ readOnly = false, canExportFullData = false, can
   return (
     <div className="mx-auto min-h-full max-w-7xl bg-slate-50 px-4 py-6 sm:px-6 lg:px-8">
       <DashboardHeader readOnly={readOnly} canAdministerWorkspace={governanceVisible} canExportFullData={governanceVisible && canExportFullData}
+        flushChanges={flushChanges}
         description={lang === 'en' ? 'Your teaching day, organized around class, learning, activities and insights.' : '以班級、學習、活動與洞察，整理每天的導師工作。'} />
       <TeacherClassContext classes={data.classes} classId={selectedClassId} language={lang} readOnly={readOnly} workspaceName={workspaceName} onReviewClassChange={setReadOnlyClassId} />
       <TeacherConsoleNavigation active={active} language={lang} onAreaChange={navigateArea} onChange={navigate} {...capabilities} />
@@ -116,7 +117,7 @@ export const DashboardView = ({ readOnly = false, canExportFullData = false, can
         {(visited.analytics || analyticsVisible) && <Suspense fallback={<DashboardLoading language={lang} />}>
           <StudentAnalyticsSection classId={selectedClassId} readOnly={readOnly} mode={analyticsMode} visible={analyticsVisible} />
         </Suspense>}
-        <StudentManagementSection canAdministerWorkspace={canAdministerWorkspace} canWrite={!readOnly} showClassSelector={false} visible={!readOnly && active === 'students'} />
+        <StudentManagementSection canAdministerWorkspace={canAdministerWorkspace} canWrite={!readOnly} showClassSelector={false} visible={!readOnly && active === 'students'} flushChanges={flushChanges} />
         <ClassGroupsPanel classData={currentClass} language={lang} canWrite={!readOnly} visible={!readOnly && active === 'groups'} />
         <RewardsSection canAdministerWorkspace={canAdministerWorkspace} canWrite={!readOnly} reasonLanguage={settingsLanguage}
           todayPointEntry={todayPointEntry} todayActive={active === 'today'}
