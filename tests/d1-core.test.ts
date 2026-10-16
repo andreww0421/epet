@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, before, test } from 'node:test';
-import type { D1Database } from '@cloudflare/workers-types';
+import type { D1Database, D1PreparedStatement } from '@cloudflare/workers-types';
 import { Miniflare } from 'miniflare';
 import type { AppData } from '../src/store/types';
 import {
@@ -17,6 +17,7 @@ import {
 import { D1WorkspaceRepository } from '../worker/repository';
 import {
   anonymizeStudentInWorkspaceData,
+  purgeClassesFromWorkspaceData,
   purgeStudentsFromWorkspaceData,
 } from '../shared/domain/studentPrivacy';
 import { updateClassArchive } from '../shared/domain/classArchive';
@@ -1303,6 +1304,189 @@ test('a projection failure rolls back blob, revision, projection state, and audi
       .bind('must-not-commit')
       .first<{ event_id: string }>();
     assert.equal(forbiddenAudit, null);
+  } finally {
+    await isolated.miniflare.dispose();
+  }
+});
+
+test('D1 class deletion purges entire historical classes, including empty records, and preserves other tenant data and audit', async () => {
+  const isolated = await createFixture();
+  try {
+    const repository = new D1WorkspaceRepository(isolated.database, { readMode: 'normalized' });
+    const original = createData('Synthetic class lifecycle learner', 203);
+    original.classes[0].archivedAt = 1_700_000_001_000;
+    original.classes[0].classGoals = [{ id: 'goal-delete', title: 'Synthetic historical goal',
+      competency: 'growth', targetCount: 3, createdAt: 1_700_000_000_000 }];
+    const emptyClass = { ...structuredClone(original.classes[0]),
+      id: 'empty-class-delete', name: 'Synthetic empty class', students: [],
+      learningEvidenceRecords: [],
+      examRecords: original.classes[0].examRecords?.map((exam) => ({ ...exam, results: [] })),
+    };
+    original.classes.push(emptyClass, { id: 'class-keep', name: 'Synthetic active class', students: [] });
+    original.currentClassId = 'class-keep';
+    await repository.put('class-delete-tenant', original, 0);
+    await repository.put('class-delete-other', original, 0);
+    await repository.appendAuditEvent({ id: 'class-delete-prior-export', workspaceId: 'class-delete-tenant',
+      actorUserId: 'synthetic-admin', action: 'student.privacy.export', targetType: 'student',
+      targetId: 'student-shared-id', createdAt: 1 });
+    await repository.appendAuditEvent({ id: 'class-delete-prior-archive', workspaceId: 'class-delete-tenant',
+      actorUserId: 'synthetic-admin', action: 'class.privacy.archive', targetType: 'class',
+      targetId: 'class-shared-id', createdAt: 2 });
+    const deleted = purgeClassesFromWorkspaceData(original, new Set(['class-shared-id', 'empty-class-delete']));
+    await repository.put('class-delete-tenant', deleted, 1, {
+      actorUserId: 'synthetic-admin', action: 'class.privacy.delete', requestId: 'class-delete-complete',
+    });
+    assert.deepEqual((await repository.get('class-delete-tenant')).data, deleted);
+    assert.deepEqual((await repository.get('class-delete-other')).data, original);
+    for (const revision of await repository.listWorkspaceRevisions('class-delete-tenant')) {
+      const snapshot = await repository.getWorkspaceRevision('class-delete-tenant', revision.revision);
+      assert.ok(snapshot);
+      assert.deepEqual(snapshot.data.classes, [original.classes[2]]);
+      assert.equal(snapshot.data.currentClassId, 'class-keep');
+      assert.equal(snapshot.dataSizeBytes, Buffer.byteLength(JSON.stringify(snapshot.data), 'utf8'));
+      assert.equal(JSON.stringify(snapshot.data).includes('goal-delete'), false);
+    }
+    const audit = await repository.listWorkspaceAuditEvents('class-delete-tenant');
+    assert.equal(audit.find((event) => event.id === 'class-delete-prior-export')?.targetId, undefined);
+    assert.equal(audit.find((event) => event.id === 'class-delete-prior-export')?.actorUserId, 'synthetic-admin');
+    assert.equal(audit.find((event) => event.id === 'class-delete-prior-archive')?.targetId, 'class-shared-id');
+    assert.deepEqual(audit.find((event) => event.id === 'class-delete-complete')?.metadata, {
+      deletedClassCount: 2, deletedStudentCount: 1,
+    });
+    assert.deepEqual(audit.find((event) => event.action === 'privacy.class.purge')?.metadata, {
+      deletedClassCount: 2, deletedStudentCount: 1,
+    });
+    for (const table of ['students', 'exam_records', 'exam_results', 'learning_evidence', 'point_adjustments', 'discipline_records', 'boss_rewards']) {
+      const count = await isolated.database.prepare(
+        `SELECT COUNT(*) AS count FROM ${table} WHERE workspace_id = ?`,
+      ).bind('class-delete-tenant').first<{ count: number }>();
+      assert.equal(count?.count, 0);
+    }
+    assert.deepEqual(await isolated.database.prepare(
+      'SELECT class_id FROM classes WHERE workspace_id = ?',
+    ).bind('class-delete-tenant').all<{ class_id: string }>().then((result) => result.results),
+    [{ class_id: 'class-keep' }]);
+    const retained = await repository.getWorkspaceRevision('class-delete-tenant', 1);
+    assert.ok(retained);
+    await repository.put('class-delete-tenant', retained.data, 2, { action: 'workspace.revision.restore' });
+    assert.deepEqual((await repository.get('class-delete-tenant')).data?.classes, [original.classes[2]]);
+  } finally {
+    await isolated.miniflare.dispose();
+  }
+});
+
+test('D1 deletion of an empty archived class cannot leave its goal or exam in historical snapshots', async () => {
+  const isolated = await createFixture();
+  try {
+    const repository = new D1WorkspaceRepository(isolated.database, { readMode: 'normalized' });
+    const original: AppData = { lastOpened: 1, currentClassId: '', classes: [{
+      id: 'empty-class', name: 'Synthetic empty archive', archivedAt: 1, students: [],
+      classGoals: [{ id: 'empty-goal', title: 'Synthetic goal', competency: 'growth', targetCount: 1, createdAt: 1 }],
+      examRecords: [{ id: 'empty-exam', title: 'Synthetic exam', examDate: '2026-10-14',
+        items: [{ id: 'item', name: 'Synthetic item', maxScore: 10 }], results: [], createdAt: 1, updatedAt: 1 }],
+    }] };
+    await repository.put('empty-class-tenant', original, 0);
+    const empty = purgeClassesFromWorkspaceData(original, new Set(['empty-class']));
+    await repository.put('empty-class-tenant', empty, 1, {
+      action: 'class.privacy.delete', requestId: 'empty-class-deletion',
+    });
+    assert.deepEqual((await repository.get('empty-class-tenant')).data, empty);
+    const snapshot = await repository.getWorkspaceRevision('empty-class-tenant', 1);
+    assert.deepEqual(snapshot?.data.classes, []);
+    assert.equal(snapshot?.data.currentClassId, '');
+    const event = (await repository.listWorkspaceAuditEvents('empty-class-tenant'))
+      .find((candidate) => candidate.id === 'empty-class-deletion');
+    assert.deepEqual(event?.metadata, { deletedClassCount: 1, deletedStudentCount: 0 });
+  } finally {
+    await isolated.miniflare.dispose();
+  }
+});
+
+test('D1 stale class deletion has no partial audit or snapshot cleanup', async () => {
+  const isolated = await createFixture();
+  try {
+    const repository = new D1WorkspaceRepository(isolated.database);
+    const original = createData('Synthetic stale class fixture', 12);
+    await repository.put('stale-class-tenant', original, 0);
+    await repository.put('stale-class-tenant', original, 1);
+    await repository.appendAuditEvent({ id: 'stale-class-prior-export', workspaceId: 'stale-class-tenant',
+      action: 'student.privacy.export', targetType: 'student', targetId: 'student-shared-id', createdAt: 1 });
+    await assert.rejects(repository.put('stale-class-tenant', purgeClassesFromWorkspaceData(original, new Set(['class-shared-id'])), 1, {
+      action: 'class.privacy.delete', requestId: 'stale-class-deletion',
+    }), WorkspaceConflictError);
+    assert.deepEqual((await repository.get('stale-class-tenant')).data, original);
+    assert.deepEqual((await repository.getWorkspaceRevision('stale-class-tenant', 1))?.data, original);
+    const audit = await repository.listWorkspaceAuditEvents('stale-class-tenant');
+    assert.equal(audit.find((event) => event.id === 'stale-class-prior-export')?.targetId, 'student-shared-id');
+    assert.equal(audit.some((event) => event.id === 'stale-class-deletion'), false);
+  } finally {
+    await isolated.miniflare.dispose();
+  }
+});
+
+test('D1 class deletion that loses CAS at the atomic batch does not purge the winning snapshot or audit', async () => {
+  const isolated = await createFixture();
+  try {
+    const repository = new D1WorkspaceRepository(isolated.database);
+    const original = createData('Synthetic concurrent class fixture', 12);
+    await repository.put('concurrent-class-tenant', original, 0);
+    await repository.appendAuditEvent({ id: 'concurrent-class-prior-export', workspaceId: 'concurrent-class-tenant',
+      action: 'student.privacy.export', targetType: 'student', targetId: 'student-shared-id', createdAt: 1 });
+    const winner = structuredClone(original);
+    winner.lastOpened += 1;
+    let raced = false;
+    const racingDatabase = new Proxy(isolated.database, {
+      get(target, property) {
+        if (property === 'batch') return async (statements: D1PreparedStatement[]) => {
+          if (!raced) {
+            raced = true;
+            await repository.put('concurrent-class-tenant', winner, 1, {
+              action: 'workspace.update', requestId: 'class-update-winner',
+            });
+          }
+          return target.batch(statements);
+        };
+        const value: unknown = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const loser = new D1WorkspaceRepository(racingDatabase);
+    await assert.rejects(loser.put('concurrent-class-tenant', purgeClassesFromWorkspaceData(original, new Set(['class-shared-id'])), 1, {
+      action: 'class.privacy.delete', requestId: 'class-deletion-loser',
+    }), WorkspaceConflictError);
+    assert.equal(raced, true);
+    assert.deepEqual((await repository.get('concurrent-class-tenant')).data, winner);
+    assert.deepEqual((await repository.getWorkspaceRevision('concurrent-class-tenant', 1))?.data, original);
+    assert.deepEqual((await repository.getWorkspaceRevision('concurrent-class-tenant', 2))?.data, winner);
+    const audit = await repository.listWorkspaceAuditEvents('concurrent-class-tenant');
+    assert.equal(audit.find((event) => event.id === 'concurrent-class-prior-export')?.targetId, 'student-shared-id');
+    assert.equal(audit.some((event) => event.id === 'class-deletion-loser' || event.action === 'privacy.class.purge'), false);
+  } finally {
+    await isolated.miniflare.dispose();
+  }
+});
+
+test('D1 projection failure rolls back whole-class history deletion and audit cleanup', async () => {
+  const isolated = await createFixture();
+  try {
+    const repository = new D1WorkspaceRepository(isolated.database);
+    const original = createData('Synthetic class rollback fixture', 12);
+    await repository.put('rollback-class-tenant', original, 0);
+    await repository.appendAuditEvent({ id: 'rollback-class-prior-export', workspaceId: 'rollback-class-tenant',
+      action: 'student.privacy.export', targetType: 'student', targetId: 'student-shared-id', createdAt: 1 });
+    await isolated.database.prepare('DROP TABLE boss_rewards').run();
+    await assert.rejects(repository.put('rollback-class-tenant', purgeClassesFromWorkspaceData(original, new Set(['class-shared-id'])), 1, {
+      action: 'class.privacy.delete', requestId: 'class-deletion-rollback',
+    }), /no such table/);
+    const persisted = await isolated.database.prepare(
+      'SELECT revision, data_json FROM workspaces WHERE workspace_id = ?',
+    ).bind('rollback-class-tenant').first<{ revision: number; data_json: string }>();
+    assert.equal(persisted?.revision, 1);
+    assert.deepEqual(JSON.parse(persisted?.data_json ?? 'null'), original);
+    assert.deepEqual((await repository.getWorkspaceRevision('rollback-class-tenant', 1))?.data, original);
+    const audit = await repository.listWorkspaceAuditEvents('rollback-class-tenant');
+    assert.equal(audit.find((event) => event.id === 'rollback-class-prior-export')?.targetId, 'student-shared-id');
+    assert.equal(audit.some((event) => event.id === 'class-deletion-rollback' || event.action === 'privacy.class.purge'), false);
   } finally {
     await isolated.miniflare.dispose();
   }

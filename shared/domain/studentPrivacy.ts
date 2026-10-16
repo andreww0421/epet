@@ -2,6 +2,7 @@ import type { AppData, Student } from '../../src/store/types';
 import { isDateKey } from '../../src/domain/game/calendarRules';
 import { isPetType } from '../../src/domain/game/petCatalog';
 import { isLearningCompetency } from '../education';
+import { isArchivedClass } from './classArchive';
 
 export const STUDENT_PRIVACY_CONFIRMATIONS = {
   delete: 'DELETE STUDENT',
@@ -28,6 +29,33 @@ export const findPermanentlyDeletedStudentIds = (
   );
 };
 
+export const findPermanentlyDeletedClassIds = (
+  previous: AppData | null,
+  next: AppData,
+): Set<string> => {
+  const nextIds = new Set(next.classes.map((classroom) => classroom.id));
+  return new Set((previous?.classes ?? [])
+    .filter((classroom) => !nextIds.has(classroom.id))
+    .map((classroom) => classroom.id));
+};
+
+/** Erase the whole class, including records that have no current student. */
+export const purgeClassesFromWorkspaceData = (
+  data: AppData,
+  deletedClassIds: ReadonlySet<string>,
+): AppData => {
+  if (deletedClassIds.size === 0) return data;
+  const classes = data.classes.filter((classroom) => !deletedClassIds.has(classroom.id));
+  if (classes.length === data.classes.length && !deletedClassIds.has(data.currentClassId)) return data;
+  const activeClasses = classes.filter((classroom) => !isArchivedClass(classroom));
+  return {
+    ...data,
+    classes,
+    currentClassId: activeClasses.some((classroom) => classroom.id === data.currentClassId)
+      ? data.currentClassId : activeClasses[0]?.id ?? '',
+  };
+};
+
 export const purgeStudentsFromWorkspaceData = (
   data: AppData,
   deletedStudentIds: ReadonlySet<string>,
@@ -36,6 +64,14 @@ export const purgeStudentsFromWorkspaceData = (
   return {
     ...data,
     classes: data.classes.map((classroom, classIndex) => {
+      const containsDeletedStudent = classroom.students.some((student) =>
+        deletedStudentIds.has(student.id) || deletedStudentIds.has(student.teammateId ?? ''),
+      ) || classroom.learningEvidenceRecords?.some((record) => deletedStudentIds.has(record.studentId))
+        || classroom.examRecords?.some((exam) => exam.results.some((result) => deletedStudentIds.has(result.studentId)))
+        || Object.keys(classroom.activeBoss?.contributions ?? {}).some((id) => deletedStudentIds.has(id))
+        || Object.keys(classroom.activeBoss?.attackCounts ?? {}).some((id) => deletedStudentIds.has(id));
+      // Preserve unrelated classes exactly, including absent optional fields.
+      if (!containsDeletedStudent) return classroom;
       // Legacy team IDs can contain a student ID/name. Replace the opaque ID
       // for every remaining member, preserving group membership rather than
       // leaving an identifying team identifier in retained snapshots.

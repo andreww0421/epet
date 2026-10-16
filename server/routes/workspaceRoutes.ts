@@ -1,4 +1,5 @@
 import { createInitialData, normalizeAppData } from '../../src/store/utils';
+import { getActiveClasses } from '../../shared/domain/classArchive';
 import { WorkspaceConflictError } from '../contracts';
 import { getString, readJsonBody, MAX_AUTH_BODY_BYTES } from '../http/body';
 import { getRequestId } from '../http/request';
@@ -8,6 +9,7 @@ import { isRoleAtLeast, AuthForbiddenError } from '../auth';
 import { isAppData } from '../services/workspaceValidation';
 import {
   mergeTeacherWorkspaceData,
+  protectClassLifecycleWrite,
   scopeStoredWorkspace,
 } from '../workspaceScope';
 import type {
@@ -69,6 +71,41 @@ export const handleWorkspaceRoutes: RouteHandler<WorkspaceRouteContext> = async 
     );
   }
 
+  if (request.method === 'POST' && url.pathname === '/api/v1/workspace/import') {
+    enforceRole(authorized.membership.role, 'admin');
+    const body = await readJsonBody(request);
+    if (getString(body.confirmation) !== 'IMPORT WORKSPACE') {
+      return json({ error: 'CONFIRMATION_REQUIRED' }, 400, headers);
+    }
+    if (body.acknowledgeReplacement !== true) {
+      return json({ error: 'REPLACEMENT_ACKNOWLEDGEMENT_REQUIRED' }, 400, headers);
+    }
+    if (typeof body.expectedRevision !== 'number' ||
+      !Number.isSafeInteger(body.expectedRevision) || body.expectedRevision < 0) {
+      return json({ error: 'BASE_REVISION_REQUIRED' }, 400, headers);
+    }
+    if (!isAppData(body.data)) {
+      return json({ error: 'INVALID_APP_DATA' }, 400, headers);
+    }
+    const now = Date.now();
+    const data = { ...normalizeAppData(body.data, now), lastOpened: now };
+    if (new Set(data.classes.map((classroom) => classroom.id)).size !== data.classes.length ||
+      data.classes.some((classroom) => new Set(classroom.students.map((student) => student.id)).size !== classroom.students.length)) {
+      return json({ error: 'INVALID_APP_DATA' }, 400, headers);
+    }
+    if (getActiveClasses(data.classes).length === 0) {
+      return json({ error: 'LAST_ACTIVE_CLASS' }, 409, headers);
+    }
+    // Explicit recovery may replace the complete snapshot, including archives.
+    // The repository atomically checks the revision and purges omitted records.
+    const saved = await repository.put(workspaceId, data, body.expectedRevision, {
+      actorUserId: authorized.user.id,
+      action: 'workspace.privacy.import',
+      requestId: `privacy_${crypto.randomUUID()}`,
+    });
+    return json(saved, 200, headers);
+  }
+
   if (url.pathname !== '/api/v1/state') return undefined;
 
   if (request.method === 'GET') {
@@ -97,10 +134,24 @@ export const handleWorkspaceRoutes: RouteHandler<WorkspaceRouteContext> = async 
       requestId: getRequestId(request),
     };
     if (isRoleAtLeast(authorized.membership.role, 'admin')) {
+      const current = await repository.get(workspaceId);
+      if (baseRevision != null && baseRevision !== current.revision) {
+        return json({ error: 'REVISION_CONFLICT', current }, 409, headers);
+      }
+      const normalizationTime = Date.now();
+      const normalized = normalizeAppData(body.data, normalizationTime);
+      const nextData = current.data
+        ? protectClassLifecycleWrite(current.data, normalized, {
+            comparison: normalizeAppData(current.data, normalizationTime),
+            submitted: body.data,
+          })
+        : normalized;
       const saved = await repository.put(
         workspaceId,
-        normalizeAppData(body.data),
-        baseRevision,
+        nextData,
+        // Keep the legacy optional admin base revision contract while making
+        // the lifecycle validation/read-write boundary atomic.
+        baseRevision ?? current.revision,
         writeContext,
       );
       return json(saved, 200, headers);
@@ -114,6 +165,9 @@ export const handleWorkspaceRoutes: RouteHandler<WorkspaceRouteContext> = async 
     const current = await repository.get(workspaceId);
     if (!current.data) {
       return json({ error: 'STATE_REQUIRED' }, 409, headers);
+    }
+    if (baseRevision !== current.revision) {
+      return json({ error: 'REVISION_CONFLICT', current: scopeStoredWorkspace(current, classScope) }, 409, headers);
     }
     const normalizationTime = Date.now();
     const merged = mergeTeacherWorkspaceData(

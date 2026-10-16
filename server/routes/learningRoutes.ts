@@ -1,4 +1,5 @@
 import { createLearningEvidenceRecord } from '../../shared/education';
+import { isArchivedClass } from '../../shared/domain/classArchive';
 import { readJsonBody } from '../http/body';
 import { getRequestId } from '../http/request';
 import { json } from '../http/response';
@@ -34,6 +35,9 @@ export const handleLearningRoutes: RouteHandler<WorkspaceRouteContext> = async (
     (classData) => classData.id === classId,
   );
   const classData = workspace.data.classes[classIndex];
+  if (classData && isArchivedClass(classData)) {
+    return json({ error: 'CLASS_ARCHIVED' }, 409, headers);
+  }
   const body = await readJsonBody(request);
   const studentId = typeof body.studentId === 'string' ? body.studentId : '';
   if (

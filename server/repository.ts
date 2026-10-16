@@ -2,7 +2,9 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { AppData } from '../src/store/types';
 import {
+  findPermanentlyDeletedClassIds,
   findPermanentlyDeletedStudentIds,
+  purgeClassesFromWorkspaceData,
   purgeStudentsFromWorkspaceData,
 } from '../shared/domain/studentPrivacy';
 import {
@@ -309,9 +311,12 @@ implements WorkspaceRepository, AuthRepository {
     operation: (database: DatabaseFile) => T | Promise<T>,
   ): Promise<T> {
     const pending = this.mutationQueue.then(async () => {
-      const database = await this.load();
+      // Publish the new in-memory state only after the atomic file replacement.
+      // A failed persistence must not expose an uncommitted privacy deletion.
+      const database = structuredClone(await this.load());
       const result = await operation(database);
       await this.persist(database);
+      this.database = database;
       return structuredClone(result);
     });
     this.mutationQueue = pending.then(
@@ -373,6 +378,7 @@ implements WorkspaceRepository, AuthRepository {
         current.data,
         data,
       );
+      const deletedClassIds = findPermanentlyDeletedClassIds(current.data, data);
       if (deletedStudentIds.size > 0) {
         // Keep actor/action/time accountability without retaining the erased
         // student's stable identifier in earlier privacy-export audit targets.
@@ -382,19 +388,6 @@ implements WorkspaceRepository, AuthRepository {
             ? { ...event, targetId: undefined }
             : event,
         );
-        database.workspaceRevisions[workspaceId] = (
-          database.workspaceRevisions[workspaceId] ?? []
-        ).map((snapshot) => {
-          const purgedData = purgeStudentsFromWorkspaceData(
-            snapshot.data,
-            deletedStudentIds,
-          );
-          return {
-            ...snapshot,
-            data: purgedData,
-            dataSizeBytes: jsonUtf8Size(purgedData),
-          };
-        });
         database.auditEvents.push({
           id: `evt_privacy_student_${workspaceId}_${next.revision}`,
           workspaceId,
@@ -403,6 +396,36 @@ implements WorkspaceRepository, AuthRepository {
           targetType: 'workspace',
           targetId: workspaceId,
           metadata: { deletedStudentCount: deletedStudentIds.size },
+          createdAt: next.updatedAt,
+        });
+      }
+      if (deletedStudentIds.size > 0 || deletedClassIds.size > 0) {
+        database.workspaceRevisions[workspaceId] = (
+          database.workspaceRevisions[workspaceId] ?? []
+        ).map((snapshot) => {
+          const purgedData = purgeClassesFromWorkspaceData(
+            purgeStudentsFromWorkspaceData(snapshot.data, deletedStudentIds),
+            deletedClassIds,
+          );
+          return {
+            ...snapshot,
+            data: purgedData,
+            dataSizeBytes: jsonUtf8Size(purgedData),
+          };
+        });
+      }
+      if (deletedClassIds.size > 0) {
+        database.auditEvents.push({
+          id: `evt_privacy_class_${workspaceId}_${next.revision}`,
+          workspaceId,
+          actorUserId: context.actorUserId,
+          action: 'privacy.class.purge',
+          targetType: 'workspace',
+          targetId: workspaceId,
+          metadata: {
+            deletedClassCount: deletedClassIds.size,
+            deletedStudentCount: deletedStudentIds.size,
+          },
           createdAt: next.updatedAt,
         });
       }
@@ -430,6 +453,12 @@ implements WorkspaceRepository, AuthRepository {
           action: context.action,
           targetType: 'workspace',
           targetId: workspaceId,
+          ...(context.action === 'class.privacy.delete' ? {
+            metadata: {
+              deletedClassCount: deletedClassIds.size,
+              deletedStudentCount: deletedStudentIds.size,
+            },
+          } : {}),
           createdAt: next.updatedAt,
         });
       }

@@ -26,7 +26,7 @@ import { getPublicStudentName } from '../studentPresentation';
 import { resolveBossRewardsOnBackend } from '../services/backendApi';
 import { trackAnalytics } from '../analytics';
 import { recordPointActionCompleted } from '../analytics/actions';
-import { getActiveClasses, isArchivedClass } from '../../shared/domain/classArchive';
+import { findActiveClassIndex, getActiveClasses, isArchivedClass } from '../../shared/domain/classArchive';
 import { 
   applyFeedToStudent, applyPlayWithPet, claimDailyTaskForStudent,
   saveMentorDailyFeedbackForStudent,
@@ -547,6 +547,9 @@ export const useStore = create<StoreState>()(
       },
 
       deleteClass: (classId) => set((state) => {
+        // Archived data is removed only by the dedicated audited server lifecycle action.
+        // Keep the legacy active-class local operation for backwards compatibility.
+        if (state.data.classes.some((classroom) => classroom.id === classId && isArchivedClass(classroom))) return state;
         if (state.data.classes.length <= 1 || getActiveClasses(state.data.classes.filter((item) => item.id !== classId)).length === 0) return state;
         const className = state.data.classes.find(c => c.id === classId)?.name;
         const newClasses = state.data.classes.filter(c => c.id !== classId);
@@ -742,7 +745,7 @@ export const useStore = create<StoreState>()(
         return {
           data: {
             ...newData,
-            classes: newData.classes.map(c => ({
+            classes: newData.classes.map(c => isArchivedClass(c) ? c : ({
               ...c,
               students: sanitizeTeamAssignments(c.students, safeMaxTeamSize).map((student) =>
                 newData.settings.petCareMode === 'death' || !student.pet.isDead
@@ -761,9 +764,7 @@ export const useStore = create<StoreState>()(
       }),
 
       updateClassDailyTaskCalendar: (classId, calendar) => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(
-          (classData) => classData.id === classId,
-        );
+        const currentClassIndex = findActiveClassIndex(state.data, classId);
         if (currentClassIndex === -1) return state;
         const nextClasses = [...state.data.classes];
         nextClasses[currentClassIndex] = {
@@ -777,9 +778,7 @@ export const useStore = create<StoreState>()(
       }),
 
       setClassGoal: (goal, goalId) => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(
-          (classData) => classData.id === state.data.currentClassId,
-        );
+        const currentClassIndex = findActiveClassIndex(state.data);
         if (currentClassIndex === -1) return state;
 
         const now = Date.now();
@@ -836,9 +835,7 @@ export const useStore = create<StoreState>()(
       saveExamRecord: (exam) => {
         let created = false;
         set((state) => {
-          const currentClassIndex = state.data.classes.findIndex(
-            (classData) => classData.id === state.data.currentClassId,
-          );
+          const currentClassIndex = findActiveClassIndex(state.data);
           if (currentClassIndex === -1) return state;
           const currentClass = state.data.classes[currentClassIndex];
           const now = Date.now();
@@ -877,9 +874,7 @@ export const useStore = create<StoreState>()(
       },
 
       deleteExamRecord: (examId) => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(
-          (classData) => classData.id === state.data.currentClassId,
-        );
+        const currentClassIndex = findActiveClassIndex(state.data);
         if (currentClassIndex === -1) return state;
         const currentClass = state.data.classes[currentClassIndex];
         if (!(currentClass.examRecords ?? []).some((exam) => exam.id === examId)) {
@@ -901,7 +896,7 @@ export const useStore = create<StoreState>()(
       }),
 
       addStudent: (student) => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+        const currentClassIndex = findActiveClassIndex(state.data);
         if (currentClassIndex === -1) return state;
 
         const newStudent = createEnrolledStudent(student);
@@ -919,9 +914,7 @@ export const useStore = create<StoreState>()(
       addStudentsByName: (names) => {
         let addedCount = 0;
         set((state) => {
-          const currentClassIndex = state.data.classes.findIndex(
-            (classData) => classData.id === state.data.currentClassId,
-          );
+          const currentClassIndex = findActiveClassIndex(state.data);
           if (currentClassIndex === -1) return state;
 
           const currentClass = state.data.classes[currentClassIndex];
@@ -964,7 +957,7 @@ export const useStore = create<StoreState>()(
       },
 
       deleteStudent: (studentId) => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+        const currentClassIndex = findActiveClassIndex(state.data);
         if (currentClassIndex === -1) return state;
         
         const currentClass = state.data.classes[currentClassIndex];
@@ -1010,7 +1003,7 @@ export const useStore = create<StoreState>()(
 
       editStudentName: (studentId, newName) => set((state) => {
         if (!newName.trim()) return state;
-        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+        const currentClassIndex = findActiveClassIndex(state.data);
         if (currentClassIndex === -1) return state;
 
         const nextClasses = [...state.data.classes];
@@ -1030,7 +1023,7 @@ export const useStore = create<StoreState>()(
         let adjustmentNotice = '';
         let adjustmentNoticeType: 'success' | 'error' = 'success';
         set((state) => {
-          const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+          const currentClassIndex = findActiveClassIndex(state.data);
           if (currentClassIndex === -1) return state;
 
           const amount = Math.trunc(toFiniteNumber(pointsToAdd, 0));
@@ -1114,7 +1107,7 @@ export const useStore = create<StoreState>()(
         let toastMessage = '';
         let toastType: 'success' | 'error' = 'success';
         set((state) => {
-          const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+          const currentClassIndex = findActiveClassIndex(state.data);
           if (currentClassIndex === -1) return state;
 
           const amount = Math.trunc(toFiniteNumber(pointsToAdd, 0));
@@ -1201,7 +1194,7 @@ export const useStore = create<StoreState>()(
         let toastMessage = '';
         let toastType: 'success' | 'error' = 'success';
         set((state) => {
-          const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+          const currentClassIndex = findActiveClassIndex(state.data);
           if (currentClassIndex === -1) return state;
 
           const amount = Math.trunc(toFiniteNumber(pointsToAdd, 0));
@@ -1337,9 +1330,7 @@ export const useStore = create<StoreState>()(
             return { undoAction: null };
           }
 
-          const classIndex = state.data.classes.findIndex(
-            (classData) => classData.id === undoAction.classId,
-          );
+          const classIndex = findActiveClassIndex(state.data, undoAction.classId);
           if (classIndex === -1) return { undoAction: null };
           const entriesByStudentId = new Map<string, PointUndoEntry[]>();
           undoAction.entries.forEach((entry) => {
@@ -1395,7 +1386,7 @@ export const useStore = create<StoreState>()(
         let createdUndoId = '';
         let blockedMessage = '';
         set((state) => {
-          const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+          const currentClassIndex = findActiveClassIndex(state.data);
           if (currentClassIndex === -1) return state;
 
           const now = Date.now();
@@ -1466,7 +1457,7 @@ export const useStore = create<StoreState>()(
       },
 
       warnStudent: (studentId) => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+        const currentClassIndex = findActiveClassIndex(state.data);
         if (currentClassIndex === -1) return state;
 
         const currentClass = state.data.classes[currentClassIndex];
@@ -1519,7 +1510,7 @@ export const useStore = create<StoreState>()(
       }),
 
       removeWarning: (studentId) => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+        const currentClassIndex = findActiveClassIndex(state.data);
         if (currentClassIndex === -1) return state;
         const currentClass = state.data.classes[currentClassIndex];
         const targetStudent = currentClass.students.find(s => s.id === studentId);
@@ -1555,7 +1546,7 @@ export const useStore = create<StoreState>()(
         let blockedMessage = '';
         let studentName = '';
         set((state) => {
-          const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+          const currentClassIndex = findActiveClassIndex(state.data);
           if (currentClassIndex === -1) return state;
           const currentClass = state.data.classes[currentClassIndex];
           const targetStudent = currentClass.students.find((student) => student.id === studentId);
@@ -1643,9 +1634,7 @@ export const useStore = create<StoreState>()(
           if (state.safetyUndoAction?.id !== undoAction.id || Date.now() > undoAction.expiresAt) {
             return { safetyUndoAction: null };
           }
-          const classIndex = state.data.classes.findIndex(
-            (classData) => classData.id === undoAction.classId,
-          );
+          const classIndex = findActiveClassIndex(state.data, undoAction.classId);
           if (classIndex === -1) return { safetyUndoAction: null };
 
           const currentClass = state.data.classes[classIndex];
@@ -1697,7 +1686,7 @@ export const useStore = create<StoreState>()(
       },
 
       removePenalty: (studentId) => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+        const currentClassIndex = findActiveClassIndex(state.data);
         if (currentClassIndex === -1) return state;
         const targetStudent = state.data.classes[currentClassIndex].students.find(s => s.id === studentId);
         if (!targetStudent) return state;
@@ -1715,7 +1704,7 @@ export const useStore = create<StoreState>()(
       }),
 
       resetSeason: () => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+        const currentClassIndex = findActiveClassIndex(state.data);
         if (currentClassIndex === -1) return state;
 
         const settings = state.data.settings;
@@ -1770,7 +1759,7 @@ export const useStore = create<StoreState>()(
       }),
 
       feedPet: (studentId) => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+        const currentClassIndex = findActiveClassIndex(state.data);
         if (currentClassIndex === -1) return state;
         const student = state.data.classes[currentClassIndex].students.find(s => s.id === studentId);
         const feedCost = state.data.settings?.feedCost ?? 10;
@@ -1793,7 +1782,7 @@ export const useStore = create<StoreState>()(
       }),
 
       playWithPet: (studentId) => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+        const currentClassIndex = findActiveClassIndex(state.data);
         if (currentClassIndex === -1) return state;
         const student = state.data.classes[currentClassIndex].students.find(s => s.id === studentId);
         const playCost = state.data.settings?.playCost ?? 5;
@@ -1818,7 +1807,7 @@ export const useStore = create<StoreState>()(
       claimDailyTask: (studentId) => {
         let claimed = false;
         set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+        const currentClassIndex = findActiveClassIndex(state.data);
         if (currentClassIndex === -1) return state;
         const currentClass = state.data.classes[currentClassIndex];
         const targetStudent = currentClass.students.find(s => s.id === studentId);
@@ -1899,9 +1888,7 @@ export const useStore = create<StoreState>()(
 
       setDailyTaskExcusedDate: (studentId, date, excused) => set((state) => {
         if (!isDateKey(date)) return state;
-        const currentClassIndex = state.data.classes.findIndex(
-          (classData) => classData.id === state.data.currentClassId,
-        );
+        const currentClassIndex = findActiveClassIndex(state.data);
         if (currentClassIndex === -1) return state;
         const nextClasses = [...state.data.classes];
         let changed = false;
@@ -1936,7 +1923,7 @@ export const useStore = create<StoreState>()(
       }),
 
       saveMentorDailyFeedback: (studentId, feedback) => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+        const currentClassIndex = findActiveClassIndex(state.data);
         if (currentClassIndex === -1) return state;
         const currentClass = state.data.classes[currentClassIndex];
         const targetStudent = currentClass.students.find((student) => student.id === studentId);
@@ -1985,9 +1972,7 @@ export const useStore = create<StoreState>()(
       addLearningEvidence: (studentId, evidence) => {
         let created = false;
         set((state) => {
-          const currentClassIndex = state.data.classes.findIndex(
-            (classData) => classData.id === state.data.currentClassId,
-          );
+          const currentClassIndex = findActiveClassIndex(state.data);
           if (currentClassIndex === -1 || !evidence.title.trim()) return state;
           const currentClass = state.data.classes[currentClassIndex];
           const targetStudent = currentClass.students.find((student) => student.id === studentId);
@@ -2022,7 +2007,7 @@ export const useStore = create<StoreState>()(
       },
 
       revivePet: (studentId) => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+        const currentClassIndex = findActiveClassIndex(state.data);
         if (currentClassIndex === -1) return state;
         const targetStudent = state.data.classes[currentClassIndex].students.find(s => s.id === studentId);
         if (!targetStudent) return state;
@@ -2051,7 +2036,7 @@ export const useStore = create<StoreState>()(
       }),
 
       upgradePet: (studentId) => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+        const currentClassIndex = findActiveClassIndex(state.data);
         if (currentClassIndex === -1) return state;
         const student = state.data.classes[currentClassIndex].students.find(s => s.id === studentId);
         if (!student) return state;
@@ -2099,7 +2084,7 @@ export const useStore = create<StoreState>()(
       }),
 
       gachaPet: (studentId) => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+        const currentClassIndex = findActiveClassIndex(state.data);
         if (currentClassIndex === -1) return state;
         const student = state.data.classes[currentClassIndex].students.find(s => s.id === studentId);
         if (!student || student.points < PET_GACHA_COST) return state;
@@ -2129,7 +2114,7 @@ export const useStore = create<StoreState>()(
       }),
 
       rerollPetFromUpgrade: (studentId, claimedLevel) => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+        const currentClassIndex = findActiveClassIndex(state.data);
         if (currentClassIndex === -1) return state;
 
         const newPetType = getRandomPetType(true);
@@ -2166,7 +2151,7 @@ export const useStore = create<StoreState>()(
       }),
 
       advanceUpgradeRewardProgress: (studentId, claimedLevel) => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+        const currentClassIndex = findActiveClassIndex(state.data);
         if (currentClassIndex === -1) return state;
 
         const nextClasses = [...state.data.classes];
@@ -2180,7 +2165,7 @@ export const useStore = create<StoreState>()(
       }),
 
       setTeammate: (studentId, teammateIds = []) => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+        const currentClassIndex = findActiveClassIndex(state.data);
         if (currentClassIndex === -1) return state;
         
         const currentClass = state.data.classes[currentClassIndex];
@@ -2226,7 +2211,7 @@ export const useStore = create<StoreState>()(
       }),
 
       battle: (attackerId, defenderId) => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+        const currentClassIndex = findActiveClassIndex(state.data);
         if (currentClassIndex === -1) return state;
 
         const tLang = translations[state.data.settings?.language || 'zh'];
@@ -2383,7 +2368,7 @@ export const useStore = create<StoreState>()(
       ) => {
         let started = false;
         set((state) => {
-          const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+          const currentClassIndex = findActiveClassIndex(state.data);
           if (currentClassIndex === -1) return state;
 
           const now = Date.now();
@@ -2420,7 +2405,7 @@ export const useStore = create<StoreState>()(
       },
 
       removeBoss: () => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+        const currentClassIndex = findActiveClassIndex(state.data);
         if (currentClassIndex === -1) return state;
 
         const nextClasses = [...state.data.classes];
@@ -2432,7 +2417,7 @@ export const useStore = create<StoreState>()(
       dismissBossVictory: () => set({ showBossVictory: false, bossVictoryResult: null }),
 
       executeBossAttack: () => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+        const currentClassIndex = findActiveClassIndex(state.data);
         if (currentClassIndex === -1) return state;
 
         const currentClass = state.data.classes[currentClassIndex];
@@ -2519,7 +2504,7 @@ export const useStore = create<StoreState>()(
       }),
 
       clearBossRecovery: () => set((state) => {
-        const currentClassIndex = state.data.classes.findIndex(c => c.id === state.data.currentClassId);
+        const currentClassIndex = findActiveClassIndex(state.data);
         if (currentClassIndex === -1) return state;
         const currentClass = state.data.classes[currentClassIndex];
         if (!currentClass.students.some((student) => student.bossRecovery)) return state;
@@ -2540,9 +2525,7 @@ export const useStore = create<StoreState>()(
 
       executeAttackBoss: async (studentId) => {
         const state = get();
-        const currentClassIndex = state.data.classes.findIndex(
-          (classData) => classData.id === state.data.currentClassId,
-        );
+        const currentClassIndex = findActiveClassIndex(state.data);
         if (currentClassIndex === -1) return;
 
         const currentClass = state.data.classes[currentClassIndex];
@@ -2595,9 +2578,7 @@ export const useStore = create<StoreState>()(
         );
         if (!result.isDefeated) {
           set((latestState) => {
-            const classIndex = latestState.data.classes.findIndex(
-              (classData) => classData.id === currentClass.id,
-            );
+            const classIndex = findActiveClassIndex(latestState.data, currentClass.id);
             if (classIndex === -1) return latestState;
             const nextClasses = [...latestState.data.classes];
             nextClasses[classIndex] = {
@@ -2625,9 +2606,7 @@ export const useStore = create<StoreState>()(
         ).catch(() => undefined);
 
         set((latestState) => {
-          const classIndex = latestState.data.classes.findIndex(
-            (classData) => classData.id === currentClass.id,
-          );
+          const classIndex = findActiveClassIndex(latestState.data, currentClass.id);
           if (classIndex === -1) return latestState;
           const latestClass = latestState.data.classes[classIndex];
           if (latestClass.activeBoss?.id !== result.updatedBoss!.id) return latestState;

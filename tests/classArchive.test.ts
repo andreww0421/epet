@@ -498,7 +498,7 @@ test('class route handler ignores other methods and unrelated URLs', async () =>
   try {
     assert.equal(await handleClassRoutes(fixture.context('owner', undefined, 'class-a', 'archive', 'GET')), undefined);
     const unrelated = fixture.context();
-    unrelated.url = new URL('http://localhost/api/v1/classes/class-a/privacy/delete');
+    unrelated.url = new URL('http://localhost/api/v1/classes/class-a/privacy/unrelated');
     assert.equal(await handleClassRoutes(unrelated), undefined);
     assert.deepEqual(fixture.repository.reads, []);
     assert.deepEqual(fixture.repository.writes, []);

@@ -819,6 +819,7 @@ export const workspaceAuditStatement = (
   updatedAt: number,
   context: WorkspaceWriteContext,
   writeToken: string,
+  metadata: Record<string, number> = {},
 ): D1PreparedStatement => {
   return database
     .prepare(
@@ -832,7 +833,7 @@ export const workspaceAuditStatement = (
          metadata_json,
          created_at
        )
-       SELECT ?, ?, ?, ?, 'workspace', ?, '{}', ?
+       SELECT ?, ?, ?, ?, 'workspace', ?, ?, ?
        WHERE EXISTS (
          SELECT 1
          FROM workspace_projection_state
@@ -849,6 +850,7 @@ export const workspaceAuditStatement = (
       context.actorUserId ?? null,
       context.action ?? 'workspace.put',
       workspaceId,
+      JSON.stringify(metadata),
       updatedAt,
       workspaceId,
       sourceRevision,

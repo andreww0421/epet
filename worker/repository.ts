@@ -9,7 +9,9 @@ import type {
   Student,
 } from '../src/store/types';
 import {
+  findPermanentlyDeletedClassIds,
   findPermanentlyDeletedStudentIds,
+  purgeClassesFromWorkspaceData,
   purgeStudentsFromWorkspaceData,
 } from '../shared/domain/studentPrivacy';
 import {
@@ -831,6 +833,7 @@ implements WorkspaceRepository, AuthRepository {
       current.data,
       data,
     );
+    const deletedClassIds = findPermanentlyDeletedClassIds(current.data, data);
     const revisionPurgeStatements: D1PreparedStatement[] = [];
     if (deletedStudentIds.size > 0) {
       for (const deletedStudentId of deletedStudentIds) {
@@ -843,6 +846,8 @@ implements WorkspaceRepository, AuthRepository {
              )`,
         ).bind(workspaceId, deletedStudentId, workspaceId, nextRevision, writeToken));
       }
+    }
+    if (deletedStudentIds.size > 0 || deletedClassIds.size > 0) {
       const snapshots = await this.database
         .prepare(
           `SELECT workspace_id, revision, updated_at, actor_user_id,
@@ -853,9 +858,12 @@ implements WorkspaceRepository, AuthRepository {
         .bind(workspaceId)
         .all<RevisionSnapshotRow>();
       for (const snapshot of snapshots.results) {
-        const purged = serializeWorkspace(purgeStudentsFromWorkspaceData(
-          JSON.parse(snapshot.data_json) as AppData,
-          deletedStudentIds,
+        const purged = serializeWorkspace(purgeClassesFromWorkspaceData(
+          purgeStudentsFromWorkspaceData(
+            JSON.parse(snapshot.data_json) as AppData,
+            deletedStudentIds,
+          ),
+          deletedClassIds,
         ));
         revisionPurgeStatements.push(
           this.database
@@ -940,6 +948,10 @@ implements WorkspaceRepository, AuthRepository {
         updatedAt,
         context,
         writeToken,
+        context.action === 'class.privacy.delete' ? {
+          deletedClassCount: deletedClassIds.size,
+          deletedStudentCount: deletedStudentIds.size,
+        } : undefined,
       ),
       ...(deletedStudentIds.size > 0
         ? [workspaceAuditStatement(
@@ -953,6 +965,25 @@ implements WorkspaceRepository, AuthRepository {
               requestId: `evt_privacy_student_${workspaceId}_${nextRevision}`,
             },
             writeToken,
+            { deletedStudentCount: deletedStudentIds.size },
+          )]
+        : []),
+      ...(deletedClassIds.size > 0
+        ? [workspaceAuditStatement(
+            this.database,
+            workspaceId,
+            nextRevision,
+            updatedAt,
+            {
+              actorUserId: context.actorUserId,
+              action: 'privacy.class.purge',
+              requestId: `evt_privacy_class_${workspaceId}_${nextRevision}`,
+            },
+            writeToken,
+            {
+              deletedClassCount: deletedClassIds.size,
+              deletedStudentCount: deletedStudentIds.size,
+            },
           )]
         : []),
     ];

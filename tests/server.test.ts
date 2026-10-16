@@ -2129,12 +2129,15 @@ test('forgot responses share a floor and do not wait for email delivery', async 
     releaseMailer = resolve;
   });
   let mailerStarted = false;
+  let signalMailerStarted = () => undefined;
+  const mailerStart = new Promise<void>((resolve) => { signalMailerStarted = resolve; });
   const request = createRequester(createApiHandler(repository, {
     ...createHandlerOptions([]),
     deferBackgroundTask: (task) => backgroundTasks.push(task),
     forgotResponseFloorMs: 40,
     passwordResetMailer: async () => {
       mailerStarted = true;
+      signalMailerStarted();
       await mailerGate;
     },
   }));
@@ -2179,7 +2182,16 @@ test('forgot responses share a floor and do not wait for email delivery', async 
     assert.deepEqual(await existing.json(), { accepted: true });
     assert.ok(missingElapsed >= 25, `missing response was ${missingElapsed}ms`);
     assert.ok(existingElapsed >= 25, `existing response was ${existingElapsed}ms`);
-    assert.ok(mailerStarted);
+    // A non-blocking response may legitimately finish before the background
+    // task starts, especially during parallel builds. Await its start only
+    // after proving the response did not wait for delivery above.
+    let startTimeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([mailerStart, new Promise<never>((_resolve, reject) => {
+        startTimeout = setTimeout(() => reject(new Error('Background reset delivery did not start')), 2000);
+      })]);
+      assert.ok(mailerStarted);
+    } finally { if (startTimeout) clearTimeout(startTimeout); }
   } finally {
     releaseMailer();
     await Promise.all(backgroundTasks);
