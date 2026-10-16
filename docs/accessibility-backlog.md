@@ -68,9 +68,20 @@
 - 15 個狀態仍有 `color-contrast` incomplete，包含新六個隱私狀態；漸層 header 與 native modal 背景推斷仍需人工量測。已檢查 workspace / delete dialog 真實 Chromium 截圖，不能據此宣稱 WCAG 認證；既有輔具、跨瀏覽器、放大倍率 backlog 保留。
 - 既有 revision recovery dialog 尚未遷移，仍列於下方 P1；本輪不把新的 privacy dialog coverage 說成全部 destructive dialogs 已驗收。
 
+### Class Archive lifecycle 後續驗證（2026-10-16）
+
+- 封存歷史使用具名稱的唯讀 region、考試選單、可聚焦的橫向成績表及原生 details 展開教師評語；沒有掛入編輯欄位。375 × 667 測試驗證鍵盤能從考試選單進入可捲動表格。
+- 封存、永久刪除與完整備份匯入沿用原生 `ModalDialog`，明確指定初始焦點至取消。永久刪除的工作區入口與舊學生管理入口都驗證雙重確認、Tab／Shift+Tab containment、Escape 與取消後焦點返回；不以新工作區入口取代舊入口的測試。
+- 完整 JSON 備份保留原有取代工作區語義，先顯示目前與備份資料的影響範圍，需勾選確認並輸入 `IMPORT WORKSPACE`。匯入對話框另做桌面／手機 axe 與鍵盤取消測試；實際替換、封存歷史還原、稽核及相同筆數但 revision 已改變時的拒絕由功能 E2E 驗證。
+- 非同步檔案檢查先停用匯入按鈕，讓原有自動記錄的 invoker 失去焦點；新增鍵盤案例實際抓到 Escape 關閉後未返回按鈕。`ModalDialog` 增加選用的 `returnFocusId`，由 JSON 與舊裝置資料匯入入口傳入穩定按鈕 ID；原有 dialogs 維持預設 invoker 行為。
+- 初次 axe 結果指出封存歷史的桌面／手機存在重複 landmark 名稱（moderate）；改以封存專用名稱後重新掃描，沒有停用規則或排除元素。舊有 revision recovery dialog 的 P1 缺口仍保留。
+- 修正後完整 `npm run test:a11y`：20/20 通過，48 個不同掃描狀態均為 0 confirmed violations（含 moderate／minor），附件 JSON 複本不重複計算。新增 lifecycle／匯入共 7 個掃描狀態。
+- 21 個狀態仍有 `color-contrast` incomplete，共 119 筆節點回報（跨狀態可重複）；包含原有 15 個狀態，以及封存確認、桌面／手機封存歷史、兩個永久刪除入口及桌面備份匯入六個新狀態。手機備份匯入為 0 incomplete。背景重疊與 native modal 的實際合成對比仍需人工量測；不能據此宣稱 WCAG 認證。
+- 已檢查 Chromium 的桌面／手機封存歷史、封存確認、兩個刪除入口及桌面／手機備份匯入截圖。完整 E2E 51/51 通過；其後的舊裝置資料匯入另以定向 1/1 驗證持續等待中的設定儲存、依最新 revision 匯入及避免舊草稿復活。該定向案例使用獨立結果目錄，保留原有 51 項完整 HTML 報告；原有輔具、跨瀏覽器、放大倍率及對比人工驗收 backlog 仍保留。
+
 ### 變更檔案
 
-- 測試與設定：`package.json`、`package-lock.json`、`playwright.a11y.config.ts`、`tests/accessibility/fixtures.ts`、`pages.spec.ts`、`dialogs.spec.ts`、`keyboard.spec.ts`。
+- 測試與設定：`package.json`、`package-lock.json`、`playwright.a11y.config.ts`、`tests/accessibility/fixtures.ts`、`pages.spec.ts`、`dialogs.spec.ts`、`keyboard.spec.ts`，以及 E2E／accessibility 的 `class-lifecycle.spec.ts`。
 - 共用介面：`src/components/ModalDialog.tsx`、`tabKeyboard.ts`、`AccountDeletionDialog.tsx`、`DashboardView.tsx`、`ClassroomView.tsx`、`PetCard.tsx`。
 - 控制台 feature 元件：`src/components/ui/DeleteConfirmationDialog.tsx`，以及 `src/features/{students,rewards,settings,workspace,analytics,exams}/components/` 下的 dialogs 與各功能面板；舊 `src/components/dashboard/` 路徑只保留 compatibility exports。
 - 文件：`README.md` 與本文件。原有尚未提交的 E2E infrastructure 與 architecture audit 保留，不在本輪刪除或重寫。

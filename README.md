@@ -13,7 +13,7 @@
 
 ## 目前功能
 
-- 班級管理：新增班級、切換班級、刪除班級
+- 班級管理：新增／切換使用中班級、管理員封存／重新開啟、唯讀教學歷史與確認永久刪除
 - 學生管理：新增／刪除學生、CSV／TSV 名冊預覽匯入、手動加減分、降級
 - 寵物養成：餵食、升級、扭蛋、免費升級換寵
 - 對戰排行：對戰、勝敗統計、段位排行與近 7 日成長回饋榜
@@ -180,6 +180,7 @@ npx playwright test --headed
 | `permissions.spec.ts` | viewer 拒絕寫入、teacher 班級範圍、admin 新增班級、owner 移轉所有權、CSRF／Origin 拒絕 |
 | `data-safety.spec.ts` | 已同步資料的工作區往返保護、真實 revision conflict、禁止不安全切換、草稿下載與重載後恢復同步、不污染另一工作區 |
 | `dashboard-refactor.spec.ts` | 每週學習目標、設定儲存、Boss 建立、全班積分空投與 undo 的 feature wiring／持久化 |
+| `class-lifecycle.spec.ts` | 班級封存／重新開啟／永久刪除、唯讀學習與考試歷史、公開展示限制與確認流程 |
 
 可用 `npm run test:e2e -- tests/e2e/authentication.spec.ts` 執行單一檔案，或用 `npx playwright show-report output/playwright/report` 查看最近報告。suite 固定單一 worker；每個案例使用獨立、隨機命名的虛構帳號，透過正式 API 與邀請流程建立角色，不直接注入前端 store 或繞過權限檢查。資料安全案例僅攔截網路以製造延遲／斷線，衝突回應由真實 API 產生。不要將測試 server 暴露至網際網路；不要用真實師生資料執行測試或分享含 session 資訊的 trace。
 
@@ -289,9 +290,10 @@ Dashboard 的 feature 邊界、component responsibilities 與後續拆分項目�
 - owner／admin 可邀請成員、管理角色與班級範圍；owner 可移轉所有權及雙重確認刪除工作區
 - 帳號可自助刪除，但必須先移轉或刪除其擁有的工作區
 - 刪除學生時會連同所有保留 revision 中的該生資料清除
+- 班級封存保留唯讀教學與考試歷史，移出日常教學與公開投影選單；owner／admin 可重新開啟，或經確認永久刪除整個班級及所有保留 revision 中的內容
 - owner／admin 可在「資料治理」管理介面預覽並復原 revision、匯出單一學生的限縮資料集，以及依動作／操作人／對象／日期查詢 audit；audit 查詢本身也會留痕
 - 可匯出為 JSON 備份
-- 可匯入既有資料，系統會自動補齊新版欄位
+- JSON 完整備份還原會補齊新版欄位；先同步並檢查取代影響，勾選確認且輸入 `IMPORT WORKSPACE`，再由後端 owner/admin、CSRF、revision CAS 與 audit 保護；備份中的封存資料與設定亦可還原
 - 找到舊版固定本機資料時，畫面只提供「下載備份／明確匯入／稍後」，不會自動掛到新帳號
 - 舊的單一班級目標會自動遷移成新版目標清單
 - 舊導師每日評語會遷移為獨立、可版本化的學習證據
@@ -299,7 +301,7 @@ Dashboard 的 feature 邊界、component responsibilities 與後續拆分項目�
 
 完整會員、安全與舊資料上線設計見 [`docs/membership-and-p0-plan.md`](docs/membership-and-p0-plan.md)；學生資料盤點、保存／刪除與請求處理見 [`docs/privacy-data-governance.md`](docs/privacy-data-governance.md)。同站 session 切換見 [`docs/p1-same-origin-session-cutover.md`](docs/p1-same-origin-session-cutover.md)；Email 驗證、Turnstile 與通知切換見 [`docs/p1-account-security-cutover.md`](docs/p1-account-security-cutover.md)；資料治理管理操作與驗收見 [`docs/p1-data-governance-console.md`](docs/p1-data-governance-console.md)。
 
-Teacher Console → Settings → 資料治理提供 owner/admin 專用的 Data & Privacy 管理：完整工作區／單一學生匯出、雙重確認的學生刪除與去識別化、班級封存／復開、敏感操作稽核及公開展示隱私設定。後端維持租戶、RBAC、CSRF／Origin 與 revision 檢查；不修改 production DB schema。操作範圍、保存限制與架構見 [`docs/data-privacy-management.md`](docs/data-privacy-management.md)，定向回歸使用 `npm run test:privacy`。
+Teacher Console → Settings → 資料治理提供 owner/admin 專用的 Data & Privacy 管理：完整工作區／單一學生匯出、雙重確認的學生刪除與去識別化、班級封存／重新開啟／永久刪除、唯讀歷史、敏感操作稽核及公開展示隱私設定。後端維持租戶、RBAC、CSRF／Origin 與 revision 檢查；一般 state PUT 不能變更班級生命週期，不修改 production DB schema。操作範圍與保存限制見 [`docs/data-privacy-management.md`](docs/data-privacy-management.md)；生命週期、匯入與 revision 復原邊界見 [`docs/class-archive-lifecycle.md`](docs/class-archive-lifecycle.md)。定向回歸使用 `npm run test:privacy`。
 
 ## Cloudflare 部署
 
