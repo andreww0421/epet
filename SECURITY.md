@@ -45,9 +45,17 @@ Repository administrators should enable GitHub secret scanning, push protection,
 - Pull requests are blocked when dependency review introduces a dependency with a known high or critical advisory.
 - CI runs `npm audit --audit-level=high` against the complete committed dependency graph, including development and build tooling. High and critical advisories block the security job; moderate advisories are triaged, and low advisories are monitored.
 - Prefer the smallest non-breaking update that removes an advisory. Do not run `npm audit fix --force` without reviewing API, build, runtime, and data-compatibility impact.
-- New third-party actions in security workflows must use least-privilege permissions and be pinned to a full commit SHA. Dependabot should keep those pins current.
+- All third-party actions must use least-privilege permissions and be pinned to a full commit SHA. Dependabot should keep those pins current. Review the upstream repository and resolved commit before updating a pin; a SHA alone does not establish trust.
 
-Repository administrators should require the **CodeQL**, **Dependency review**, and **npm audit** checks in branch protection or repository rules after the workflow has run successfully at least once.
+## Review and release controls
+
+Repository administrators must require **PR required checks**, **CodeQL**, **Dependency review**, and **npm audit**, bound to the GitHub Actions App, for `main`. The functional gate requires successful TypeScript/unit/API/local D1/build/Worker verification and every discovered E2E/accessibility/capacity browser job. Failed, cancelled or skipped dependencies fail the gate. Workflow files alone do not enforce merge protection: administrators must apply and read back the rules, then run the positive and negative acceptance tests in [the release protection runbook](docs/release-protection.md).
+
+Require at least one independent approving review, dismiss stale approvals, require approval after the last push and resolve review threads. Do not allow ordinary collaborators, bots, deploy keys or administrators a standing bypass. Changes to workflows, release scripts, rulesets and this policy need explicit security review. Assign qualified independent CODEOWNERS before requiring code-owner review; do not name an account that cannot review its own changes.
+
+Production application deployment and manual D1 expansion must both use a protected Environment with independent approval, self-review prevention, no admin bypass and a branch policy limited to `main`. Keep database mutation in its separate manual workflow. Production secrets belong only in protected deployment environments; PR jobs must have no production environment, secrets or remote data access. Staging retains its separate Worker, database and credentials. Review Cloudflare native Builds and other publishers as well as GitHub Actions: GitHub Environment approval cannot protect deployments performed outside that Environment.
+
+Emergency changes use an expedited reviewed PR with passing checks and an incident record. Do not turn a red check green, remove a required check, or grant an all-role bypass to ship a release. Any exceptional access requires separate explicit authorization, a narrow actor, a deadline, before/after policy evidence and an independent post-incident review. This change does not grant or configure emergency access.
 
 ## Responsible disclosure
 

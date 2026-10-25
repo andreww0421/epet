@@ -1,0 +1,117 @@
+name: Functional CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  merge_group:
+
+# Untrusted PR code receives neither deployment credentials nor write access.
+permissions: {}
+
+concurrency:
+  group: functional-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  discover:
+    name: Discover browser suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.suites.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Discover all local E2E, accessibility and capacity specs
+        id: suites
+        run: node scripts/release-ci.mjs matrix
+
+  verify:
+    name: Application verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: TypeScript, unit, API, D1, migrations, build and Worker dry-run
+        run: npm run verify
+        env:
+          VITE_MONITORING_ENABLED: "false"
+
+  browser:
+    name: Browser (${{ matrix.kind }} / ${{ matrix.spec }})
+    needs: discover
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Install local synthetic-test browser
+        run: npx playwright install --with-deps chromium
+      - name: Run the discovered spec with its own local server and database
+        run: node scripts/release-ci.mjs browser
+        env:
+          EPET_CI_KIND: ${{ matrix.kind }}
+          EPET_CI_SPEC: ${{ matrix.spec }}
+      # No trace, cookie, browser storage or student-shaped fixture artifacts
+      # are uploaded. The job status and step log are the required evidence.
+
+  required:
+    name: PR required checks
+    if: ${{ always() }}
+    needs: [discover, verify, browser]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout gate implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Reject failed, skipped, cancelled or missing required jobs
+        run: node scripts/release-ci.mjs gate
+        env:
+          EPET_CI_NEEDS: ${{ toJSON(needs) }}
