@@ -4083,4 +4083,4 @@ if (failures > 0) {
 console.log(`All ${tests.length} rule tests passed.`);
 
 // Synthetic PR acceptance probe; intentionally fails the real functional suite.
-throw new Error('Synthetic negative CI acceptance: expected functional test failure; do not merge');
+assert.fail('Synthetic negative CI acceptance: expected functional test failure; do not merge');
