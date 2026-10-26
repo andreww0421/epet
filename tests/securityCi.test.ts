@@ -65,7 +65,8 @@ for (const [packageName, patchedFloor] of Object.entries({
   nanoid: '3.3.18',
   'source-map-js': '1.2.2',
   sharp: '0.35.5',
-  undici: '7.29.1',
+  undici: '7.30.1',
+  vite: '8.1.6',
 })) {
   test(`every locked ${packageName} instance is stable and above its security patch floor`, async () => {
     const lock = await readDependencyLock();
