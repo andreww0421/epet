@@ -1191,7 +1191,7 @@ test('D1 privacy anonymization and deletion scrub retained data and audit target
     await repository.put('privacy-tenant', original, 0);
     await repository.appendAuditEvent({ id: 'privacy-earlier-export', workspaceId: 'privacy-tenant',
       action: 'student.privacy.export', targetType: 'student', targetId: 'student-shared-id', createdAt: 1 });
-    const anonymized = anonymizeStudentInWorkspaceData(original, 'student-shared-id', 'anonymous-new-id');
+    const anonymized = anonymizeStudentInWorkspaceData(original, { classId: 'class-shared-id', studentId: 'student-shared-id' }, 'anonymous-new-id');
     await repository.put('privacy-tenant', anonymized, 1, {
       action: 'student.privacy.anonymize', requestId: 'privacy-anonymize',
     });
@@ -1225,7 +1225,7 @@ test('D1 privacy anonymization and deletion scrub retained data and audit target
       .bind('stale-privacy-delete').first(), null);
     assert.ok(current.data);
     await repository.put('privacy-tenant', purgeStudentsFromWorkspaceData(
-      current.data, new Set(['anonymous-new-id']),
+      current.data, [{ classId: 'class-shared-id', studentId: 'anonymous-new-id' }],
     ), current.revision, { action: 'student.privacy.delete', requestId: 'privacy-delete' });
     for (const revision of await repository.listWorkspaceRevisions('privacy-tenant')) {
       assert.equal((await repository.getWorkspaceRevision('privacy-tenant', revision.revision))
@@ -1250,7 +1250,7 @@ test('failed D1 privacy writes cannot scrub prior audit targets or snapshots wit
       action: 'student.privacy.export', targetType: 'student', targetId: 'student-shared-id', createdAt: 1 });
     await isolated.database.prepare('DROP TABLE boss_rewards').run();
     await assert.rejects(repository.put('privacy-rollback-tenant', purgeStudentsFromWorkspaceData(
-      original, new Set(['student-shared-id']),
+      original, [{ classId: 'class-shared-id', studentId: 'student-shared-id' }],
     ), 1, { action: 'student.privacy.delete', requestId: 'failed-privacy-delete' }), /no such table/);
     const workspace = await isolated.database.prepare(
       'SELECT revision, data_json FROM workspaces WHERE workspace_id = ?',

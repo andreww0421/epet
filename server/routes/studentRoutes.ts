@@ -68,11 +68,12 @@ export const handleStudentRoutes: RouteHandler<WorkspaceRouteContext> = async (
   }
   if (mutationBody && workspace.data) {
     const expectedRevision = Number(mutationBody.expectedRevision);
+    const identity = { classId: classData.id, studentId: student.id };
     const next = action === 'delete'
-      ? purgeStudentsFromWorkspaceData(workspace.data, new Set([student.id]))
+      ? purgeStudentsFromWorkspaceData(workspace.data, [identity])
       : anonymizeStudentInWorkspaceData(
           workspace.data,
-          student.id,
+          identity,
           `student-anonymous-${crypto.randomUUID()}`,
         );
     const saved = await repository.put(workspaceId, next, expectedRevision, {

@@ -1,8 +1,8 @@
 import { expect, test } from '@playwright/test';
 import { validateStagingUrl } from '../../scripts/staging-target.mjs';
+import { createStagingRouteHandler, turnstileOrigin } from './network-policy.mjs';
 
 const stagingOrigin = validateStagingUrl(process.env.STAGING_BASE_URL);
-const turnstileOrigin = 'https://challenges.cloudflare.com';
 
 test.describe('Dedicated staging deployment smoke', () => {
   test('public health exposes working authenticated API configuration', async ({ request }) => {
@@ -46,28 +46,10 @@ test.describe('Dedicated staging deployment smoke', () => {
     // A mistaken staging redirect must never navigate this browser to production.
     // Only the dedicated staging origin and the existing Turnstile dependency may
     // load. No login attempt, registration, or data-changing API request is made.
-    await context.route('**/*', async (route) => {
-      const request = route.request();
-      const origin = new URL(request.url()).origin;
-      const isTopLevelNavigation = request.isNavigationRequest() &&
-        request.frame() === page.mainFrame();
-      const allowed = origin === stagingOrigin ||
-        (origin === turnstileOrigin && !isTopLevelNavigation);
-      const readOnlyStagingRequest = origin !== stagingOrigin ||
-        ['GET', 'HEAD'].includes(request.method());
-      if (!allowed || !readOnlyStagingRequest) {
-        await route.abort('blockedbyclient');
-        return;
-      }
-      // Routing alone only sees the first URL of a redirect chain. Fetch with
-      // redirects disabled and reject 3xx before the browser can follow one.
-      const remoteResponse = await route.fetch({ maxRedirects: 0 });
-      if (remoteResponse.status() >= 300 && remoteResponse.status() < 400) {
-        await route.abort('blockedbyclient');
-        return;
-      }
-      await route.fulfill({ response: remoteResponse });
-    });
+    await context.route('**/*', createStagingRouteHandler({
+      stagingOrigin,
+      getMainFrame: () => page.mainFrame(),
+    }));
 
     const response = await page.goto('/#/login');
     expect(response?.status(), 'The staging application document must load.').toBe(200);

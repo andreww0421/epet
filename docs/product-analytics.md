@@ -1,5 +1,22 @@
 # Privacy-first product analytics
 
+## Pilot extension — 2026-11-03
+
+The optional first-party pilot is documented in [product-analytics-pilot.md](product-analytics-pilot.md).
+It adds a separate v2 anonymous workflow collector, aggregate reports and an
+explicitly authorized, minimal first-party account onboarding record for
+cross-login new-creator completion. Both checked-in environments remain off;
+there is no remote collection or Production activation evidence.
+
+The v1 client contract below remains unchanged. Its original statements about
+no transport, database changes, event IDs or cross-session measurement describe
+the v1 implementation. The reviewed v2 extension permits a short-lived random
+attempt nonce, and the separate onboarding table uses the existing account key
+only inside the authenticated first-party boundary. Neither permits student
+data, stable identity in anonymous events, replay or third-party collection.
+
+## Original v1 implementation
+
 Implemented 2026-10-07. The purpose is to measure teacher workflows and feature
 usage, not student performance or individual people. No gameplay rules, API
 contracts, authorization, database schema, or persisted app data were changed.

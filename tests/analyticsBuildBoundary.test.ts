@@ -29,7 +29,8 @@ test('production artifact check rejects stale synthetic chunks, without logging 
   await writeFile(join(directory, 'assets/current.js'), '/* safe production bundle */');
   await assert.doesNotReject(assertProductionAnalyticsAssets(directory));
   const privateText = 'SYNTHETIC-PRIVATE-CONTENT-NOT-A-DIAGNOSTIC';
-  for (const marker of ['epet-test-product-analytics', '__epetTestAnalytics']) {
+  for (const marker of ['epet-test-product-analytics', '__epetTestAnalytics',
+    'epet-test-workflow-analytics', '__epetTestWorkflowAnalytics']) {
     await writeFile(join(directory, 'assets/stale.js'), `${marker} ${privateText}`);
     await assert.rejects(assertProductionAnalyticsAssets(directory), (error: unknown) =>
       error instanceof Error && error.message.includes('stale.js') && !error.message.includes(privateText));

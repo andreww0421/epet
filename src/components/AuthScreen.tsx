@@ -797,6 +797,11 @@ export const AuthScreen = () => {
                       ? '建立帳號代表你同意妥善保管帳號，並遵守學校的學生資料管理規範。'
                       : '系統不會透過電子郵件向你索取密碼。'}
                   </p>
+                  {isLogin && (
+                    <p className="mt-3 text-sm leading-6 text-slate-600">
+                      未同步草稿於最後編輯 24 小時後到期。請在原分頁以相同帳號、工作區與班級權限登入恢復；不同帳號或權限的草稿不會載入。
+                    </p>
+                  )}
 
                   <div className="my-6 h-px bg-slate-200" />
 

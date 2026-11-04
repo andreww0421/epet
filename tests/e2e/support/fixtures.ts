@@ -290,7 +290,7 @@ export const loginViaUi = async (page: Page, account: TestAccount) => {
   await page.getByRole('button', { name: '登入並繼續帶班' }).click();
   await expect(page.getByRole('button', { name: '登出' })).toBeVisible();
   // Teacher Today is the real post-login landing page, not a fixture redirect.
-  await expect(page.getByRole('heading', { name: 'Today', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '首頁', exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: '導師控制台' })).toBeVisible();
   await waitForBackendSync(page);
 };
@@ -303,7 +303,7 @@ export const loginViaUi = async (page: Page, account: TestAccount) => {
 export const openConsoleWithApiSession = async (page: Page, session: E2eApiSession) => {
   await page.context().addCookies((await session.context.storageState()).cookies);
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Today', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '首頁', exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: '導師控制台' })).toBeVisible();
   await waitForBackendSync(page);
 };
@@ -330,7 +330,11 @@ export const performSyncedAction = async (
 };
 
 export type TeacherConsoleArea =
-  | 'Today' | 'Class' | 'Learning' | 'Activities' | 'Insights' | 'Settings';
+  | 'Today' | 'Class' | 'Learning' | 'Activities' | 'Settings';
+
+const consoleAreaIds: Record<TeacherConsoleArea, string> = {
+  Today: 'today', Class: 'class', Learning: 'learning', Activities: 'activities', Settings: 'settings',
+};
 
 export const selectTeacherDestination = async (
   page: Page,
@@ -338,7 +342,7 @@ export const selectTeacherDestination = async (
   destination?: string,
 ) => {
   await page.getByRole('navigation', { name: 'Teacher Console', exact: true })
-    .getByRole('button', { name: area, exact: true }).click();
+    .locator(`#console-area-${consoleAreaIds[area]}`).click();
   if (destination) {
     await page.getByRole('tab', { name: destination, exact: true }).click();
   }
@@ -349,9 +353,10 @@ export const selectTeacherDestination = async (
 export const selectDashboardTab = async (page: Page, name: string) => {
   const destinations: Record<string, [TeacherConsoleArea, string]> = {
     '學生': ['Class', '學生'],
-    '獎勵': ['Class', '獎勵'],
+    '獎勵': ['Class', '加減分'],
+    '加減分': ['Class', '加減分'],
     '活動': ['Learning', '本週學習目標'],
-    '個人分析': ['Insights', '個人分析'],
+    '個人分析': ['Class', '個人分析'],
     '規則': ['Settings', '規則'],
     '紀錄': ['Class', '紀錄'],
     '資料治理': ['Settings', '資料治理'],

@@ -340,6 +340,16 @@ const DataGovernanceContent = ({
 
   const revisionErrorMessage = useCallback((error: unknown) => {
     const code = errorCode(error);
+    if (code.includes('PAYLOAD_TOO_LARGE')) {
+      return language === 'en'
+        ? 'This revision exceeds the storage limit. The current workspace and retained revisions are unchanged; it will not be retried automatically.'
+        : '此版本超出儲存容量，目前工作區及保留版本均未變更；系統不會自動重試。';
+    }
+    if (code.includes('INVALID_APP_DATA') || code.includes('INVALID_JSON')) {
+      return language === 'en'
+        ? 'This revision failed validation. The current workspace is unchanged. Review another revision or an organized backup.'
+        : '此版本未通過資料驗證，目前工作區未變更。請檢查其他版本或已整理的備份。';
+    }
     if (code.includes('REVISION_NOT_FOUND')) {
       return language === 'en'
         ? 'That revision is no longer retained.'

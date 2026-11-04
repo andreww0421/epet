@@ -1,19 +1,14 @@
 import type { AppData } from '../../src/store/types';
+import { assertWorkspaceData, WorkspaceValidationError } from '../../shared/validation/workspaceValidation';
 
 export const isAppData = (value: unknown): value is AppData => {
-  if (!value || typeof value !== 'object') return false;
-  const data = value as Partial<AppData>;
-  return (
-    typeof data.currentClassId === 'string' &&
-    Array.isArray(data.classes) &&
-    data.classes.every(
-      (classData) =>
-        classData &&
-        typeof classData === 'object' &&
-        typeof classData.id === 'string' &&
-        Array.isArray(classData.students),
-    )
-  );
+  try {
+    assertWorkspaceData(value);
+    return true;
+  } catch (error) {
+    if (error instanceof WorkspaceValidationError) return false;
+    throw error;
+  }
 };
 
 export const getRevisionNumber = (value: string) => {

@@ -9,10 +9,12 @@ export const readJsonBody = async (
 ) => {
   const declaredLength = Number(request.headers.get('content-length'));
   if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
-    throw new WorkspaceDataTooLargeError();
+    throw new WorkspaceDataTooLargeError({ limitBytes: maximumBytes, limitKind: 'request_body' });
   }
   const buffer = await request.arrayBuffer();
-  if (buffer.byteLength > maximumBytes) throw new WorkspaceDataTooLargeError();
+  if (buffer.byteLength > maximumBytes) {
+    throw new WorkspaceDataTooLargeError({ limitBytes: maximumBytes, limitKind: 'request_body' });
+  }
   if (buffer.byteLength === 0) return {} as Record<string, unknown>;
   const parsed = JSON.parse(new TextDecoder().decode(buffer)) as unknown;
   return parsed && typeof parsed === 'object' && !Array.isArray(parsed)

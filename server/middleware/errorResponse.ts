@@ -16,8 +16,10 @@ import {
   WorkspaceMembershipNotFoundError,
   WorkspaceNotFoundError,
   WorkspaceOwnerTransferRequiredError,
+  WorkspaceOwnershipConflictError,
 } from '../contracts';
 import { json } from '../http/response';
+import { WorkspaceValidationError } from '../../shared/validation/workspaceValidation';
 import {
   BotChallengeFailedError,
   BotProtectionUnavailableError,
@@ -31,14 +33,32 @@ export const errorResponse = (
   headers: HeadersInit = {},
 ) => {
   if (error instanceof WorkspaceConflictError) {
+    // Repository snapshots are unscoped. Only an explicitly authorized route
+    // may return one; the shared fallback must never serialize workspace data.
     return json(
-      { error: 'REVISION_CONFLICT', current: error.current },
+      {
+        error: 'REVISION_CONFLICT',
+        revision: error.current.revision,
+        updatedAt: error.current.updatedAt,
+      },
       409,
       headers,
     );
   }
   if (error instanceof WorkspaceDataTooLargeError) {
-    return json({ error: 'PAYLOAD_TOO_LARGE' }, 413, headers);
+    // Limits are public policy. The rejected (possibly merged, unscoped)
+    // snapshot size and contents must never be included in this response.
+    const limit = Number.isSafeInteger(error.limitBytes) && Number(error.limitBytes) > 0 &&
+      (error.limitKind === 'workspace_snapshot' || error.limitKind === 'request_body')
+      ? { limitBytes: error.limitBytes, limitKind: error.limitKind }
+      : {};
+    return json({ error: 'PAYLOAD_TOO_LARGE', ...limit }, 413, headers);
+  }
+  if (error instanceof WorkspaceValidationError) {
+    return json({ error: 'INVALID_APP_DATA' }, 400, headers);
+  }
+  if (error instanceof WorkspaceOwnershipConflictError) {
+    return json({ error: 'OWNERSHIP_CONFLICT' }, 409, headers);
   }
   if (error instanceof AuthValidationError) {
     return json({ error: error.code }, 400, headers);

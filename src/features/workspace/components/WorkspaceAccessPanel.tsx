@@ -36,6 +36,7 @@ const accessErrorMessage = (error: unknown, language: 'zh' | 'en') => {
     WORKSPACE_CONFIRMATION_MISMATCH: ['工作區名稱與確認內容不符。', 'The workspace confirmation does not match.'],
     MEMBER_ALREADY_EXISTS: ['這個帳號已是工作區成員。', 'This account is already a workspace member.'],
     FORBIDDEN: ['你沒有執行此操作的權限。', 'You do not have permission for this action.'],
+    OWNERSHIP_CONFLICT: ['工作區所有權已變更，請重新載入成員與權限後再操作。', 'Workspace ownership changed. Reload members and permissions before retrying.'],
     INVALID_WORKSPACE_INVITATION: ['邀請已失效或無法操作。', 'The invitation is no longer valid.'],
     INVITATION_DELIVERY_UNAVAILABLE: ['邀請寄送服務尚未啟用。', 'Invitation delivery is not available.'],
   };

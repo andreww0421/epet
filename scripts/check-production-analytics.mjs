@@ -2,7 +2,8 @@ import { lstat, readdir, readFile } from 'node:fs/promises';
 import { resolve, relative, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const testMarkers = ['epet-test-product-analytics', '__epetTestAnalytics'];
+const testMarkers = ['epet-test-product-analytics', '__epetTestAnalytics',
+  'epet-test-workflow-analytics', '__epetTestWorkflowAnalytics'];
 
 /** @param {string} directory Inspect generated artifacts only; never log contents. */
 export const assertProductionAnalyticsAssets = async (directory) => {

@@ -19,6 +19,7 @@ import { handleLearningRoutes } from './routes/learningRoutes';
 import { handleStudentRoutes } from './routes/studentRoutes';
 import { handleClassRoutes } from './routes/classRoutes';
 import { handleSystemRoutes } from './routes/systemRoutes';
+import { handleProductOnboardingRoutes } from './routes/productOnboardingRoutes';
 import type {
   AuthenticatedRouteContext,
   BaseRouteContext,
@@ -127,7 +128,10 @@ export const createApiHandler = (
 
       const adminResponse = await handleAdminRoutes(workspaceContext, runtime);
       if (adminResponse) return adminResponse;
-      const workspaceResponse = await handleWorkspaceRoutes(workspaceContext);
+      const onboardingResponse = await handleProductOnboardingRoutes(workspaceContext, options.productAnalytics);
+      if (onboardingResponse) return onboardingResponse;
+      const workspaceResponse = await handleWorkspaceRoutes(workspaceContext,
+        options.productAnalytics, options.deferBackgroundTask);
       if (workspaceResponse) return workspaceResponse;
       const studentResponse = await handleStudentRoutes(workspaceContext);
       if (studentResponse) return studentResponse;

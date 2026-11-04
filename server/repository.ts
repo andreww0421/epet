@@ -1,9 +1,11 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { AppData } from '../src/store/types';
+import { assertWorkspaceData } from '../shared/validation/workspaceValidation';
 import {
   findPermanentlyDeletedClassIds,
-  findPermanentlyDeletedStudentIds,
+  findPermanentlyDeletedStudents,
+  findUnambiguousDeletedStudentIds,
   purgeClassesFromWorkspaceData,
   purgeStudentsFromWorkspaceData,
 } from '../shared/domain/studentPrivacy';
@@ -15,6 +17,8 @@ import {
   MAX_STORED_REVISIONS,
 } from '../shared/domain/repositoryPolicy';
 import {
+  assertProductOnboardingDateRange,
+  isProductOnboardingEnrollmentTime,
   EmailAlreadyExistsError,
   InvalidWorkspaceInvitationError,
   WorkspaceAlreadyClaimedError,
@@ -22,6 +26,7 @@ import {
   WorkspaceNotFoundError,
   WorkspaceMembershipNotFoundError,
   WorkspaceOwnerTransferRequiredError,
+  WorkspaceOwnershipConflictError,
   type AuthCleanupResult,
   type AuditEventRecord,
   type AcceptWorkspaceInvitationInput,
@@ -39,6 +44,10 @@ import {
   type DeleteWorkspaceInput,
   type EmailVerificationTokenRecord,
   type PasswordResetTokenRecord,
+  type PasswordCredential,
+  type ProductOnboardingRepository,
+  type ProductOnboardingState,
+  type ProductOnboardingSummary,
   type StoredWorkspace,
   type UserWorkspaceAccess,
   type WorkspaceMember,
@@ -82,6 +91,7 @@ type DatabaseFile = {
   authRateLimits: Record<string, AuthRateLimitState>;
   auditEvents: AuditEventRecord[];
   workspaceInvitations: Record<string, WorkspaceInvitationRecord>;
+  productOnboarding: Record<string, ProductOnboardingState>;
 };
 
 const createEmptyDatabase = (): DatabaseFile => ({
@@ -99,6 +109,7 @@ const createEmptyDatabase = (): DatabaseFile => ({
   authRateLimits: {},
   auditEvents: [],
   workspaceInvitations: {},
+  productOnboarding: {},
 });
 
 const membershipKey = (workspaceId: string, userId: string) =>
@@ -118,8 +129,13 @@ const workspaceClassIds = (workspace?: StoredWorkspace): string[] =>
 const rateLimitKey = (scope: string, subjectHash: string) =>
   `${scope}:${subjectHash}`;
 
+// Compare inside mutate: a prior read/check can race a password reset.
+const passwordCredentialMatches = (left: PasswordCredential, right: PasswordCredential) =>
+  left.algorithm === right.algorithm && left.salt === right.salt &&
+  left.hash === right.hash && left.iterations === right.iterations;
+
 export class JsonWorkspaceRepository
-implements WorkspaceRepository, AuthRepository {
+implements WorkspaceRepository, AuthRepository, ProductOnboardingRepository {
   private database: DatabaseFile | null = null;
   private databaseLoad: Promise<DatabaseFile> | null = null;
   private mutationQueue: Promise<void> = Promise.resolve();
@@ -209,6 +225,9 @@ implements WorkspaceRepository, AuthRepository {
         typeof raw.workspaceInvitations === 'object'
           ? raw.workspaceInvitations as Record<string, WorkspaceInvitationRecord>
           : {};
+      database.productOnboarding = raw.productOnboarding &&
+        typeof raw.productOnboarding === 'object' && !Array.isArray(raw.productOnboarding)
+        ? raw.productOnboarding : {};
 
       for (const user of Object.values(database.users)) {
         if (!Object.prototype.hasOwnProperty.call(user, 'emailVerifiedAt')) {
@@ -340,6 +359,7 @@ implements WorkspaceRepository, AuthRepository {
     baseRevision?: number,
     context: WorkspaceWriteContext = {},
   ): Promise<StoredWorkspace> {
+    assertWorkspaceData(data);
     return this.mutate((database) => {
       const current = database.workspaces[workspaceId] ??
         createEmptyStoredWorkspace();
@@ -374,17 +394,24 @@ implements WorkspaceRepository, AuthRepository {
         name: 'Workspace',
         createdAt: next.updatedAt,
       };
-      const deletedStudentIds = findPermanentlyDeletedStudentIds(
+      const deletedStudents = findPermanentlyDeletedStudents(
         current.data,
         data,
       );
       const deletedClassIds = findPermanentlyDeletedClassIds(current.data, data);
-      if (deletedStudentIds.size > 0) {
+      if (deletedStudents.length > 0) {
+        const unscopedAuditIds = findUnambiguousDeletedStudentIds(deletedStudents, [
+          current.data, data,
+          ...(database.workspaceRevisions[workspaceId] ?? []).map((snapshot) => snapshot.data),
+        ]);
         // Keep actor/action/time accountability without retaining the erased
         // student's stable identifier in earlier privacy-export audit targets.
         database.auditEvents = database.auditEvents.map((event) =>
           event.workspaceId === workspaceId && event.targetType === 'student' &&
-            deletedStudentIds.has(event.targetId ?? '')
+            deletedStudents.some(({ classId, studentId }) => studentId === event.targetId &&
+              (typeof event.metadata?.classId === 'string'
+                ? event.metadata.classId === classId
+                : unscopedAuditIds.has(studentId)))
             ? { ...event, targetId: undefined }
             : event,
         );
@@ -395,16 +422,16 @@ implements WorkspaceRepository, AuthRepository {
           action: 'privacy.student.purge',
           targetType: 'workspace',
           targetId: workspaceId,
-          metadata: { deletedStudentCount: deletedStudentIds.size },
+          metadata: { deletedStudentCount: deletedStudents.length },
           createdAt: next.updatedAt,
         });
       }
-      if (deletedStudentIds.size > 0 || deletedClassIds.size > 0) {
+      if (deletedStudents.length > 0 || deletedClassIds.size > 0) {
         database.workspaceRevisions[workspaceId] = (
           database.workspaceRevisions[workspaceId] ?? []
         ).map((snapshot) => {
           const purgedData = purgeClassesFromWorkspaceData(
-            purgeStudentsFromWorkspaceData(snapshot.data, deletedStudentIds),
+            purgeStudentsFromWorkspaceData(snapshot.data, deletedStudents),
             deletedClassIds,
           );
           return {
@@ -424,7 +451,7 @@ implements WorkspaceRepository, AuthRepository {
           targetId: workspaceId,
           metadata: {
             deletedClassCount: deletedClassIds.size,
-            deletedStudentCount: deletedStudentIds.size,
+            deletedStudentCount: deletedStudents.length,
           },
           createdAt: next.updatedAt,
         });
@@ -456,13 +483,78 @@ implements WorkspaceRepository, AuthRepository {
           ...(context.action === 'class.privacy.delete' ? {
             metadata: {
               deletedClassCount: deletedClassIds.size,
-              deletedStudentCount: deletedStudentIds.size,
+              deletedStudentCount: deletedStudents.length,
             },
           } : {}),
           createdAt: next.updatedAt,
         });
       }
       return next;
+    });
+  }
+
+  async getProductOnboarding(userId: string): Promise<ProductOnboardingState | null> {
+    await this.mutationQueue;
+    return structuredClone((await this.load()).productOnboarding[userId] ?? null);
+  }
+
+  async enrollProductOnboarding(input: {
+    userId: string; cohortStart: number; now: number;
+  }): Promise<ProductOnboardingState | null> {
+    return this.mutate((database) => {
+      const existing = database.productOnboarding[input.userId];
+      if (existing) return structuredClone(existing);
+      const user = database.users[input.userId];
+      if (!isProductOnboardingEnrollmentTime(input.cohortStart, input.now) ||
+          !user || user.status !== 'active' || user.createdAt < input.cohortStart ||
+          user.createdAt > input.now || input.now - user.createdAt > 300_000 ||
+          database.auditEvents.some((event) => event.actorUserId === input.userId &&
+            ['workspace.state.put', 'workspace.privacy.import'].includes(event.action))) return null;
+      const progress: ProductOnboardingState = {
+        cohortDay: new Date(input.now).toISOString().slice(0, 10),
+        started: false, localReported: false, backendPersisted: false,
+      };
+      database.productOnboarding[input.userId] = progress;
+      return structuredClone(progress);
+    });
+  }
+
+  async updateProductOnboarding(userId: string, stage: 'started' | 'local_completed'):
+    Promise<ProductOnboardingState | null> {
+    return this.mutate((database) => {
+      const progress = database.productOnboarding[userId];
+      if (!progress) return null;
+      if (stage === 'started') progress.started = true;
+      if (stage === 'local_completed' && progress.started) progress.localReported = true;
+      return structuredClone(progress);
+    });
+  }
+
+  async summarizeProductOnboarding(input: { fromDay: string; toDay: string }):
+    Promise<ProductOnboardingSummary[]> {
+    assertProductOnboardingDateRange(input.fromDay, input.toDay);
+    await this.mutationQueue;
+    const summaries = new Map<string, ProductOnboardingSummary>();
+    for (const progress of Object.values((await this.load()).productOnboarding)) {
+      if (progress.cohortDay < input.fromDay || progress.cohortDay > input.toDay) continue;
+      const summary = summaries.get(progress.cohortDay) ?? {
+        cohortDay: progress.cohortDay, enrolled: 0, started: 0, localReported: 0, backendPersisted: 0,
+      };
+      summary.enrolled += 1;
+      summary.started += Number(progress.started);
+      summary.localReported += Number(progress.localReported);
+      summary.backendPersisted += Number(progress.backendPersisted);
+      summaries.set(progress.cohortDay, summary);
+    }
+    return [...summaries.values()].sort((a, b) => a.cohortDay.localeCompare(b.cohortDay));
+  }
+
+  async confirmProductOnboarding(userId: string): Promise<void> {
+    await this.mutate((database) => {
+      const progress = database.productOnboarding[userId];
+      if (!progress) return;
+      progress.started = true;
+      progress.backendPersisted = true;
     });
   }
 
@@ -488,6 +580,7 @@ implements WorkspaceRepository, AuthRepository {
   async createUserWithWorkspace(
     input: CreateUserWithWorkspaceInput,
   ): Promise<void> {
+    assertWorkspaceData(input.workspace.data);
     await this.mutate((database) => {
       if (
         Object.values(database.users).some(
@@ -514,6 +607,7 @@ implements WorkspaceRepository, AuthRepository {
   async createWorkspaceForUser(
     input: CreateWorkspaceForUserInput,
   ): Promise<void> {
+    assertWorkspaceData(input.workspace.data);
     await this.mutate((database) => {
       if (!database.users[input.membership.userId]) {
         throw new Error('User does not exist');
@@ -669,11 +763,16 @@ implements WorkspaceRepository, AuthRepository {
       const targetKey = membershipKey(input.workspaceId, input.toUserId);
       const source = database.memberships[sourceKey];
       const target = database.memberships[targetKey];
-      if (source?.role !== 'owner' || !target || target.role === 'owner') {
-        throw new WorkspaceMembershipNotFoundError();
+      const owners = Object.values(database.memberships).filter((membership) =>
+        membership.workspaceId === input.workspaceId && membership.role === 'owner');
+      const claim = database.workspaceClaims[input.workspaceId];
+      if (source?.role !== 'owner' || !target || target.role === 'owner' ||
+          owners.length !== 1 || (claim && claim.claimedByUserId !== input.fromUserId)) {
+        throw new WorkspaceOwnershipConflictError();
       }
       source.role = 'admin';
       target.role = 'owner';
+      target.createdByUserId = input.fromUserId;
       delete database.workspaceClassAssignments[sourceKey];
       delete database.workspaceClassAssignments[targetKey];
       database.workspaceClaims[input.workspaceId] = {
@@ -732,6 +831,7 @@ implements WorkspaceRepository, AuthRepository {
         throw new WorkspaceOwnerTransferRequiredError();
       }
       delete database.users[input.userId];
+      delete database.productOnboarding[input.userId];
       for (const [key, membership] of Object.entries(database.memberships)) {
         if (membership.userId !== input.userId) continue;
         delete database.memberships[key];
@@ -891,11 +991,16 @@ implements WorkspaceRepository, AuthRepository {
           (user) => user.normalizedEmail === input.user.normalizedEmail,
         )) throw new EmailAlreadyExistsError();
         database.users[input.user.id] = structuredClone(input.user);
-      } else if (!database.users[input.user.id]) {
-        throw new InvalidWorkspaceInvitationError();
-      } else if (database.users[input.user.id].emailVerifiedAt == null) {
-        database.users[input.user.id].emailVerifiedAt = input.acceptedAt;
-        database.users[input.user.id].updatedAt = input.acceptedAt;
+      } else {
+        const current = database.users[input.user.id];
+        if (!current || current.status !== 'active' ||
+            !passwordCredentialMatches(current.password, input.user.password)) {
+          throw new InvalidWorkspaceInvitationError();
+        }
+        if (current.emailVerifiedAt == null) {
+          current.emailVerifiedAt = input.acceptedAt;
+          current.updatedAt = input.acceptedAt;
+        }
       }
       const key = membershipKey(input.membership.workspaceId, input.user.id);
       if (database.memberships[key]) {
@@ -949,6 +1054,11 @@ implements WorkspaceRepository, AuthRepository {
       const existingForUser = database.memberships[
         membershipKey(input.workspaceId, input.userId)
       ];
+      if (Object.values(database.memberships).some((membership) =>
+        membership.workspaceId === input.workspaceId && membership.role === 'owner' &&
+        membership.userId !== input.userId) || (existingForUser && existingForUser.role !== 'owner')) {
+        throw new WorkspaceAlreadyClaimedError();
+      }
       if (existingForUser) return existingForUser;
       database.workspaceClaims[input.workspaceId] ??= {
         workspaceId: input.workspaceId,
@@ -970,12 +1080,16 @@ implements WorkspaceRepository, AuthRepository {
     });
   }
 
-  async createAuthSession(session: AuthSessionRecord): Promise<void> {
-    await this.mutate((database) => {
-      if (!database.users[session.userId]) {
-        throw new Error('User does not exist');
-      }
+  async createAuthSession(
+    session: AuthSessionRecord,
+    expectedPassword: PasswordCredential,
+  ): Promise<boolean> {
+    return this.mutate((database) => {
+      const current = database.users[session.userId];
+      if (!current || current.status !== 'active' ||
+          !passwordCredentialMatches(current.password, expectedPassword)) return false;
       database.sessions[session.tokenHash] = structuredClone(session);
+      return true;
     });
   }
 
@@ -1155,7 +1269,16 @@ implements WorkspaceRepository, AuthRepository {
 
   async appendAuditEvent(event: AuditEventRecord): Promise<void> {
     await this.mutate((database) => {
-      database.auditEvents.push(structuredClone(event));
+      const saved = structuredClone(event);
+      if (saved.targetType === 'student' && typeof saved.metadata?.classId === 'string' &&
+          !database.workspaces[saved.workspaceId ?? '']?.data?.classes.some((classroom) =>
+            classroom.id === saved.metadata?.classId &&
+            classroom.students.some((student) => student.id === saved.targetId))) {
+        // An export can finish after a concurrent purge. Keep accountability,
+        // but never reintroduce a deleted class-local target identifier.
+        saved.targetId = undefined;
+      }
+      database.auditEvents.push(saved);
     });
   }
 

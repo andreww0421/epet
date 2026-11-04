@@ -1,6 +1,7 @@
 import { monitoringMethod, monitoringRouteGroup } from '../../shared/observability/policy';
 import { markReportedApiError, reportFrontendError } from './monitoring';
 import { trackAnalytics } from '../analytics';
+import { analyticsPrivacyOptOut } from '../analytics/client';
 import type {
   ClassEffectivenessMetrics,
   LearningEvidenceRecord,
@@ -8,6 +9,7 @@ import type {
 } from '../../shared/education';
 import { CLOUD_WORKSPACE_PATTERN } from '../../shared/domain/workspaceIdentifiers';
 import type { WorkspaceRole } from '../../shared/contracts/workspace';
+import { workspaceAccessHeader, type WorkspaceAccess } from '../../shared/contracts/workspace';
 import type { StudentPrivacyAction } from '../../shared/domain/studentPrivacy';
 import type { ClassArchiveAction } from '../../shared/domain/classArchive';
 import type {
@@ -76,6 +78,7 @@ type AuthResponse = {
 
 let csrfToken: string | null = null;
 let activeWorkspaceId: string | null = null;
+let authenticationGeneration = 0;
 
 let backendAvailable = false;
 
@@ -83,6 +86,7 @@ export type BackendStateSnapshot = {
   revision: number;
   updatedAt: number;
   data: AppData | null;
+  access?: WorkspaceAccess;
 };
 
 export type BackendPublicConfig = {
@@ -213,10 +217,31 @@ export class BackendApiError extends Error {
   constructor(
     readonly status: number,
     readonly code: string,
+    readonly retryAfterMs?: number,
+    readonly capacityLimit?: { limitBytes: number; limitKind: 'workspace_snapshot' | 'request_body' },
   ) {
     super(code);
   }
 }
+
+export const parseRetryAfter = (value: string | null, now = Date.now()): number | undefined => {
+  if (!value?.trim()) return undefined;
+  const text = value.trim();
+  if (/^\d+$/.test(text)) {
+    const seconds = Number(text);
+    return Math.min(Number.MAX_SAFE_INTEGER, seconds * 1_000);
+  }
+  if (!/[a-z]/i.test(text)) return undefined;
+  const deadline = Date.parse(text);
+  return Number.isFinite(deadline) ? Math.max(0, deadline - now) : undefined;
+};
+
+const readCapacityLimit = (body: Record<string, unknown>):
+  { limitBytes: number; limitKind: 'workspace_snapshot' | 'request_body' } | undefined =>
+  Number.isSafeInteger(body?.limitBytes) && Number(body.limitBytes) > 0 &&
+    (body.limitKind === 'workspace_snapshot' || body.limitKind === 'request_body')
+    ? { limitBytes: Number(body.limitBytes), limitKind: body.limitKind }
+    : undefined;
 
 type RequestOptions = {
   auth?: boolean;
@@ -260,7 +285,7 @@ const request = async <T>(
       throw error;
     }
     if (response.status >= 500) reportFrontendError({ ...metadata, category: 'frontend.api.http', status: response.status });
-    const body = await response.json().catch(() => {
+    const body = response.status === 204 ? {} : await response.json().catch(() => {
       if (response.ok) reportFrontendError({ ...metadata, category: 'frontend.api.response' });
       return {};
     });
@@ -278,6 +303,8 @@ const request = async <T>(
       const error = new BackendApiError(
         response.status,
         typeof body?.error === 'string' ? body.error : `HTTP_${response.status}`,
+        parseRetryAfter(response.headers.get('retry-after')),
+        response.status === 413 ? readCapacityLimit(body) : undefined,
       );
       if (response.status >= 500) markReportedApiError(error);
       throw error;
@@ -309,7 +336,8 @@ export const probeBackend = async () => {
   }
 };
 
-const applyAuthResponse = (response: AuthResponse) => {
+const applyAuthResponse = (response: AuthResponse, generation: number) => {
+  if (generation !== authenticationGeneration) throw new BackendAuthRequired();
   csrfToken = response.csrfToken;
   activeWorkspaceId = response.session.activeWorkspaceId
     ?? response.session.workspaces[0]?.id
@@ -321,15 +349,17 @@ const applyAuthResponse = (response: AuthResponse) => {
 };
 
 export const loadAuthSession = async (): Promise<AuthSession | null> => {
+  const generation = ++authenticationGeneration;
   try {
     const response = await request<{
       session: AuthSession;
       csrfToken: string;
     }>(
       '/api/v1/auth/session',
-      {},
+      { cache: 'no-store' },
       { workspace: false },
     );
+    if (generation !== authenticationGeneration) return null;
     csrfToken = response.csrfToken;
     const availableIds = new Set(response.session.workspaces.map((workspace) => workspace.id));
     activeWorkspaceId = activeWorkspaceId && availableIds.has(activeWorkspaceId)
@@ -347,6 +377,7 @@ export const loginAccount = async (input: {
   password: string;
   turnstileToken?: string;
 }) => {
+  const generation = ++authenticationGeneration;
   const response = await request<AuthResponse>(
     '/api/v1/auth/login',
     {
@@ -355,7 +386,7 @@ export const loginAccount = async (input: {
     },
     { auth: false, workspace: false },
   );
-  return applyAuthResponse(response);
+  return applyAuthResponse(response, generation);
 };
 
 export const registerAccount = async (input: {
@@ -365,6 +396,7 @@ export const registerAccount = async (input: {
   claimLegacyWorkspace?: boolean;
   turnstileToken?: string;
 }) => {
+  const generation = ++authenticationGeneration;
   const response = await request<AuthResponse>(
     '/api/v1/auth/register',
     {
@@ -381,7 +413,7 @@ export const registerAccount = async (input: {
     },
     { auth: false, workspace: false },
   );
-  const session = applyAuthResponse(response);
+  const session = applyAuthResponse(response, generation);
   trackAnalytics('workspace_created', { creation_source: 'registration' });
   return session;
 };
@@ -391,6 +423,7 @@ export const acceptWorkspaceInvitation = async (input: {
   displayName: string;
   password: string;
 }) => {
+  const generation = ++authenticationGeneration;
   const response = await request<AuthResponse>(
     '/api/v1/auth/invitations/accept',
     {
@@ -399,10 +432,11 @@ export const acceptWorkspaceInvitation = async (input: {
     },
     { auth: false, workspace: false },
   );
-  return applyAuthResponse(response);
+  return applyAuthResponse(response, generation);
 };
 
 export const logoutAccount = async () => {
+  const generation = ++authenticationGeneration;
   try {
     await request(
       '/api/v1/auth/logout',
@@ -410,9 +444,7 @@ export const logoutAccount = async () => {
       { workspace: false },
     );
   } finally {
-    csrfToken = null;
-    activeWorkspaceId = null;
-    backendAvailable = false;
+    if (generation === authenticationGeneration) clearAuthentication();
   }
 };
 
@@ -470,6 +502,7 @@ export const setActiveWorkspaceId = (workspaceId: string) => {
 };
 
 export const createWorkspace = async (name: string) => {
+  const generation = authenticationGeneration;
   const response = await request<{ session: AuthSession }>(
     '/api/v1/workspaces',
     {
@@ -478,19 +511,24 @@ export const createWorkspace = async (name: string) => {
     },
     { workspace: false },
   );
+  if (generation !== authenticationGeneration) throw new BackendAuthRequired();
   activeWorkspaceId = response.session.activeWorkspaceId;
   trackAnalytics('workspace_created', { creation_source: 'explicit' });
   return response.session;
 };
 
 export const clearAuthentication = () => {
+  authenticationGeneration += 1;
   csrfToken = null;
   activeWorkspaceId = null;
   backendAvailable = false;
 };
 
-export const loadBackendState = (workspaceId?: string) =>
-  request<BackendStateSnapshot>('/api/v1/state', {}, { workspaceId });
+export const loadBackendState = (workspaceId?: string, expectedUserId?: string) =>
+  request<BackendStateSnapshot>('/api/v1/state', {
+    cache: 'no-store',
+    headers: expectedUserId ? { 'x-epet-sync-user': expectedUserId } : undefined,
+  }, { workspaceId });
 
 export const exportWorkspacePrivacyData = (workspaceId?: string) =>
   request<WorkspacePrivacyExport>('/api/v1/privacy/export', {}, { workspaceId });
@@ -641,19 +679,38 @@ export const deleteCurrentAccount = async (input: {
   clearAuthentication();
 };
 
-export const saveBackendState = (
+export const saveBackendState = async (
   data: AppData,
   baseRevision: number,
   requestId?: string,
   workspaceId?: string,
+  access?: WorkspaceAccess,
+  classCreateIntent = false,
 ) =>
   request<BackendStateSnapshot>('/api/v1/state', {
     method: 'PUT',
-    headers: requestId
-      ? { 'x-request-id': requestId }
-      : undefined,
+    headers: {
+      ...(requestId ? { 'x-request-id': requestId } : {}),
+      ...(access ? { 'x-epet-sync-access': await workspaceAccessHeader(access) } : {}),
+      ...(classCreateIntent && !analyticsPrivacyOptOut() ? { 'x-epet-class-create-intent': '1' } : {}),
+    },
     body: JSON.stringify({ data, baseRevision }),
   }, { workspaceId });
+
+export type ProductOnboardingState = {
+  eligible: boolean;
+  state: { cohortDay: string; started: boolean; localReported: boolean; backendPersisted: boolean } | null;
+};
+
+/** First-party account progress; callers must apply the configured analytics/privacy gate first. */
+export const getProductOnboardingState = (workspaceId?: string) =>
+  request<ProductOnboardingState>('/api/v1/product-onboarding', { cache: 'no-store' }, { workspaceId });
+
+export const updateProductOnboarding = (
+  stage: 'enroll' | 'started' | 'local_completed', workspaceId?: string,
+) => request<ProductOnboardingState>('/api/v1/product-onboarding', {
+  method: 'POST', body: JSON.stringify({ stage }),
+}, { workspaceId });
 
 export const loadStudentAnalytics = (
   classId: string,

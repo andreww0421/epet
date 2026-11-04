@@ -29,7 +29,7 @@ import {
   runWorkspaceMutation,
 } from '../src/auth/workspaceAccess';
 
-test('default PBKDF2 policy stays within the Cloudflare Workers runtime limit', async () => {
+test('default PBKDF2 policy remains pinned and verifies with Node Web Crypto', async () => {
   assert.equal(DEFAULT_PASSWORD_ITERATIONS, 100_000);
   const credential = await createPasswordCredential(
     'correct horse battery staple',
@@ -61,6 +61,87 @@ const registerInput = (
   displayName,
   workspaceName,
   initialWorkspaceData: createState(),
+});
+
+test('persisted password iterations survive a service policy change while new and reset credentials use the new policy', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'epet-password-policy-'));
+  const filePath = join(directory, 'auth.json');
+  const baseCrypto = globalThis.crypto;
+  const derivedIterations: number[] = [];
+  const monitoredSubtle = new Proxy(baseCrypto.subtle, {
+    get(target, property) {
+      if (property === 'deriveBits') {
+        return (...args: Parameters<SubtleCrypto['deriveBits']>) => {
+          derivedIterations.push((args[0] as Pbkdf2Params).iterations);
+          return Reflect.apply(target.deriveBits, target, args);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  const monitoredCrypto = new Proxy(baseCrypto, {
+    get(target, property) {
+      if (property === 'subtle') return monitoredSubtle;
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+
+  try {
+    const firstRepository = new JsonWorkspaceRepository(filePath);
+    const firstPolicy = new AuthService(firstRepository, {
+      crypto: monitoredCrypto,
+      passwordIterations: 1_000,
+    });
+    await firstPolicy.register(registerInput('legacy@example.test', 'Legacy Teacher'));
+    const legacyCredential = (await firstRepository.findUserByNormalizedEmail(
+      'legacy@example.test',
+    ))?.password;
+    assert.ok(legacyCredential);
+    assert.equal(legacyCredential.iterations, 1_000);
+
+    const reloadedRepository = new JsonWorkspaceRepository(filePath);
+    const nextPolicy = new AuthService(reloadedRepository, {
+      crypto: monitoredCrypto,
+      passwordIterations: 2_000,
+    });
+    derivedIterations.length = 0;
+    await nextPolicy.login({
+      email: 'legacy@example.test',
+      password: 'correct horse battery staple',
+    });
+    assert.deepEqual(derivedIterations, [1_000]);
+    assert.deepEqual((await reloadedRepository.findUserByNormalizedEmail(
+      'legacy@example.test',
+    ))?.password, legacyCredential);
+
+    derivedIterations.length = 0;
+    await nextPolicy.register(registerInput('new@example.test', 'New Teacher'));
+    assert.deepEqual(derivedIterations, [2_000]);
+    assert.equal((await reloadedRepository.findUserByNormalizedEmail(
+      'new@example.test',
+    ))?.password.iterations, 2_000);
+
+    const reset = await nextPolicy.requestPasswordReset('legacy@example.test');
+    assert.ok(reset);
+    const replacementPassword = 'synthetic replacement password';
+    derivedIterations.length = 0;
+    await nextPolicy.resetPassword(reset.token, replacementPassword);
+    assert.deepEqual(derivedIterations, [2_000]);
+    assert.equal((await reloadedRepository.findUserByNormalizedEmail(
+      'legacy@example.test',
+    ))?.password.iterations, 2_000);
+    derivedIterations.length = 0;
+    await nextPolicy.login({ email: 'legacy@example.test', password: replacementPassword });
+    assert.deepEqual(derivedIterations, [2_000]);
+    await assert.rejects(nextPolicy.login({
+      email: 'legacy@example.test',
+      password: 'correct horse battery staple',
+    }), InvalidCredentialsError);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('viewer client permissions never invoke a workspace mutation while teacher roles remain writable', () => {

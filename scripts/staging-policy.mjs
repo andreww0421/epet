@@ -44,16 +44,27 @@ export const assertStagingConfig = ({ production, config }) => {
   if (config.vars?.BOT_PROTECTION_REQUIRED !== 'true' ||
       config.vars.EMAIL_VERIFICATION_REQUIRED !== 'true' ||
       config.vars.MONITORING_ENVIRONMENT !== 'staging' ||
+      config.vars.PRODUCT_ANALYTICS_ENABLED !== 'false' ||
+      config.vars.PRODUCT_ANALYTICS_ENVIRONMENT !== 'staging' ||
       production.vars?.MONITORING_ENVIRONMENT !== 'production' ||
       config.vars.REGISTRATION_ENABLED !== 'false' ||
       Object.keys(config.vars).some((name) => ![
         'BOT_PROTECTION_REQUIRED', 'EMAIL_VERIFICATION_REQUIRED', 'PUBLIC_APP_URL',
         'REGISTRATION_ENABLED', 'PASSWORD_RESET_FROM', 'MONITORING_ENVIRONMENT',
+        'PRODUCT_ANALYTICS_ENABLED', 'PRODUCT_ANALYTICS_ENVIRONMENT',
       ].includes(name)) ||
       JSON.stringify(config.secrets) !== JSON.stringify({ required: requiredSecrets })) {
     throw new Error('Staging authentication protections and staging-only required secrets must remain enabled');
   }
   validateStagingUrl(config.vars.PUBLIC_APP_URL);
+  const observation = config.observability;
+  if (observation?.enabled !== true || observation.logs?.enabled !== true ||
+      observation.logs.invocation_logs !== false || observation.traces?.enabled !== false ||
+      Object.keys(observation).some((key) => !['enabled', 'logs', 'traces'].includes(key)) ||
+      Object.keys(observation.logs).some((key) => !['enabled', 'invocation_logs'].includes(key)) ||
+      Object.keys(observation.traces).some((key) => key !== 'enabled')) {
+    throw new Error('Staging observability requires categorical logs only; invocation logs, traces and extra destinations are not allowed');
+  }
 };
 
 // The checked-in template cannot accidentally deploy with a real resource ID.

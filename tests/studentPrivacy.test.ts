@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   anonymizeStudentInWorkspaceData,
+  findPermanentlyDeletedStudents,
+  findUnambiguousDeletedStudentIds,
   purgeStudentsFromWorkspaceData,
 } from '../shared/domain/studentPrivacy';
 import { PET_CATALOG } from '../src/domain/game/petCatalog';
@@ -67,7 +69,7 @@ const createData = (): AppData => {
 test('de-identification removes linked content and free text without recalculating game values', () => {
   const original = createData();
   const before = structuredClone(original);
-  const next = anonymizeStudentInWorkspaceData(original, 'private-student-id', 'anonymous-new-id');
+  const next = anonymizeStudentInWorkspaceData(original, { classId: 'class-a', studentId: 'private-student-id' }, 'anonymous-new-id');
   assert.deepEqual(original, before, 'domain operation must not mutate input');
   const student = next.classes[0].students[0];
   assert.equal(student.id, 'anonymous-new-id');
@@ -92,7 +94,7 @@ test('de-identification removes linked content and free text without recalculati
 test('de-identification preserves point limits, daily claim state, cooldown and reversal semantics', () => {
   const data = createData();
   const original = data.classes[0].students[0];
-  const next = anonymizeStudentInWorkspaceData(data, original.id, 'anonymous-new-id').classes[0].students[0];
+  const next = anonymizeStudentInWorkspaceData(data, { classId: 'class-a', studentId: original.id }, 'anonymous-new-id').classes[0].students[0];
   assert.deepEqual(getDailyTeacherPointTotals(next, now), getDailyTeacherPointTotals(original, now));
   assert.deepEqual(getDailyTaskClaimPlan(next, now), getDailyTaskClaimPlan(original, now));
   assert.equal(hasActiveLevelDecreaseCooldown(next.disciplineRecords, now),
@@ -103,7 +105,7 @@ test('de-identification preserves point limits, daily claim state, cooldown and 
 
 test('de-identification preserves other learners and boss/team relationships under fresh identifiers', () => {
   const data = createData();
-  const next = anonymizeStudentInWorkspaceData(data, 'private-student-id', 'anonymous-new-id');
+  const next = anonymizeStudentInWorkspaceData(data, { classId: 'class-a', studentId: 'private-student-id' }, 'anonymous-new-id');
   const classroom = next.classes[0];
   assert.deepEqual(classroom.students[1], {
     ...data.classes[0].students[1], teammateId: 'anonymous-new-id', teamId: 'anonymous-new-id-team-0',
@@ -116,7 +118,7 @@ test('de-identification preserves other learners and boss/team relationships und
 
 test('privacy purge removes the student, linked content and identifying team references', () => {
   const data = createData();
-  const purged = purgeStudentsFromWorkspaceData(data, new Set(['private-student-id']));
+  const purged = purgeStudentsFromWorkspaceData(data, [{ classId: 'class-a', studentId: 'private-student-id' }]);
   assert.equal(purged.classes[0].students.length, 1);
   assert.equal(purged.classes[0].students[0].points, 102);
   assert.equal(purged.classes[0].students[0].teammateId, undefined);
@@ -127,9 +129,51 @@ test('privacy purge removes the student, linked content and identifying team ref
 test('anonymization rejects identifier reuse or collision', () => {
   const data = createData();
   for (const replacement of ['', 'private-student-id', 'other-student']) {
-    assert.throws(() => anonymizeStudentInWorkspaceData(data, 'private-student-id', replacement),
+    assert.throws(() => anonymizeStudentInWorkspaceData(data, { classId: 'class-a', studentId: 'private-student-id' }, replacement),
       /Invalid replacement student identifier/);
   }
+});
+
+test('student identity uses class-local tuples without delimiter collisions or ID migration', () => {
+  const data = createData();
+  const alice = data.classes[0];
+  alice.id = 'a:b';
+  alice.students = [{ ...alice.students[0], id: 'c' }];
+  const bob = { ...structuredClone(alice), id: 'a', students: [{ ...alice.students[0], id: 'b:c', name: 'Bob' }] };
+  data.classes.push(bob);
+  const next = { ...data, classes: [{ ...alice, students: [] }, bob] };
+  assert.deepEqual(findPermanentlyDeletedStudents(data, next), [{ classId: 'a:b', studentId: 'c' }]);
+  assert.deepEqual(findPermanentlyDeletedStudents(data, { ...data, classes: [] }), [
+    { classId: 'a:b', studentId: 'c' }, { classId: 'a', studentId: 'b:c' },
+  ]);
+  assert.equal(purgeStudentsFromWorkspaceData(data, [{ classId: 'a:b', studentId: 'c' }]).classes[1], bob);
+});
+
+test('class-scoped purge clears historical orphan references and preserves unrelated optional shapes', () => {
+  const data = createData();
+  const original = structuredClone(data);
+  data.classes[0].students = [];
+  const bob = { id: 'class-b', name: 'Bob class', students: [{ ...original.classes[0].students[0], name: 'Bob' }] };
+  data.classes.push(bob);
+  const next = purgeStudentsFromWorkspaceData(data, [{ classId: 'class-a', studentId: 'private-student-id' }]);
+  assert.equal(next.classes[1], bob);
+  assert.deepEqual(next.classes[0].learningEvidenceRecords, []);
+  assert.equal(next.classes[0].examRecords?.[0].results.length, 1);
+  assert.equal(next.classes[0].activeBoss?.contributions['private-student-id'], undefined);
+  assert.equal(next.classes[0].activeBoss?.attackCounts?.['private-student-id'], undefined);
+});
+
+test('legacy audit attribution considers other identities in historical snapshots', () => {
+  const data = createData();
+  const identity = { classId: 'class-a', studentId: 'private-student-id' };
+  const empty = { ...data, classes: [] };
+  assert.deepEqual([...findUnambiguousDeletedStudentIds([identity], [data, empty])], ['private-student-id']);
+  const history = structuredClone(data);
+  history.classes[0].id = 'class-b';
+  assert.deepEqual([...findUnambiguousDeletedStudentIds([identity], [data, empty, history])], []);
+  assert.deepEqual([...findUnambiguousDeletedStudentIds([
+    identity, { ...identity, classId: 'class-b' },
+  ], [data, history, empty])], ['private-student-id']);
 });
 
 test('pure pet catalog keeps every existing pet identifier, rarity and order', () => {

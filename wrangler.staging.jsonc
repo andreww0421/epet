@@ -12,12 +12,18 @@
     "run_worker_first": ["/**", "!/assets/**"]
   },
   "placement": { "mode": "smart" },
-  "observability": { "enabled": true },
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "invocation_logs": false },
+    "traces": { "enabled": false }
+  },
   "triggers": { "crons": ["47 3 * * *"] },
   "vars": {
     "BOT_PROTECTION_REQUIRED": "true",
     "EMAIL_VERIFICATION_REQUIRED": "true",
     "MONITORING_ENVIRONMENT": "staging",
+    "PRODUCT_ANALYTICS_ENABLED": "false",
+    "PRODUCT_ANALYTICS_ENVIRONMENT": "staging",
     "PUBLIC_APP_URL": "STAGING_BASE_URL",
     "REGISTRATION_ENABLED": "false"
   },

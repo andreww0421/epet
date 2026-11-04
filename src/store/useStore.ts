@@ -26,6 +26,8 @@ import { getPublicStudentName } from '../studentPresentation';
 import { resolveBossRewardsOnBackend } from '../services/backendApi';
 import { trackAnalytics } from '../analytics';
 import { recordPointActionCompleted } from '../analytics/actions';
+import { beginProductWorkflow, setProductWorkflowScope } from '../analytics/workflows';
+import { recordProductWorkflowCommandResult } from '../services/productWorkflowPersistence';
 import { findActiveClassIndex, getActiveClasses, isArchivedClass } from '../../shared/domain/classArchive';
 import { 
   applyFeedToStudent, applyPlayWithPet, claimDailyTaskForStudent,
@@ -531,6 +533,8 @@ export const useStore = create<StoreState>()(
       }),
 
       addClass: (name) => {
+        const workflowBefore = get().data;
+        const workflow = beginProductWorkflow('class_create');
         set((state) => {
           const newClass = {
             id: Date.now().toString(),
@@ -543,6 +547,7 @@ export const useStore = create<StoreState>()(
           get().showToast(`${translations[state.data.settings?.language || 'zh'].classAdded}${name}`);
           return { data: { ...state.data, classes: [...state.data.classes, newClass], currentClassId: newClass.id } };
         });
+        recordProductWorkflowCommandResult(workflow, workflowBefore, get().data, get().data !== workflowBefore);
         trackAnalytics('class_created', {});
       },
 
@@ -833,6 +838,10 @@ export const useStore = create<StoreState>()(
       }),
 
       saveExamRecord: (exam) => {
+        const workflowBefore = get().data;
+        const existingExam = workflowBefore.classes.find((item) => item.id === workflowBefore.currentClassId)
+          ?.examRecords?.some((item) => item.id === exam.id);
+        const workflow = existingExam ? null : beginProductWorkflow('exam_create');
         let created = false;
         set((state) => {
           const currentClassIndex = findActiveClassIndex(state.data);
@@ -870,6 +879,7 @@ export const useStore = create<StoreState>()(
           );
           return { data: { ...state.data, classes: nextClasses } };
         });
+        if (workflow) recordProductWorkflowCommandResult(workflow, workflowBefore, get().data, created);
         if (created) trackAnalytics('exam_created', {});
       },
 
@@ -912,6 +922,8 @@ export const useStore = create<StoreState>()(
       }),
 
       addStudentsByName: (names) => {
+        const workflowBefore = get().data;
+        const workflow = beginProductWorkflow('roster_import');
         let addedCount = 0;
         set((state) => {
           const currentClassIndex = findActiveClassIndex(state.data);
@@ -950,6 +962,7 @@ export const useStore = create<StoreState>()(
           );
           return { data: { ...state.data, classes: nextClasses } };
         });
+        recordProductWorkflowCommandResult(workflow, workflowBefore, get().data, addedCount > 0);
         if (addedCount > 0) {
           trackAnalytics('student_import_completed', { student_count: addedCount });
         }
@@ -1018,6 +1031,8 @@ export const useStore = create<StoreState>()(
       }),
 
       addPoints: (studentId, pointsToAdd, source = 'quick', reason) => {
+        const workflowBefore = get().data;
+        const workflow = beginProductWorkflow(pointsToAdd < 0 ? 'point_decrease' : 'point_increase');
         let createdUndoId = '';
         let acceptedCount = 0;
         let adjustmentNotice = '';
@@ -1092,6 +1107,7 @@ export const useStore = create<StoreState>()(
             },
           };
         });
+        recordProductWorkflowCommandResult(workflow, workflowBefore, get().data, acceptedCount > 0);
         recordPointActionCompleted(source, pointsToAdd, acceptedCount);
         if (createdUndoId) {
           schedulePointUndoExpiry(createdUndoId, (undoId) => {
@@ -1102,6 +1118,8 @@ export const useStore = create<StoreState>()(
       },
 
       adjustPointsForStudents: (studentIds, pointsToAdd, source = 'manual', reason) => {
+        const workflowBefore = get().data;
+        const workflow = beginProductWorkflow(pointsToAdd < 0 ? 'point_decrease' : 'point_increase');
         let createdUndoId = '';
         let acceptedCount = 0;
         let toastMessage = '';
@@ -1179,6 +1197,7 @@ export const useStore = create<StoreState>()(
             },
           };
         });
+        recordProductWorkflowCommandResult(workflow, workflowBefore, get().data, acceptedCount > 0);
         recordPointActionCompleted(source, pointsToAdd, acceptedCount);
         if (createdUndoId) {
           schedulePointUndoExpiry(createdUndoId, (undoId) => {
@@ -1189,6 +1208,8 @@ export const useStore = create<StoreState>()(
       },
 
       airdropPoints: (pointsToAdd, reasonLabel, competency) => {
+        const workflowBefore = get().data;
+        const workflow = beginProductWorkflow(pointsToAdd < 0 ? 'point_decrease' : 'point_increase');
         let createdUndoId = '';
         let acceptedCount = 0;
         let toastMessage = '';
@@ -1264,6 +1285,7 @@ export const useStore = create<StoreState>()(
             },
           };
         });
+        recordProductWorkflowCommandResult(workflow, workflowBefore, get().data, acceptedCount > 0);
         recordPointActionCompleted('airdrop', pointsToAdd, acceptedCount);
         if (createdUndoId) {
           schedulePointUndoExpiry(createdUndoId, (undoId) => {
@@ -2638,6 +2660,9 @@ export const useStore = create<StoreState>()(
     }),
     {
       name: STORE_PERSISTENCE_KEY,
+      // Optional legacy caches cannot establish principal or class authority.
+      // Authenticated hydration is exclusively owned by backend sync.
+      skipHydration: true,
       storage: createJSONStorage(() =>
         PII_CACHE_ENABLED ? localStorage : NOOP_STATE_STORAGE,
       ),
@@ -2662,6 +2687,7 @@ let storeSessionGeneration = 0;
 export const getStoreSessionGeneration = () => storeSessionGeneration;
 
 export const resetStoreForSession = (now = Date.now()) => {
+  setProductWorkflowScope(null);
   storeSessionGeneration += 1;
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = undefined;

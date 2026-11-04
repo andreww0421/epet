@@ -12,9 +12,15 @@ const evidence = (id: string, studentId: string, createdAt: number, level: Learn
   title: 'Synthetic evidence', source: 'manual', actor: 'mentor', rubricVersion: 'v1', revision: 1,
 });
 
-test('Today has six actionable entries, not a full analytics navigation menu', () => {
-  assert.deepEqual(TODAY_QUICK_ACTIONS.map((item) => item.id), ['give-points', 'deduct-points', 'comment', 'evidence', 'exam', 'activity']);
-  assert.equal(new Set(TODAY_QUICK_ACTIONS.map((item) => item.id)).size, 6);
+test('Today has four primary teaching actions', () => {
+  assert.deepEqual(TODAY_QUICK_ACTIONS.map((item) => item.id), ['points', 'exam', 'evidence', 'activity']);
+  assert.deepEqual(TODAY_QUICK_ACTIONS.map((item) => item.label), [
+    { zh: '加減分', en: 'Points' },
+    { zh: '記錄成績', en: 'Record grades' },
+    { zh: '學習紀錄', en: 'Learning records' },
+    { zh: '開始活動', en: 'Start activity' },
+  ]);
+  assert.equal(new Set(TODAY_QUICK_ACTIONS.map((item) => item.id)).size, 4);
 });
 
 test('Today counts active evidence and exam updates in the class calendar, excluding revisions, orphans and future activity', () => {

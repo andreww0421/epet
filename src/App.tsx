@@ -21,6 +21,7 @@ import {
 } from './auth/workspaceAccess';
 import { usePresentationMode } from './features/classroom/hooks/usePresentationMode';
 import { ClassroomPresentationShell, PresentationPaused } from './features/classroom/components/ClassroomPresentationShell';
+import { useTeacherSetup } from './features/teacher-console/hooks/useTeacherSetup';
 
 const ClassroomPresentation = lazy(() =>
   import('./features/classroom/components/ClassroomPresentation').then((module) => ({
@@ -33,10 +34,12 @@ const DashboardView = lazy(() =>
   })),
 );
 
-const downloadUnsyncedWorkspace = (canExportFullData: boolean) => {
+const downloadUnsyncedWorkspace = async (canExportFullData: boolean, readDraft: () => Promise<import('./store/types').AppData | null>) => {
   if (!canExportFullData) return;
+  const draft = await readDraft();
+  if (!draft) return;
   const blob = new Blob(
-    [JSON.stringify(useStore.getState().data, null, 2)],
+    [JSON.stringify(draft, null, 2)],
     { type: 'application/json' },
   );
   const url = URL.createObjectURL(blob);
@@ -119,6 +122,7 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
   const { session, logout, selectWorkspace, invalidateSession } = useAuth();
   const workspaceSwitchInFlight = useRef(false);
   const [switchingWorkspace, setSwitchingWorkspace] = useState(false);
+  const [navigationError, setNavigationError] = useState<string | null>(null);
   const activeWorkspaceId = session?.activeWorkspaceId ?? null;
   const activeWorkspace = session?.workspaces.find(
     (workspace) => workspace.id === activeWorkspaceId,
@@ -131,14 +135,23 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
     () => invalidateSession(),
     [invalidateSession],
   );
-  const { status: backendStatus, flush: flushBackendChanges } = useBackendSync(
+  const { status: backendStatus, verifiedAccess, flush: flushBackendChanges, readDraftForDownload,
+    adoptRemote, preserveConflictDraft, retry: retrySync, failure: syncFailure,
+    retryAt, localDraftBytes } = useBackendSync(
     true,
     activeWorkspaceId,
     handleAuthenticationInvalid,
     canManage,
+    session?.user.id ?? null,
+    activeWorkspaceRole,
   );
   const canExportFullData =
     hasFullExportRole && backendStatus === 'connected';
+  const workspaceData = useStore((state) => state.data);
+  // Read functional preferences only after the existing sync guard has loaded
+  // the server-authorized class projection for this session and workspace.
+  const setup = useTeacherSetup(switchingWorkspace ? null : verifiedAccess, workspaceData, canManage);
+  const gamesShown = setup.state.gameMode !== 'hidden';
   const {
     view,
     toast,
@@ -174,6 +187,18 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
   const workspaceReady =
     !switchingWorkspace &&
     (backendStatus === 'connected' || backendStatus === 'saving');
+  const canRecoverSync = ['conflict', 'capacity-error', 'validation-error', 'save-error', 'retry-paused'].includes(backendStatus);
+  const syncErrorTitle = backendStatus === 'capacity-error'
+    ? (lang === 'en' ? 'Workspace capacity reached' : '工作區容量已達上限')
+    : backendStatus === 'validation-error'
+      ? (lang === 'en' ? 'Data validation failed' : '資料驗證未通過')
+      : backendStatus === 'retry-paused'
+        ? (lang === 'en' ? 'Automatic retries paused' : '同步已暫停重試')
+        : backendStatus === 'save-error'
+          ? (lang === 'en' ? 'Changes were rejected' : '目前變更無法儲存')
+          : backendStatus === 'conflict'
+            ? (lang === 'en' ? 'Revision conflict' : '資料版本衝突')
+            : (lang === 'en' ? 'Workspace unavailable' : '目前無法安全開啟工作區');
 
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'auto' });
@@ -185,16 +210,42 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
 
   const handleLogout = useCallback(async () => {
     if (!(await flushBackendChanges())) {
-      showToast(
-        lang === 'en'
+      if (canRecoverSync) {
+        if (!window.confirm(lang === 'en'
+          ? 'Keep this local draft in this tab and log out? It expires 24 hours after the last edit. Only the same account, workspace and permissions can recover it.'
+          : '保留本機草稿並登出？草稿於最後編輯 24 小時後到期，僅能由相同帳號、工作區與權限恢復，請勿關閉此分頁。')) return;
+        if (await preserveConflictDraft()) {
+          await logout();
+          return;
+        }
+        const message = lang === 'en'
+          ? 'The draft could not be safely retained; it may have expired or browser storage is unavailable. Keep this tab open and check before leaving.'
+          : '草稿無法安全保留，可能已到期或瀏覽器儲存受限。請保持此分頁開啟，確認後再離開。';
+        setNavigationError(message);
+        showToast(message, 'error');
+        return;
+      }
+      const message = lang === 'en'
           ? 'Unsaved changes could not be synchronized. Download the local draft or retry before logging out.'
-          : '尚有變更無法同步；請先下載本機草稿或重試，再登出。',
-        'error',
-      );
+          : '尚有變更無法同步；請先下載本機草稿或重試，再登出。';
+      setNavigationError(message);
+      showToast(message, 'error');
       return;
     }
     await logout();
-  }, [flushBackendChanges, lang, logout, showToast]);
+  }, [canRecoverSync, flushBackendChanges, lang, logout, preserveConflictDraft, showToast]);
+
+  const handleAdoptRemote = useCallback(async () => {
+    if (!window.confirm(lang === 'en'
+      ? 'Discard the unsynchronized changes in this workspace and use the latest cloud version? Download a backup first if needed. This does not overwrite the cloud.'
+      : '確定丟棄目前工作區尚未同步的本機修改，並採用雲端最新版本？如需保留修改，請先取消；有下載權限者可先下載草稿備份。此操作不會覆寫雲端資料。')) return;
+    setNavigationError(null);
+    if (!(await adoptRemote())) {
+      setNavigationError(lang === 'en'
+        ? 'The cloud version could not be adopted. Your draft is still retained. Check your connection and browser storage permissions, then retry.'
+        : '尚未採用雲端版本，草稿仍保留。請確認網路連線及瀏覽器儲存權限後再試。');
+    }
+  }, [adoptRemote, lang]);
 
   const handleWorkspaceChange = useCallback(async (workspaceId: string) => {
     if (workspaceSwitchInFlight.current || workspaceId === activeWorkspaceId) return;
@@ -202,14 +253,26 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
     setSwitchingWorkspace(true);
     try {
       if (!(await flushBackendChanges())) {
-        showToast(
-          lang === 'en'
+        if (canRecoverSync) {
+          if (!window.confirm(lang === 'en'
+            ? 'Keep the current workspace draft in this tab and switch workspaces? Return with the same account and permissions within 24 hours of the last edit to recover it.'
+            : '保留目前工作區的本機草稿並切換工作區？請勿關閉此分頁，並於最後編輯 24 小時內，以相同帳號與權限回到原工作區恢復草稿。')) return;
+          if (!(await preserveConflictDraft())) {
+            setNavigationError(lang === 'en'
+              ? 'The draft could not be safely retained; it may have expired or browser storage is unavailable. Keep this tab open and check before leaving.'
+              : '草稿無法安全保留，可能已到期或瀏覽器儲存受限。請保持此分頁開啟，確認後再離開。');
+            return;
+          }
+        } else {
+          const message = lang === 'en'
             ? 'Finish synchronizing the current workspace before switching.'
-            : '目前工作區尚未同步完成，暫時無法切換。',
-          'error',
-        );
-        return;
+            : '目前工作區尚未同步完成，暫時無法切換。';
+          setNavigationError(message);
+          showToast(message, 'error');
+          return;
+        }
       }
+      setNavigationError(null);
       // The sync hook owns reset/hydration after the old listener is detached.
       await selectWorkspace(workspaceId);
     } catch {
@@ -223,7 +286,7 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
       workspaceSwitchInFlight.current = false;
       setSwitchingWorkspace(false);
     }
-  }, [activeWorkspaceId, flushBackendChanges, lang, selectWorkspace, showToast]);
+  }, [activeWorkspaceId, canRecoverSync, flushBackendChanges, lang, preserveConflictDraft, selectWorkspace, showToast]);
 
   // A separate shell, not CSS hiding: no teacher DOM, arbitrary transient
   // messages, raw-name rewards or full-data recovery controls are mounted.
@@ -252,13 +315,13 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
       <nav className="sticky top-0 z-40 border-b border-gray-200 bg-white shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16">
-            <div className="flex items-center">
+            <div className="flex min-w-0 flex-1 items-center">
               <Dog className="mr-2 h-8 w-8 shrink-0 text-indigo-600 sm:mr-3" />
-              <span className="whitespace-nowrap text-base font-bold text-gray-900 sm:text-xl">
+              <span title={tLang.appTitle} className="min-w-0 truncate text-base font-bold text-gray-900 sm:text-xl">
                 {tLang.appTitle}
               </span>
             </div>
-            <div className="flex items-center gap-1.5 sm:gap-4">
+            <div className="flex shrink-0 items-center gap-1.5 sm:gap-4">
               {session && session.workspaces.length > 1 && (
                 <label className="hidden items-center gap-2 text-xs font-bold text-slate-600 lg:flex">
                   <span>{lang === 'en' ? 'Workspace' : '工作區'}</span>
@@ -293,7 +356,7 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
                       ? (lang === 'en' ? 'Saving to backend' : '正在同步後端')
                       : backendStatus === 'conflict'
                         ? (lang === 'en' ? 'Backend revision conflict' : '後端版本衝突')
-                        : (lang === 'en' ? 'Offline local cache' : '離線本機快取')
+                        : canRecoverSync ? syncErrorTitle : (lang === 'en' ? 'Offline local cache' : '離線本機快取')
                 }
                 role="status"
                 aria-live="polite"
@@ -314,10 +377,10 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
                         ? (lang === 'en' ? 'Backend revision conflict' : '後端版本衝突')
                         : backendStatus === 'forbidden'
                           ? (lang === 'en' ? 'Workspace access denied' : '沒有此工作區權限')
-                          : (lang === 'en' ? 'Offline local cache' : '離線本機模式')}
+                          : canRecoverSync ? syncErrorTitle : (lang === 'en' ? 'Offline local cache' : '離線本機模式')}
                 </span>
               </span>
-              {canManage && (
+              {canManage && gamesShown && (
                 <button
                   onClick={() => setView('classroom')}
                   aria-label={tLang.classroom}
@@ -373,7 +436,7 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
       {(backendStatus === 'connected' || backendStatus === 'saving') && canAdminister && (
         <LegacyDataMigration workspaceName={activeWorkspaceName} flushChanges={flushBackendChanges} />
       )}
-      {(backendStatus === 'conflict' || backendStatus === 'forbidden') && (
+      {(canRecoverSync || backendStatus === 'forbidden') && (
         <div
           role="alert"
           aria-label={lang === 'en' ? 'Synchronization or access alert' : '同步或權限警示'}
@@ -381,9 +444,9 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
         >
           {backendStatus === 'conflict'
             ? (lang === 'en'
-                ? 'A newer workspace version exists. Reload before making more changes.'
-                : '雲端已有較新的工作區版本，請重新整理後再繼續操作。')
-            : (lang === 'en'
+                ? 'A newer cloud version exists. Your local draft is retained. Choose how to recover.'
+                : '雲端已有較新的版本。本機草稿已保留，請選擇如何恢復。')
+            : canRecoverSync ? syncErrorTitle : (lang === 'en'
                 ? 'Your account does not have permission to open this workspace.'
                 : '目前帳號沒有開啟此工作區的權限。')}
         </div>
@@ -399,6 +462,7 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
             )}
           >
             <DashboardView
+                    setup={setup}
                     workspaceName={activeWorkspaceName}
                     syncStatus={backendStatus}
                     readOnly={!canManage}
@@ -428,12 +492,14 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
               <>
                 <CloudOff className="h-9 w-9 text-amber-600" aria-hidden="true" />
                 <h1 className="mt-5 text-xl font-black text-slate-900">
-                  {backendStatus === 'conflict'
-                    ? (lang === 'en' ? 'Revision conflict' : '資料版本衝突')
-                    : (lang === 'en' ? 'Workspace unavailable' : '目前無法安全開啟工作區')}
+                  {syncErrorTitle}
                 </h1>
                 <p className="mt-2 text-sm leading-6 text-slate-600">
-                  {lang === 'en'
+                  {canRecoverSync
+                    ? (lang === 'en'
+                        ? 'Your local draft is retained. Automatic saving is paused. Keep it for later, or explicitly discard it and adopt the cloud version.'
+                        : '本機草稿已保留，目前暫停自動儲存。你可以保留草稿稍後處理，或明確確認後丟棄本機修改並採用雲端版本。')
+                    : lang === 'en'
                     ? hasFullExportRole
                       ? 'Editing is paused so unsynchronized student data is not lost or overwritten. Download the local draft before reloading.'
                       : 'Editing is paused so unsynchronized student data is not lost or overwritten. Ask a workspace admin to handle a full-data export.'
@@ -441,22 +507,82 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
                       ? '系統已暫停編輯，避免未同步的學生資料遺失或覆寫。你可以先下載目前記憶體中的草稿，再重新載入。'
                       : '系統已暫停編輯，避免未同步的學生資料遺失或覆寫。完整資料匯出請由工作區管理者處理。'}
                 </p>
+                {backendStatus === 'capacity-error' && (
+                  <p className="mt-2 text-sm leading-6 text-slate-600">
+                    {lang === 'en'
+                      ? 'The same oversized draft will not be retried. After adopting the cloud version, an administrator can back up and clean data or review an organized backup through Data governance.'
+                      : '系統不會重送相同的超大草稿。採用雲端版本後，可由管理者透過資料治理備份、清理資料，或經匯入預覽確認已整理的備份。'}
+                  </p>
+                )}
+                {backendStatus === 'validation-error' && (
+                  <p className="mt-2 text-sm leading-6 text-slate-600">
+                    {lang === 'en' ? 'The server rejected these values. The same invalid draft will not be resent.' : '資料未通過伺服器驗證，系統不會重送相同的無效草稿。'}
+                  </p>
+                )}
+                {backendStatus === 'retry-paused' && (
+                  <p className="mt-2 text-sm leading-6 text-slate-600">
+                    {lang === 'en' ? 'Automatic retry has stopped. Check the connection, then explicitly retry or keep your draft.' : '自動重試已停止。請確認連線後手動重試，或保留草稿稍後處理。'}
+                  </p>
+                )}
+                {syncFailure?.kind === 'rate-limit' && (
+                  <p className="mt-2 text-sm leading-6 text-slate-600">
+                    {lang === 'en' ? 'The server temporarily limited requests. Retry will wait for the required deadline.' : '伺服器暫時限制請求，系統會等待指定時間後再重試。'}
+                  </p>
+                )}
+                {localDraftBytes !== null && (
+                  <p className="mt-2 text-sm leading-6 text-slate-600">
+                    {lang === 'en' ? 'Authorized local draft' : '目前授權範圍草稿大小'}：{localDraftBytes.toLocaleString()} bytes（{(localDraftBytes / 1024).toFixed(1)} KiB）
+                    {syncFailure?.limitBytes && <><br />{syncFailure.limitKind === 'workspace_snapshot'
+                      ? (lang === 'en' ? 'Full workspace snapshot limit' : '完整工作區快照上限')
+                      : (lang === 'en' ? 'Request body limit' : '單次請求上限')}：{syncFailure.limitBytes.toLocaleString()} bytes（{(syncFailure.limitBytes / 1024).toFixed(0)} KiB）</>}
+                    {!hasFullExportRole && <><br />{lang === 'en' ? 'Other classes are included by the server when calculating workspace capacity; their size is not disclosed.' : '伺服器會合併其他班級計算總容量；此處不顯示其他班級資料大小。'}</>}
+                  </p>
+                )}
+                {retryAt !== null && (
+                  <p className="mt-2 text-sm leading-6 text-slate-600">
+                    {lang === 'en' ? 'Retries respect the server wait deadline, including manual retry.' : '自動及手動重試均須等待伺服器指定時間。'}
+                    {retryAt <= 8_640_000_000_000_000 && <> {new Date(retryAt).toLocaleString(lang === 'en' ? 'en' : 'zh-TW')}</>}
+                  </p>
+                )}
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  {lang === 'en'
+                    ? 'Drafts expire 24 hours after the last edit. Sign in with the same account, workspace and class permissions to recover them. Recovery and download require a current permission check.'
+                    : '草稿於最後編輯 24 小時後到期。請以相同帳號、工作區與班級權限重新登入恢復；恢復及下載前須驗證目前權限。'}
+                </p>
+                {navigationError && <p role="alert" className="mt-2 text-sm text-amber-800">{navigationError}</p>}
                 <div className="mt-6 flex flex-wrap justify-center gap-3">
                   {hasFullExportRole && (
                     <button
                       type="button"
-                      onClick={() => downloadUnsyncedWorkspace(hasFullExportRole)}
+                      onClick={() => void downloadUnsyncedWorkspace(hasFullExportRole, readDraftForDownload)}
                       className="min-h-11 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-800 hover:bg-slate-50"
                     >
                       {lang === 'en' ? 'Download local draft' : '下載本機草稿'}
                     </button>
                   )}
+                  {(backendStatus === 'offline' || backendStatus === 'retry-paused') && (
+                    <button type="button" onClick={() => void retrySync()}
+                      className="min-h-11 rounded-lg border border-indigo-300 bg-white px-4 py-2 text-sm font-bold text-indigo-800 hover:bg-indigo-50">
+                      {lang === 'en' ? 'Retry synchronization' : '重試同步'}
+                    </button>
+                  )}
+                  {canRecoverSync && (
+                    <button
+                      type="button"
+                      onClick={() => void handleLogout()}
+                      className="min-h-11 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-800 hover:bg-slate-50"
+                    >
+                      {lang === 'en' ? 'Keep draft and log out' : '保留草稿並登出'}
+                    </button>
+                  )}
                   <button
                     type="button"
-                    onClick={() => window.location.reload()}
+                    onClick={() => canRecoverSync ? void handleAdoptRemote() : window.location.reload()}
                     className="min-h-11 rounded-lg bg-indigo-700 px-4 py-2 text-sm font-bold text-white hover:bg-indigo-800"
                   >
-                    {lang === 'en' ? 'Reload latest version' : '重新載入最新版本'}
+                    {canRecoverSync
+                      ? (lang === 'en' ? 'Use latest cloud version' : '採用雲端最新版本')
+                      : (lang === 'en' ? 'Reload latest version' : '重新載入最新版本')}
                   </button>
                 </div>
               </>
@@ -466,7 +592,7 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
       </main>
 
       {/* Upgrade Gacha Reward Modal */}
-      {upgradeReward && canManage && (
+      {upgradeReward && canManage && workspaceReady && (
         <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
           <div
             role="dialog"
@@ -514,7 +640,7 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
       )}
 
       {/* Toast Notification */}
-      {toast && (
+      {toast && workspaceReady && (
         <div className="fixed bottom-6 right-6 z-50 animate-[bounce_0.5s_ease-in-out]">
           <div
             role={toast.type === 'success' ? 'status' : 'alert'}

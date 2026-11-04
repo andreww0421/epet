@@ -11,22 +11,36 @@ export const STUDENT_PRIVACY_CONFIRMATIONS = {
 
 export type StudentPrivacyAction = keyof typeof STUDENT_PRIVACY_CONFIRMATIONS;
 
-const collectStudentIds = (data: AppData | null): Set<string> => new Set(
-  data?.classes.flatMap((classroom) =>
-    classroom.students.map((student) => student.id),
-  ) ?? [],
-);
+// Workspace is supplied by the repository; IDs inside AppData are class-local.
+export type StudentIdentity = Readonly<{ classId: string; studentId: string }>;
+const identityKey = ({ classId, studentId }: StudentIdentity): string =>
+  JSON.stringify([classId, studentId]);
+const collectStudents = (data: AppData | null): StudentIdentity[] =>
+  data?.classes.flatMap((classroom) => classroom.students.map((student) => ({
+    classId: classroom.id, studentId: student.id,
+  }))) ?? [];
 
-export const findPermanentlyDeletedStudentIds = (
+export const findPermanentlyDeletedStudents = (
   previous: AppData | null,
   next: AppData,
+): StudentIdentity[] => {
+  const nextIds = new Set(collectStudents(next).map(identityKey));
+  return collectStudents(previous).filter((student) => !nextIds.has(identityKey(student)));
+};
+
+/** Legacy audits may lack classId. Never guess when a retained identity shares its ID. */
+export const findUnambiguousDeletedStudentIds = (
+  deletedStudents: readonly StudentIdentity[],
+  retainedData: readonly (AppData | null)[],
 ): Set<string> => {
-  const nextIds = collectStudentIds(next);
-  return new Set(
-    [...collectStudentIds(previous)].filter(
-      (studentId) => !nextIds.has(studentId),
-    ),
-  );
+  const deletedKeys = new Set(deletedStudents.map(identityKey));
+  const ids = new Set(deletedStudents.map((student) => student.studentId));
+  for (const data of retainedData) {
+    for (const student of collectStudents(data)) {
+      if (!deletedKeys.has(identityKey(student))) ids.delete(student.studentId);
+    }
+  }
+  return ids;
 };
 
 export const findPermanentlyDeletedClassIds = (
@@ -58,12 +72,20 @@ export const purgeClassesFromWorkspaceData = (
 
 export const purgeStudentsFromWorkspaceData = (
   data: AppData,
-  deletedStudentIds: ReadonlySet<string>,
+  deletedStudents: readonly StudentIdentity[],
 ): AppData => {
-  if (deletedStudentIds.size === 0) return data;
+  if (deletedStudents.length === 0) return data;
+  const idsByClass = new Map<string, Set<string>>();
+  for (const { classId, studentId } of deletedStudents) {
+    const ids = idsByClass.get(classId) ?? new Set<string>();
+    ids.add(studentId);
+    idsByClass.set(classId, ids);
+  }
   return {
     ...data,
     classes: data.classes.map((classroom, classIndex) => {
+      const deletedStudentIds = idsByClass.get(classroom.id);
+      if (!deletedStudentIds) return classroom;
       const containsDeletedStudent = classroom.students.some((student) =>
         deletedStudentIds.has(student.id) || deletedStudentIds.has(student.teammateId ?? ''),
       ) || classroom.learningEvidenceRecords?.some((record) => deletedStudentIds.has(record.studentId))
@@ -240,19 +262,21 @@ const deidentifyStudent = (student: Student, replacementId: string): Student => 
 /** De-identify the structured record, not arbitrary mentions in other records. */
 export const anonymizeStudentInWorkspaceData = (
   data: AppData,
-  studentId: string,
+  identity: StudentIdentity,
   replacementId: string,
 ): AppData => {
+  const { classId, studentId } = identity;
   if (!replacementId || replacementId === studentId ||
       data.classes.some((classroom) => classroom.students.some(
         (student) => student.id === replacementId,
       ))) {
     throw new Error('Invalid replacement student identifier');
   }
-  const purged = purgeStudentsFromWorkspaceData(data, new Set([studentId]));
+  const purged = purgeStudentsFromWorkspaceData(data, [identity]);
   return {
     ...purged,
     classes: purged.classes.map((classroom, index) => {
+      if (classroom.id !== classId) return classroom;
       const original = data.classes[index];
       const affectedTeamIds = new Set(original.students
         .filter((student) => student.id === studentId && student.teamId)

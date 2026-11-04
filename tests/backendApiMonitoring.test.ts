@@ -32,6 +32,10 @@ test('API seam preserves auth/conflict/error contracts while reporting only unex
   status = 403;
   await assert.rejects(loadBackendState(), BackendForbidden);
   status = 409;
+  body = { error: 'REVISION_CONFLICT', revision: 7, updatedAt: 123 };
+  await assert.rejects(loadBackendState(), (error: unknown) =>
+    error instanceof BackendApiError &&
+    error.status === 409 && error.code === 'REVISION_CONFLICT');
   const current = { revision: 7, updatedAt: 123, data: { students: sensitive, comments: sensitive, exams: sensitive } };
   body = { current };
   await assert.rejects(loadBackendState(), (error: unknown) => {

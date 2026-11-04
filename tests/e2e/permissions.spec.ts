@@ -101,7 +101,7 @@ test.describe('Permissions', () => {
       .toHaveCount(1);
     await expect(teacherBrowser.page.getByRole('navigation', {
       name: 'Teacher Console', exact: true,
-    }).getByRole('button', { name: 'Settings', exact: true })).toHaveCount(0);
+    }).getByRole('button', { name: '管理設定', exact: true })).toHaveCount(0);
     await addStudentViaUi(teacherBrowser.page, 'E2E 教師授權學生');
     const teacherState = await loadBrowserState(
       teacherBrowser.context,
@@ -117,7 +117,7 @@ test.describe('Permissions', () => {
     await loginViaUi(adminBrowser.page, adminAccount);
     await expect(adminBrowser.page.getByRole('navigation', {
       name: 'Teacher Console', exact: true,
-    }).getByRole('button', { name: 'Settings', exact: true })).toBeVisible();
+    }).getByRole('button', { name: '管理設定', exact: true })).toBeVisible();
     await selectDashboardTab(adminBrowser.page, '規則');
     await expect(adminBrowser.page.getByRole('tab', { name: '規則', exact: true })).toBeVisible();
     await expect(adminBrowser.page.getByRole('tab', {

@@ -40,6 +40,19 @@ jobs:
       - name: Verify isolated staging Worker bundle (no remote resources)
         run: npm run check:worker:staging
 
+      - name: Report staging verification failure
+        if: ${{ failure() || cancelled() }}
+        shell: bash
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          echo '::error title=Staging prerequisites failed::Deployment is blocked. Inspect the verification log before retrying.'
+          {
+            printf '## Staging prerequisites failed\n\n'
+            printf 'No staging deployment job can proceed until verification passes. [Workflow logs](%s).\n\n' "$RUN_URL"
+            printf 'Follow docs/staging-deployment.md and docs/production-deployment.md for incident notification and recovery. No automatic rollback was executed.\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   deploy-and-smoke:
     needs: verify
     if: github.ref_type == 'branch' && github.ref != 'refs/heads/main'
@@ -88,6 +101,7 @@ jobs:
           STAGING_CLOUDFLARE_ACCOUNT_ID: ${{ secrets.STAGING_CLOUDFLARE_ACCOUNT_ID }}
           STAGING_CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CLOUDFLARE_API_TOKEN }}
       - name: Deploy only staging Worker with independent secrets
+        id: deploy
         run: npm run deploy:staging
         env:
           STAGING_D1_DATABASE_ID: ${{ vars.STAGING_D1_DATABASE_ID }}
@@ -99,7 +113,33 @@ jobs:
           STAGING_TURNSTILE_SECRET_KEY: ${{ secrets.STAGING_TURNSTILE_SECRET_KEY }}
           STAGING_RESEND_API_KEY: ${{ secrets.STAGING_RESEND_API_KEY }}
       - name: Run read-only staging E2E smoke tests
+        id: smoke
+        timeout-minutes: 5
         run: npm run test:e2e:staging
         env:
           STAGING_BASE_URL: ${{ vars.STAGING_BASE_URL }}
       # No traces, screenshots, cookies, or secrets are uploaded as artifacts.
+
+      - name: Report staging release failure and recovery instructions
+        if: ${{ failure() || cancelled() }}
+        shell: bash
+        env:
+          DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUNBOOK_URL: ${{ github.server_url }}/${{ github.repository }}/blob/${{ github.sha }}/docs/staging-deployment.md
+        run: |
+          case "$DEPLOY_OUTCOME" in
+            success) release_state='Staging deployment succeeded; post-deployment verification did not complete successfully. Inspect the currently serving staging version.' ;;
+            failure|cancelled) release_state='Staging deployment was attempted; inspect the actual serving version and migration ledger before retrying.' ;;
+            *) release_state='Staging deployment did not run. A preceding synthetic staging migration may already have completed; inspect the ledger before retrying.' ;;
+          esac
+          echo '::error title=Staging release requires operator review::Inspect the run summary. No automatic Worker or D1 rollback was executed.'
+          {
+            printf '## Staging release requires operator review\n\n'
+            printf '%s\n\n' "$release_state"
+            printf 'Deploy outcome: `%s`; smoke outcome: `%s`.\n\n' "$DEPLOY_OUTCOME" "$SMOKE_OUTCOME"
+            printf '[Workflow logs](%s) · [Staging recovery checklist](%s)\n\n' "$RUN_URL" "$RUNBOOK_URL"
+            printf 'Use only the dedicated synthetic staging account, Worker and D1. Check schema compatibility and obtain approval before manual application rollback; preserve the D1 ledger and data.\n\n'
+            printf 'Confirm failed-run notification receipt using docs/production-deployment.md; job summaries alone do not prove delivery.\n'
+          } >> "$GITHUB_STEP_SUMMARY"

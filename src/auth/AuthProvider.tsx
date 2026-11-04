@@ -4,11 +4,13 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
 import {
   hasClaimableLegacyWorkspace,
+  clearAuthentication,
   acceptWorkspaceInvitation,
   createWorkspace as createWorkspaceAccount,
   loadBackendPublicConfig,
@@ -23,6 +25,7 @@ import {
   type AuthSession,
   verifyEmail as verifyEmailAccount,
 } from '../services/backendApi';
+import { markTeacherSetupRegistration } from '../features/teacher-console/model/teacherSetup';
 
 export type AuthStatus = 'checking' | 'authenticated' | 'unauthenticated';
 
@@ -85,8 +88,13 @@ export const AuthProvider = ({
     useState(false);
   const [botProtectionEnabled, setBotProtectionEnabled] = useState(false);
   const [turnstileSiteKey, setTurnstileSiteKey] = useState('');
+  const operation = useRef(0);
+  const currentSession = useRef<AuthSession | null>(null);
 
   const invalidateSession = useCallback(() => {
+    operation.current += 1;
+    currentSession.current = null;
+    clearAuthentication();
     onSessionCleared?.();
     setSession(null);
     setStatus('unauthenticated');
@@ -97,31 +105,37 @@ export const AuthProvider = ({
       invalidateSession();
       return;
     }
+    if (currentSession.current?.user.id !== nextSession.user.id) onSessionCleared?.();
+    currentSession.current = nextSession;
     setSession(nextSession);
     setStatus('authenticated');
-  }, [invalidateSession]);
+  }, [invalidateSession, onSessionCleared]);
 
   const refreshSession = useCallback(async () => {
+    const attempt = ++operation.current;
+    onSessionCleared?.();
     setStatus('checking');
     try {
       const nextSession = await loadAuthSession();
+      if (attempt !== operation.current) return null;
       applySession(nextSession);
       return nextSession;
     } catch (error) {
-      applySession(null);
+      if (attempt === operation.current) applySession(null);
       throw error;
     }
-  }, [applySession]);
+  }, [applySession, onSessionCleared]);
 
   useEffect(() => {
     let disposed = false;
+    const attempt = ++operation.current;
 
     const bootstrap = async () => {
       const [sessionResult, configResult] = await Promise.allSettled([
         loadAuthSession(),
         loadBackendPublicConfig(),
       ]);
-      if (disposed) return;
+      if (disposed || attempt !== operation.current) return;
       setAuthenticationEnabled(
         configResult.status === 'fulfilled'
           ? configResult.value.authenticationEnabled !== false
@@ -164,17 +178,32 @@ export const AuthProvider = ({
     };
   }, [applySession]);
 
+  useEffect(() => {
+    if (status !== 'authenticated') return;
+    const revalidate = () => {
+      if (document.visibilityState === 'visible') void refreshSession().catch(() => undefined);
+    };
+    window.addEventListener('focus', revalidate);
+    document.addEventListener('visibilitychange', revalidate);
+    return () => {
+      window.removeEventListener('focus', revalidate);
+      document.removeEventListener('visibilitychange', revalidate);
+    };
+  }, [refreshSession, status]);
+
   const login = useCallback(async (input: LoginInput) => {
+    const attempt = ++operation.current;
     const nextSession = await loginAccount({
       email: input.email.trim().toLocaleLowerCase(),
       password: input.password,
       turnstileToken: input.turnstileToken,
     });
-    applySession(nextSession);
+    if (attempt === operation.current) applySession(nextSession);
     return nextSession;
   }, [applySession]);
 
   const register = useCallback(async (input: RegisterInput) => {
+    const attempt = ++operation.current;
     const nextSession = await registerAccount({
       displayName: input.displayName.trim(),
       email: input.email.trim().toLocaleLowerCase(),
@@ -182,15 +211,22 @@ export const AuthProvider = ({
       claimLegacyWorkspace: input.claimLegacyWorkspace,
       turnstileToken: input.turnstileToken,
     });
-    applySession(nextSession);
+    if (attempt === operation.current) {
+      // Enroll only an explicit fresh registration, never an existing/claimed workspace.
+      if (!input.claimLegacyWorkspace && nextSession.activeWorkspaceId) {
+        markTeacherSetupRegistration(nextSession.user.id, nextSession.activeWorkspaceId);
+      }
+      applySession(nextSession);
+    }
     return nextSession;
   }, [applySession]);
 
   const logout = useCallback(async () => {
-    // Clear account-scoped client state before the network request so backend
-    // synchronization unmounts immediately and cannot save after sign-out.
+    // Capture the existing CSRF/cookie for server revocation before clearing
+    // client credentials. The view/queue still detach in this same turn.
+    const revoke = logoutAccount();
     invalidateSession();
-    await logoutAccount();
+    await revoke;
   }, [invalidateSession]);
 
   const forgotPassword = useCallback(async (
@@ -204,9 +240,10 @@ export const AuthProvider = ({
   }, []);
 
   const verifyEmail = useCallback(async (token: string) => {
+    const attempt = ++operation.current;
     await verifyEmailAccount(token);
     const nextSession = await loadAuthSession();
-    applySession(nextSession);
+    if (attempt === operation.current) applySession(nextSession);
   }, [applySession]);
 
   const resendVerification = useCallback(async () => {
@@ -223,22 +260,25 @@ export const AuthProvider = ({
     displayName: string,
     password: string,
   ) => {
+    const attempt = ++operation.current;
     const nextSession = await acceptWorkspaceInvitation({
       token,
       displayName: displayName.trim(),
       password,
     });
-    applySession(nextSession);
+    if (attempt === operation.current) applySession(nextSession);
     return nextSession;
   }, [applySession]);
 
   const createWorkspace = useCallback(async (name: string) => {
+    const attempt = ++operation.current;
     const nextSession = await createWorkspaceAccount(name.trim());
-    applySession(nextSession);
+    if (attempt === operation.current) applySession(nextSession);
     return nextSession;
   }, [applySession]);
 
   const selectWorkspace = useCallback(async (workspaceId: string) => {
+    const attempt = ++operation.current;
     const selectedWorkspace = session?.workspaces.find(
       (workspace) => workspace.id === workspaceId,
     );
@@ -247,6 +287,7 @@ export const AuthProvider = ({
     }
 
     await setActiveWorkspaceId(workspaceId);
+    if (attempt !== operation.current) return;
     setSession((currentSession) => {
       if (!currentSession) return currentSession;
       return {

@@ -110,7 +110,7 @@ const confirmStudentAction = async (
   expect((await completed).status()).toBe(200);
   // The server response becomes the next authoritative browser state; no stale
   // optimistic draft may resurrect data after a sensitive operation.
-  await expect(page.getByRole('heading', { name: 'Today', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '首頁', exact: true })).toBeVisible();
   await waitForBackendSync(page);
 };
 
@@ -152,7 +152,7 @@ test.describe('Data and Privacy management', () => {
     await page.getByRole('dialog', { name: '確認封存班級', exact: true })
       .getByRole('button', { name: '確認封存', exact: true }).click();
     expect((await archived).status()).toBe(200);
-    await expect(page.getByRole('heading', { name: 'Today', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '首頁', exact: true })).toBeVisible();
     await waitForBackendSync(page);
     await expect(page.locator('#classSelect option')).toHaveCount(1);
     const archivedState = await loadBrowserState(context, workspaceId);
@@ -172,7 +172,7 @@ test.describe('Data and Privacy management', () => {
       response.request().method() === 'POST');
     await reopening.getByRole('button', { name: '確認重新開啟', exact: true }).click();
     expect((await reopened).status()).toBe(200);
-    await expect(page.getByRole('heading', { name: 'Today', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '首頁', exact: true })).toBeVisible();
     await waitForBackendSync(page);
     await expect(page.locator('#classSelect option')).toHaveCount(2);
     const reopenedState = await loadBrowserState(context, workspaceId);
@@ -316,7 +316,7 @@ test.describe('Data and Privacy management', () => {
       const { context, page } = await newSessionPage(browser, session);
       try {
         await expect(page.getByRole('navigation', { name: 'Teacher Console', exact: true })
-          .getByRole('button', { name: 'Settings', exact: true })).toHaveCount(0);
+          .getByRole('button', { name: '管理設定', exact: true })).toHaveCount(0);
         await expect(page.getByRole('tab', { name: '資料治理', exact: true })).toHaveCount(0);
         const studentBase = `/api/v1/classes/${encodeURIComponent(classId)}/students/${encodeURIComponent(students[0].id)}/privacy`;
         for (const path of [`${studentBase}/export`, '/api/v1/privacy/export', '/api/v1/audit']) {

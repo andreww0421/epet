@@ -41,8 +41,8 @@ export type {
 } from '../shared/contracts/authDelivery';
 export { hashOpaqueToken } from '../shared/security/tokens';
 
-// Cloudflare Workers rejects PBKDF2 iteration counts above 100,000.
-// The per-account value is persisted so it can be upgraded later.
+// Keep the deployed policy until hosted Worker CPU/support is verified;
+// local workerd limits can differ. Per-account parameters remain persisted.
 export const DEFAULT_PASSWORD_ITERATIONS = 100_000;
 export const DEFAULT_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const DEFAULT_PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
@@ -392,9 +392,10 @@ export class AuthService {
   }
 
   private async issueSession(
-    userId: string,
+    user: AuthUserRecord,
     preferredWorkspaceId?: string,
   ): Promise<AuthSessionEnvelope> {
+    const userId = user.id;
     const workspaces = await this.repository.listUserWorkspaces(userId);
     const activeWorkspaceId = workspaces.some(
       (workspace) => workspace.id === preferredWorkspaceId,
@@ -413,7 +414,10 @@ export class AuthService {
       lastSeenAt: now,
       revokedAt: null,
     };
-    await this.repository.createAuthSession(session);
+    if (!await this.repository.createAuthSession(session, user.password)) {
+      // A reset may finish while password verification or session setup awaits.
+      throw new InvalidCredentialsError();
+    }
     return {
       sessionToken: rawToken,
       session: await this.buildSessionView(session),
@@ -538,7 +542,7 @@ export class AuthService {
       ),
     });
     return {
-      ...await this.issueSession(userId, workspaceId),
+      ...await this.issueSession(user, workspaceId),
       ...(emailVerification
         ? { emailVerification: emailVerification.delivery }
         : {}),
@@ -576,7 +580,7 @@ export class AuthService {
     if (!valid || user.status !== 'active') {
       throw new InvalidCredentialsError();
     }
-    const issued = await this.issueSession(user.id);
+    const issued = await this.issueSession(user);
     await this.repository.appendAuditEvent(
       this.createAuditEvent(
         'auth.login',
@@ -997,7 +1001,7 @@ export class AuthService {
       workspaceName,
       role: invitation.role,
     });
-    return this.issueSession(user.id, invitation.workspaceId);
+    return this.issueSession(user, invitation.workspaceId);
   }
 
   async updateWorkspaceMember(

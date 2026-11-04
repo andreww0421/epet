@@ -1,4 +1,5 @@
 import { normalizeAppData } from '../../src/store/utils';
+import { assertWorkspaceData } from '../../shared/validation/workspaceValidation';
 import { MAX_AUTH_BODY_BYTES, getString, readJsonBody } from '../http/body';
 import { getRequestId } from '../http/request';
 import { json } from '../http/response';
@@ -227,6 +228,9 @@ export const handleAdminRoutes = async (
     if (revision == null) {
       return json({ error: 'INVALID_REVISION' }, 400, headers);
     }
+    // Bind restore to the revision observed before reading its source. A privacy
+    // purge racing that read must invalidate this write, even if we hold an old copy.
+    const current = await repository.get(workspaceId);
     const snapshot = await repository.getWorkspaceRevision(
       workspaceId,
       revision,
@@ -234,7 +238,7 @@ export const handleAdminRoutes = async (
     if (!snapshot) {
       return json({ error: 'REVISION_NOT_FOUND' }, 404, headers);
     }
-    const current = await repository.get(workspaceId);
+    assertWorkspaceData(snapshot.data);
     const saved = await repository.put(
       workspaceId,
       normalizeAppData(snapshot.data),

@@ -98,7 +98,7 @@ test('background delivery errors report a fixed category and never log provider 
   assert.deepEqual(logs, [['Background delivery failed']]);
 });
 
-test('Worker unhandled asset exception is reported without raw exception/URL and rethrows the original instance', async (t) => {
+test('Worker unhandled asset exception reports safely and returns a fixed 500 without exposing raw errors to platform logs', async (t) => {
   const error = new Error(sensitive);
   const sent: unknown[] = [];
   const pending: Promise<unknown>[] = [];
@@ -109,7 +109,10 @@ test('Worker unhandled asset exception is reported without raw exception/URL and
     DB: {} as WorkerEnv['DB'], ASSETS: { fetch: async () => { throw error; } },
     MONITORING_ENVIRONMENT: 'staging', SENTRY_DSN: dsn,
   };
-  await assert.rejects(worker.fetch(new Request(`https://example.test/${sensitive}?token=${sensitive}`), env, workerContext(pending)), (caught: unknown) => caught === error);
+  const response = await worker.fetch(new Request(`https://example.test/${sensitive}?token=${sensitive}`), env, workerContext(pending));
+  assert.equal(response.status, 500);
+  assert.deepEqual(await response.json(), { error: 'INTERNAL_ERROR' });
+  assert.equal(response.headers.get('cache-control'), 'no-store');
   await waitBackground(pending);
   assert.equal(sent.length, 1);
   assert.equal((sent[0] as { environment: string }).environment, 'staging');

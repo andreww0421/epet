@@ -12,6 +12,16 @@ const root = process.cwd();
 const mode = process.argv[2];
 let secretsDirectory;
 
+const inheritedSettingNames = new Set([
+  'CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_KEY', 'CLOUDFLARE_EMAIL',
+  'CF_API_TOKEN', 'CF_ACCOUNT_ID', 'CF_API_KEY', 'CF_EMAIL',
+  'WRANGLER_CI_OVERRIDE_NAME', 'CLOUDFLARE_ENV', 'CLOUDFLARE_API_BASE_URL', 'CF_API_BASE_URL',
+  'WRANGLER_API_ENVIRONMENT', 'CLOUDFLARE_COMPLIANCE_REGION',
+  'TURNSTILE_SITE_KEY', 'TURNSTILE_SECRET_KEY', 'RESEND_API_KEY',
+  'SENTRY_DSN', 'SENTRY_FRONTEND_DSN', 'SENTRY_RELEASE', 'MONITORING_ENVIRONMENT',
+  'CI', 'WRANGLER_LOG_SANITIZE',
+]);
+
 try {
   if (process.argv.length !== 3 || !['validate', 'preflight', 'dry-run', 'migrate', 'check', 'deploy'].includes(mode)) {
     throw new Error('Usage: node scripts/staging.mjs validate|preflight|dry-run|migrate|check|deploy (no additional overrides)');
@@ -55,23 +65,14 @@ try {
       const execute = (args) => new Promise((resolveCommand, reject) => {
         // Do not inherit generic production Cloudflare credentials into offline
         // checks. Real commands explicitly replace them with staging credentials.
-        const childEnv = { ...process.env, CI: 'true' };
-        delete childEnv.CLOUDFLARE_API_TOKEN;
-        delete childEnv.CLOUDFLARE_ACCOUNT_ID;
-        delete childEnv.CLOUDFLARE_API_KEY;
-        delete childEnv.CLOUDFLARE_EMAIL;
-        delete childEnv.CF_API_TOKEN;
-        delete childEnv.CF_ACCOUNT_ID;
-        delete childEnv.CF_API_KEY;
-        delete childEnv.CF_EMAIL;
-        delete childEnv.TURNSTILE_SITE_KEY;
-        delete childEnv.TURNSTILE_SECRET_KEY;
-        delete childEnv.RESEND_API_KEY;
-        delete childEnv.SENTRY_DSN;
-        delete childEnv.SENTRY_FRONTEND_DSN;
-        delete childEnv.SENTRY_RELEASE;
-        delete childEnv.MONITORING_ENVIRONMENT;
-        Object.assign(childEnv, credentials);
+        // Wrangler applies these after reading the pinned configuration. An
+        // ambient Workers Builds name override could otherwise select epet-api.
+        // Windows lookup is case-insensitive; remove every case spelling before
+        // adding the single canonical credential/logging settings.
+        const childEnv = Object.fromEntries(Object.entries(process.env).filter(
+          ([name]) => !inheritedSettingNames.has(name.toUpperCase()),
+        ));
+        Object.assign(childEnv, credentials, { CI: 'true', WRANGLER_LOG_SANITIZE: 'true' });
         const capture = args.includes('--json');
         const child = spawn(process.execPath, [
           resolve(root, 'node_modules/wrangler/bin/wrangler.js'), ...args, '--env-file', emptyEnvPath,

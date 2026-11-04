@@ -37,6 +37,7 @@ jobs:
         run: npm ci
 
       - name: Verify release
+        id: verify
         run: npm run verify
         env:
           VITE_MONITORING_ENABLED: ${{ vars.EPET_MONITORING_ENABLED }}
@@ -52,13 +53,46 @@ jobs:
       # This check reads the migration ledger; application deployment never
       # mutates the schema. Expand the database separately before this release.
       - name: Verify required D1 migrations are already applied
+        id: ledger
         run: npm run db:check:remote
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
       - name: Deploy Worker and static assets
+        id: deploy
         run: npm run deploy:worker
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      # Uses anonymous GETs only, with no Cloudflare or application credentials.
+      # A failed smoke leaves this job failed; it does not undo a published Worker.
+      - name: Verify production deployment with read-only smoke
+        id: smoke
+        timeout-minutes: 2
+        run: npm run smoke:production
+
+      - name: Report release failure and recovery instructions
+        if: ${{ failure() || cancelled() }}
+        shell: bash
+        env:
+          DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUNBOOK_URL: ${{ github.server_url }}/${{ github.repository }}/blob/${{ github.sha }}/docs/production-deployment.md
+        run: |
+          case "$DEPLOY_OUTCOME" in
+            success) release_state='Deployment command succeeded; post-deployment verification did not complete successfully. The published release may still be serving.' ;;
+            failure|cancelled) release_state='Deployment was attempted; the actual serving version is unknown. Inspect Cloudflare before retrying.' ;;
+            *) release_state='Deployment step did not run. Check the failed prerequisite before approving a new deployment.' ;;
+          esac
+          echo '::error title=Production release requires operator review::Inspect the run summary and actual serving version. No automatic Worker or D1 rollback was executed.'
+          {
+            printf '## Production release requires operator review\n\n'
+            printf '%s\n\n' "$release_state"
+            printf 'Deploy outcome: `%s`; smoke outcome: `%s`.\n\n' "$DEPLOY_OUTCOME" "$SMOKE_OUTCOME"
+            printf '[Workflow logs](%s) · [Recovery checklist](%s)\n\n' "$RUN_URL" "$RUNBOOK_URL"
+            printf 'Record the commit and actual Worker version, assess current schema compatibility, then obtain incident approval before a manual application rollback or forward fix. Never automatically roll back D1 or rerun a deployment merely to retry smoke.\n\n'
+            printf 'GitHub failed-run notifications depend on operator notification settings; confirm receipt and escalation using the runbook. Job summaries alone do not prove delivery.\n'
+          } >> "$GITHUB_STEP_SUMMARY"

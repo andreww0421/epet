@@ -45,10 +45,11 @@
 
 現行保護：
 
-- 一般長期 localStorage 學生資料快取預設關閉；既有未同步草稿仍會暫存在分頁的 sessionStorage，成功同步／登出後清除。部署若啟用 `VITE_ALLOW_LOCAL_PII_CACHE`，會產生長期瀏覽器副本。
+- 一般長期 localStorage 學生資料快取預設關閉；`VITE_ENABLE_PII_CACHE` 是既有 opt-in 設定，但不會在授權驗證前自動 hydrate。未同步草稿以 v2 格式存於分頁 sessionStorage，綁定 user／workspace／role／class scope，最後編輯後 24 小時到期，讀取／重試不續期。成功同步只移除對應 namespace；session 失效／換帳號不會全面刪草稿，同人同權限重新登入驗證後才能恢復。降權者不能恢復原完整草稿；舊 v1 無身分資訊，保持隔離、不自動歸屬，分頁關閉後由瀏覽器移除。儲存不可用時只保留本頁記憶體 fallback，重新載入或關閉分頁仍可能失去未同步內容。
 - 工作區只保留最近 25 份 revision 快照。
+- 真正 Revision Conflict 的本機草稿不會因重新整理而自動丟棄；可明確確認保留後登出／切換，或確認丟棄並採用重新驗證的雲端版本。只有 Owner／Admin 可下載完整草稿，下載前重驗目前權限；詳細限制及儲存失敗處理見[工作區版本衝突恢復](workspace-conflict-recovery.md)。
 - 刪除學生會同步移除現行學習證據、考試結果、魔王貢獻與攻擊次數。
-- 刪除學生會將該 student ID 與相關紀錄從所有保留的 D1／JSON revision 快照移除。
+- 刪除學生依 `(workspaceId, classId, studentId)` 定位，將該學生與相關紀錄從所有保留的 D1／JSON revision 快照移除；不清除別班／別租戶的相同 Student ID。
 - session、reset、Email verification 與 invitation token 只在資料庫保存雜湊值；Turnstile token 不寫入應用程式資料庫。
 - 到期／撤銷 session、reset／verification token、rate-limit 與邀請由 Worker cron 與 Node 排程每日清理。
 - owner 可在密碼與工作區名雙重確認後刪除工作區；帳號刪除前必須先處理所有 owner 身分。
@@ -65,6 +66,8 @@
 - 依法或依合約保留的資料，必須有到期日、限縮存取與到期銷毀證明。
 
 在這些流程完成前，不得向資料請求人承諾「已永久刪除所有副本」。
+
+2026-10-30 DR 補充：整庫復原的隔離、獨立 suppression journal、復原後重套／驗證、舊帳號與 credential／Session／token 復活控制見 [disaster-recovery.md](disaster-recovery.md)。現有刪除 audit 刻意不保存完整被刪學生身分，且會隨 D1 一起回退，不能作唯一補償來源。正式 journal、外部備份保存／銷毀及 live rehearsal 仍待營運／隱私負責人完成；唯讀結構檢查的 `privacyStatus: not_verified` 不能代替刪除驗收。
 
 ## 資料請求處理
 

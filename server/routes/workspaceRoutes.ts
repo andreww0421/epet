@@ -1,6 +1,10 @@
 import { createInitialData, normalizeAppData } from '../../src/store/utils';
 import { getActiveClasses } from '../../shared/domain/classArchive';
+import { workspaceAccessHeader, type WorkspaceAccess } from '../../shared/contracts/workspace';
 import { WorkspaceConflictError } from '../contracts';
+import type { ProductOnboardingRepository } from '../contracts';
+import type { ApiOptions } from '../contracts/api';
+import { allowsProductAnalytics, productOnboardingEnabled } from './productOnboardingRoutes';
 import { getString, readJsonBody, MAX_AUTH_BODY_BYTES } from '../http/body';
 import { getRequestId } from '../http/request';
 import { json } from '../http/response';
@@ -40,9 +44,11 @@ export const handleWorkspaceCollectionRoutes: RouteHandler<
   );
 };
 
-export const handleWorkspaceRoutes: RouteHandler<WorkspaceRouteContext> = async (
-  context,
-) => {
+export const handleWorkspaceRoutes = async (
+  context: WorkspaceRouteContext,
+  productAnalytics?: ApiOptions['productAnalytics'],
+  deferBackgroundTask?: ApiOptions['deferBackgroundTask'],
+): Promise<Response | undefined> => {
   const {
     request,
     url,
@@ -109,10 +115,21 @@ export const handleWorkspaceRoutes: RouteHandler<WorkspaceRouteContext> = async 
   if (url.pathname !== '/api/v1/state') return undefined;
 
   if (request.method === 'GET') {
-    const workspace = await repository.get(workspaceId);
+    const syncUser = request.headers.get('x-epet-sync-user');
+    if (syncUser !== null && syncUser !== authorized.user.id) throw new AuthForbiddenError();
     const classScope = await getClassScope();
+    const workspace = await repository.get(workspaceId);
+    const snapshot = classScope ? scopeStoredWorkspace(workspace, classScope) : workspace;
     return json(
-      classScope ? scopeStoredWorkspace(workspace, classScope) : workspace,
+      syncUser === null ? snapshot : {
+        ...snapshot,
+        access: {
+          userId: authorized.user.id,
+          workspaceId,
+          role: authorized.membership.role,
+          classIds: classScope === null ? null : [...classScope].sort(),
+        } satisfies WorkspaceAccess,
+      },
       200,
       headers,
     );
@@ -120,6 +137,14 @@ export const handleWorkspaceRoutes: RouteHandler<WorkspaceRouteContext> = async 
 
   if (request.method === 'PUT') {
     enforceRole(authorized.membership.role, 'teacher');
+    const syncAccess = request.headers.get('x-epet-sync-access');
+    const checkedScope = syncAccess === null ? undefined : await getClassScope();
+    if (syncAccess !== null && syncAccess !== await workspaceAccessHeader({
+      userId: authorized.user.id,
+      workspaceId,
+      role: authorized.membership.role,
+      classIds: checkedScope === null ? null : [...checkedScope!],
+    })) throw new AuthForbiddenError();
     const body = await readJsonBody(request);
     if (!isAppData(body.data)) {
       return json({ error: 'INVALID_APP_DATA' }, 400, headers);
@@ -146,21 +171,42 @@ export const handleWorkspaceRoutes: RouteHandler<WorkspaceRouteContext> = async 
             submitted: body.data,
           })
         : normalized;
-      const saved = await repository.put(
-        workspaceId,
-        nextData,
-        // Keep the legacy optional admin base revision contract while making
-        // the lifecycle validation/read-write boundary atomic.
-        baseRevision ?? current.revision,
-        writeContext,
-      );
-      return json(saved, 200, headers);
+      try {
+        const saved = await repository.put(
+          workspaceId,
+          nextData,
+          // Keep the legacy optional admin base revision contract while making
+          // the lifecycle validation/read-write boundary atomic.
+          baseRevision ?? current.revision,
+          writeContext,
+        );
+        // Optional product metrics observe a committed business write. Missing
+        // tables, collector failures and hanging observers cannot change its
+        // response, CAS, projection or privacy guarantees.
+        if (productOnboardingEnabled(productAnalytics) && allowsProductAnalytics(request) &&
+            request.headers.get('x-epet-class-create-intent') === '1' &&
+            nextData.classes.some((classroom) => classroom.id !== 'default' &&
+              !current.data?.classes.some((previous) => previous.id === classroom.id))) {
+          const progressRepository = repository as typeof repository & Partial<ProductOnboardingRepository>;
+          const task = Promise.resolve().then(() =>
+            progressRepository.confirmProductOnboarding?.(authorized.user.id)).catch(() => undefined);
+          try { deferBackgroundTask?.(task); } catch { /* Optional observer only. */ }
+        }
+        return json(saved, 200, headers);
+      } catch (error) {
+        if (error instanceof WorkspaceConflictError) {
+          // This branch already requires admin membership and full class access.
+          // Preserve the state-sync snapshot contract for an atomic CAS loss.
+          return json({ error: 'REVISION_CONFLICT', current: error.current }, 409, headers);
+        }
+        throw error;
+      }
     }
 
     if (baseRevision == null) {
       return json({ error: 'BASE_REVISION_REQUIRED' }, 400, headers);
     }
-    const classScope = await getClassScope();
+    const classScope = checkedScope === undefined ? await getClassScope() : checkedScope;
     if (!classScope) throw new AuthForbiddenError();
     const current = await repository.get(workspaceId);
     if (!current.data) {

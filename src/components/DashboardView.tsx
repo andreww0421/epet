@@ -17,7 +17,7 @@ import { TeacherClassContext } from '../features/teacher-console/components/Teac
 import { TeacherConsoleNavigation } from '../features/teacher-console/components/TeacherConsoleNavigation';
 import { TodayOverview } from '../features/teacher-console/components/TodayOverview';
 import {
-  AREA_DESCRIPTIONS, AREA_LABELS, getAreaDestinations, getDestination, resolveDestination,
+  AREA_DESCRIPTIONS, getAreaLabel, getAreaDestinations, getDestination, resolveDestination,
   type ConsoleArea, type ConsoleDestination,
 } from '../features/teacher-console/model/navigation';
 import type { ClassroomConsoleMode } from './ClassroomView';
@@ -25,6 +25,7 @@ import { type TodayPointEntryRequest, type TodayQuickAction } from '../features/
 import type { BackendSyncStatus } from '../hooks/useBackendSync';
 import type { DashboardRecordView, RecordViewRequest } from '../features/records/model/recordNavigation';
 import { useFeatureAnalytics } from '../analytics/useFeatureAnalytics';
+import type { TeacherSetupController } from '../features/teacher-console/hooks/useTeacherSetup';
 
 const StudentAnalyticsSection = lazy(() => import('../features/analytics/components/StudentAnalyticsSection').then((module) => ({ default: module.StudentAnalyticsSection })));
 const DataGovernanceSection = lazy(() => import('../features/workspace/components/DataGovernanceSection').then((module) => ({ default: module.DataGovernanceSection })));
@@ -37,12 +38,13 @@ type DashboardViewProps = {
   flushChanges?: () => Promise<boolean>;
   workspaceName?: string;
   syncStatus?: BackendSyncStatus;
+  setup?: TeacherSetupController;
 };
 const analyticsModes = { 'student-insights': 'student', 'class-insights': 'class', trends: 'trends', evidence: 'evidence', exams: 'exams' } as const;
 const gameDestinations: ConsoleDestination[] = ['pets', 'battle', 'leaderboard', 'boss'];
 
 /** Page composition, task navigation and high-level coordination only. Feature owners stay mounted. */
-export const DashboardView = ({ readOnly = false, canExportFullData = false, canAdministerWorkspace = false, flushChanges = async () => true, workspaceName, syncStatus = 'connected' }: DashboardViewProps) => {
+export const DashboardView = ({ readOnly = false, canExportFullData = false, canAdministerWorkspace = false, flushChanges = async () => true, workspaceName, syncStatus = 'connected', setup }: DashboardViewProps) => {
   const data = useStore((state) => state.data);
   const lang = data.settings?.language || 'zh';
   const capabilities = { readOnly, canAdministerWorkspace };
@@ -55,7 +57,8 @@ export const DashboardView = ({ readOnly = false, canExportFullData = false, can
   const [readOnlyClassId, setReadOnlyClassId] = useState(data.currentClassId);
   const [settingsLanguage, setSettingsLanguage] = useState<Language>(lang);
   const [petCareMode, setPetCareMode] = useState<PetCareMode>(data.settings?.petCareMode === 'death' ? 'death' : 'rest');
-  const active = resolveDestination(destination, capabilities);
+  const gamesShown = setup?.state.gameMode !== 'hidden';
+  const active = resolveDestination(!gamesShown && getDestination(destination).area === 'activities' ? 'today' : destination, capabilities);
   useFeatureAnalytics(active, !readOnly);
   const area = getDestination(active).area;
   const selectedClassId = readOnly ? readOnlyClassId : data.currentClassId;
@@ -67,7 +70,7 @@ export const DashboardView = ({ readOnly = false, canExportFullData = false, can
   const rewardsSettingsVisible = active === 'reward-settings' && !readOnly && canAdministerWorkspace;
 
   const navigate = (next: ConsoleDestination) => {
-    const resolved = resolveDestination(next, capabilities);
+    const resolved = resolveDestination(!gamesShown && getDestination(next).area === 'activities' ? 'today' : next, capabilities);
     setDestination(resolved);
     setLastDestinations((current) => ({ ...current, [getDestination(resolved).area]: resolved }));
     setVisited((current) => ({ analytics: current.analytics || resolved in analyticsModes, governance: current.governance || resolved === 'governance', games: current.games || gameDestinations.includes(resolved) }));
@@ -86,11 +89,19 @@ export const DashboardView = ({ readOnly = false, canExportFullData = false, can
   };
   const runTodayAction = (action: TodayQuickAction) => {
     if (readOnly || (syncStatus !== 'connected' && syncStatus !== 'saving')) return;
-    if (action === 'give-points' || action === 'deduct-points') {
-      setTodayPointEntry((previous) => ({ id: (previous?.id ?? 0) + 1, direction: action === 'give-points' ? 'give' : 'deduct' }));
+    if (action === 'points' || action === 'give-points' || action === 'deduct-points') {
+      setTodayPointEntry((previous) => ({ id: (previous?.id ?? 0) + 1, direction: action === 'deduct-points' ? 'deduct' : 'give' }));
     } else {
       const tasks = { comment: 'comments', evidence: 'evidence', exam: 'exams', activity: 'pets' } as const;
       navigateFromToday(tasks[action]);
+    }
+  };
+  const runSetupStep = (step: 'class' | 'roster' | 'points' | 'review') => {
+    if (readOnly || (syncStatus !== 'connected' && syncStatus !== 'saving')) return;
+    if (step === 'points') runTodayAction('points');
+    else {
+      if (step === 'review') setup?.review();
+      navigateFromToday(step === 'review' ? 'student-insights' : 'students');
     }
   };
 
@@ -104,16 +115,16 @@ export const DashboardView = ({ readOnly = false, canExportFullData = false, can
     <div className="mx-auto min-h-full max-w-7xl bg-slate-50 px-4 py-6 sm:px-6 lg:px-8">
       <DashboardHeader readOnly={readOnly} canAdministerWorkspace={governanceVisible} canExportFullData={governanceVisible && canExportFullData}
         flushChanges={flushChanges}
-        description={lang === 'en' ? 'Your teaching day, organized around class, learning, activities and insights.' : '以班級、學習、活動與洞察，整理每天的導師工作。'} />
+        description={lang === 'en' ? 'Start your day with points, comments and exams.' : '從首頁開始，加減分、評語與考試一目了然。'} />
       <TeacherClassContext classes={data.classes} classId={selectedClassId} language={lang} readOnly={readOnly} workspaceName={workspaceName} onReviewClassChange={setReadOnlyClassId} />
-      <TeacherConsoleNavigation active={active} language={lang} onAreaChange={navigateArea} onChange={navigate} {...capabilities} />
+      <TeacherConsoleNavigation active={active} language={lang} onAreaChange={navigateArea} onChange={navigate} gamificationVisible={gamesShown} {...capabilities} />
       <div id="dashboard-panel" role={area === 'today' ? 'region' : 'tabpanel'} aria-labelledby={area === 'today' ? 'console-area-today' : `console-tab-${active}`} tabIndex={0} className="min-w-0 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-indigo-700">
         <div className="mb-5">
-          <h2 className="text-xl font-bold text-slate-900">{AREA_LABELS[area]}</h2>
+          <h2 className="text-xl font-bold text-slate-900">{getAreaLabel(area, lang)}</h2>
           <p className="mt-1 text-sm leading-6 text-slate-600">{AREA_DESCRIPTIONS[area][lang]}</p>
         </div>
         {!readOnly && <DashboardUndoNotices />}
-        {active === 'today' && <TodayOverview classData={currentClass} language={lang} schoolTimeZone={data.settings?.schoolTimeZone} settings={data.settings} syncStatus={syncStatus} onNavigate={navigateFromToday} onAction={runTodayAction} {...capabilities} />}
+        {active === 'today' && <TodayOverview classData={currentClass} language={lang} schoolTimeZone={data.settings?.schoolTimeZone} settings={data.settings} syncStatus={syncStatus} onNavigate={navigateFromToday} onAction={runTodayAction} setup={setup} onSetupStep={runSetupStep} {...capabilities} />}
         {(visited.analytics || analyticsVisible) && <Suspense fallback={<DashboardLoading language={lang} />}>
           <StudentAnalyticsSection classId={selectedClassId} readOnly={readOnly} mode={analyticsMode} visible={analyticsVisible} />
         </Suspense>}

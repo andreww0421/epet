@@ -218,7 +218,7 @@ test('legacy archived fallback identifiers and dates normalize using a stable cl
 test('canonical archive comparison permits normalization shape drift but retains the trusted raw snapshot', () => {
   const canonical = normalizeAppData(createData(), now);
   const archived = updateClassArchive(canonical, 'class-a', 'archive', now);
-  const current = anonymizeStudentInWorkspaceData(archived, 'private-student-a', 'anonymous-fresh');
+  const current = anonymizeStudentInWorkspaceData(archived, { classId: 'class-a', studentId: 'private-student-a' }, 'anonymous-fresh');
   const before = structuredClone(current.classes[0]);
   const future = now + 3 * 24 * 60 * 60 * 1_000;
   const comparison = normalizeAppData(current, future);
