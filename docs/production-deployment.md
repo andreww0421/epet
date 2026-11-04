@@ -1,6 +1,6 @@
 # Production application deployment
 
-更新日期：2026-11-05。適用於 GitHub Actions 的 `deploy.yml`、既有 `epet-api` Worker 與同次發布的 static assets。2026-10-31 的流程修改僅使用 mock／本機驗證；本次新增既有失敗 run 的唯讀診斷及操作計畫，未發布正式網站、執行 remote migration、改 Secrets 或建立正式帳號／學生。實際測試命令與結果須以個別驗收紀錄為準，不能把文件中的操作步驟視為已執行。
+更新日期：2026-11-05。適用於 GitHub Actions 的 `deploy.yml`、既有 `epet-api` Worker 與同次發布的 static assets。2026-10-31 的流程修改僅使用 mock／本機驗證；本次新增既有失敗 run 的唯讀診斷及操作計畫。正式操作需另外取得授權，實際命令與結果以各自的 workflow runs 為準，不能把文件中的操作步驟視為已執行。
 
 ## 2026-11-05：PR #21 合併後的 schema gate 阻擋
 
@@ -8,7 +8,11 @@
 
 這是必要的發布前阻擋。不得刪除 ledger gate、將 pending 改成 warning、修改 migration checksum、手動偽造 ledger，或把 schema apply 加進一般 application deploy。該 run 沒有執行 Worker 部署；它不能證明 Cloudflare 原生 Builds 或其他發布來源的 serving 狀態。
 
-### 需要另行核准的正式操作計畫（尚未執行）
+### 正式操作計畫與授權紀錄
+
+計畫建立後，使用者已於 2026-11-05 明確授權透過既有 workflows 套用 `0008`，核對 ledger 成功後再部署，不啟用分析、不改 Secrets、不建立學生資料。已啟動 [expansion run 41875580999](https://github.com/andreww0421/epet/actions/runs/41875580999)，固定 main `47e07ce62f88cf0bf12cd106c4301ad61d5cdb1a`。是否完成 expansion、後續部署及 smoke，須讀取實際 runs 的最終結論，不能以 dispatch 成功代替操作完成。
+
+這次唯讀核對 `production` Environment 的 `protection_rules` 為空、`deployment_branch_policy` 為 null，尚未建立 Required Reviewers／Environment 分支政策。H05／V01 維持 Open；本次以使用者明確授權執行既有 main job guard、migration gate 及 concurrency，沒有新增、移除或宣稱已完成外部權限保護。
 
 1. Release owner 核對實際 serving Worker version、可回復的相容版本、Production D1 identity 與平台復原 bookmark／保留狀態。只記錄資源與版本 metadata，不下載或複製正式學生資料。確認 production Environment 的獨立 reviewer、main branch policy 與既有 `cloudflare-production` concurrency 均適用；先排除其他發布者同時修改 schema／serving version。
 2. 核對 `migrations/0008_product_onboarding.sql` 與 `migrations/policy.json` 的 LF-normalized SHA-256：`b235b0393b6446ce67bca5e72d428d34a0487e560cf5ea1f69ab10dcbf1bef83`。它只新增 optional `auth_product_onboarding` 表及非 unique cohort index；不 backfill 現有會員、不修改學生／班級／歷史資料。Production 分析旗標維持關閉。採用與 serving 版本相容性、合成 D1／auth／privacy／CAS 測試證據，不能因為是新增表就略過審查。
@@ -22,7 +26,7 @@
 - Expansion 部分失敗或 ledger 未完成：停止部署、保留已產生的 additive schema，依既有 migration policy 查證；不刪表、不直接補 ledger、不自動 Time Travel。
 - Expansion 成功但 application 失敗：保留 additive 表及關閉的分析旗標，依核准計畫維持／回復相容 Worker；不對 D1 做 schema rollback。若復原資料庫確有必要，另走已核准的 DR／個資刪除 replay 程序。
 
-本次只完成診斷與修復計畫，未執行上述 Production workflows。外部 schema 與 application release 的成功證據須由實際授權後的 runs 補登，不能把本機程式測試標示成正式部署已恢復。
+此計畫與授權紀錄不代表正式部署成功。外部 schema 與 application release 的證據須以授權後實際 runs 的最終結果核對，不能把本機程式測試標示成正式部署已恢復。部署後狀態及 serving version 亦須另外核對，不能僅從這份文件推論。
 
 ## 發布流程與不變條件
 
