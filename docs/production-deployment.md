@@ -1,6 +1,28 @@
 # Production application deployment
 
-更新日期：2026-10-31。適用於 GitHub Actions 的 `deploy.yml`、既有 `epet-api` Worker 與同次發布的 static assets。本次只修改流程、測試及文件，使用 mock／本機驗證；未發布正式網站、執行 remote migration、改 Secrets 或建立正式帳號／學生。實際測試命令與結果須以本次驗收紀錄為準，不能把文件中的操作步驟視為已執行。
+更新日期：2026-11-05。適用於 GitHub Actions 的 `deploy.yml`、既有 `epet-api` Worker 與同次發布的 static assets。2026-10-31 的流程修改僅使用 mock／本機驗證；本次新增既有失敗 run 的唯讀診斷及操作計畫，未發布正式網站、執行 remote migration、改 Secrets 或建立正式帳號／學生。實際測試命令與結果須以個別驗收紀錄為準，不能把文件中的操作步驟視為已執行。
+
+## 2026-11-05：PR #21 合併後的 schema gate 阻擋
+
+已從 GitHub 唯讀核對：[#21](https://github.com/andreww0421/epet/pull/21) 已於 2026-11-04 合併為 `47e07ce62f88cf0bf12cd106c4301ad61d5cdb1a`。其 PR 及合併後 main 的 Functional CI／Security 均成功；這不是 push 或功能測試失敗。[Production deployment run](https://github.com/andreww0421/epet/actions/runs/41817942605) 在 `Verify required D1 migrations are already applied` 失敗，明確回報 pending `0008_product_onboarding.sql`，`deploy` 與 `smoke` steps 均為 skipped。
+
+這是必要的發布前阻擋。不得刪除 ledger gate、將 pending 改成 warning、修改 migration checksum、手動偽造 ledger，或把 schema apply 加進一般 application deploy。該 run 沒有執行 Worker 部署；它不能證明 Cloudflare 原生 Builds 或其他發布來源的 serving 狀態。
+
+### 需要另行核准的正式操作計畫（尚未執行）
+
+1. Release owner 核對實際 serving Worker version、可回復的相容版本、Production D1 identity 與平台復原 bookmark／保留狀態。只記錄資源與版本 metadata，不下載或複製正式學生資料。確認 production Environment 的獨立 reviewer、main branch policy 與既有 `cloudflare-production` concurrency 均適用；先排除其他發布者同時修改 schema／serving version。
+2. 核對 `migrations/0008_product_onboarding.sql` 與 `migrations/policy.json` 的 LF-normalized SHA-256：`b235b0393b6446ce67bca5e72d428d34a0487e560cf5ea1f69ab10dcbf1bef83`。它只新增 optional `auth_product_onboarding` 表及非 unique cohort index；不 backfill 現有會員、不修改學生／班級／歷史資料。Production 分析旗標維持關閉。採用與 serving 版本相容性、合成 D1／auth／privacy／CAS 測試證據，不能因為是新增表就略過審查。
+3. 取得明確的 Production schema 變更授權後，在 GitHub **Actions → Expand production D1 schema → Run workflow → Branch: main** 執行既有 `database-expand.yml`。它會重新安裝 locked dependencies、跑 verify、僅套用已審查的 pending expansions，並再核對 ledger。預期本次只有 `0008`；若出現其他 pending、未知或 ledger gap，停止並重新審查。不要改跑 raw SQL、重播 `0001`–`0007`，也不要向 business DB 套用 `analytics-migrations/0001_product_analytics.sql`。
+4. Expansion 成功後核對 ledger、既有 serving version 與核准的唯讀 health／security 檢查。紀錄實際 workflow run 與結果；不得以匿名 health 成功推論 authenticated D1／tenant 路徑已完整驗收。
+5. 另外取得 application release 授權及 Environment approval 後，在 **Actions → Deploy to Cloudflare Worker → Run workflow → Branch: main** 執行 `deploy.yml`，或明確核准重跑上述失敗 run。前者發布當時的 main，後者重跑原 commit；必須在操作前記錄及核准確切 commit，不可混稱。核對 preflight、ledger、deploy 與唯讀 smoke 全部結果，再核對實際 serving version。不要透過新的 main push 只為繞過這個阻擋。
+
+### 中止與回復
+
+- Expansion 前失敗：保持原 schema／Worker，修正 prerequisite；不重跑 application deploy 直到 ledger 已驗證。
+- Expansion 部分失敗或 ledger 未完成：停止部署、保留已產生的 additive schema，依既有 migration policy 查證；不刪表、不直接補 ledger、不自動 Time Travel。
+- Expansion 成功但 application 失敗：保留 additive 表及關閉的分析旗標，依核准計畫維持／回復相容 Worker；不對 D1 做 schema rollback。若復原資料庫確有必要，另走已核准的 DR／個資刪除 replay 程序。
+
+本次只完成診斷與修復計畫，未執行上述 Production workflows。外部 schema 與 application release 的成功證據須由實際授權後的 runs 補登，不能把本機程式測試標示成正式部署已恢復。
 
 ## 發布流程與不變條件
 

@@ -104,6 +104,16 @@ const FORMULA_RISK_PATTERN = /^[\s]*[=+\-@]/;
 
 const getSourceBytes = (source: string) => new TextEncoder().encode(source).byteLength;
 
+// Scan once from the end. A suffix regexp can retry or backtrack over long
+// newline runs followed by non-newline content, even within the file limit.
+const trimTrailingLineBreaks = (source: string) => {
+  let end = source.length;
+  while (end > 0 && (source[end - 1] === '\r' || source[end - 1] === '\n')) {
+    end -= 1;
+  }
+  return end === source.length ? source : source.slice(0, end);
+};
+
 const normalizeHeader = (value: string) =>
   value
     .replace(/^\uFEFF/, '')
@@ -175,9 +185,7 @@ export const previewRosterImport = (
     }]);
   }
 
-  const parseSource = source
-    .replace(/^\uFEFF/, '')
-    .replace(/(?:\r\n|\r|\n)+$/, '');
+  const parseSource = trimTrailingLineBreaks(source.replace(/^\uFEFF/, ''));
   const parsed = Papa.parse<string[]>(parseSource, {
     delimiter: '',
     delimitersToGuess: [',', '\t'],
@@ -555,7 +563,7 @@ const createCsv = (rows: Array<Array<string | number>>) => {
     newline: '\r\n',
     escapeFormulae: true,
   });
-  return `\uFEFF${body.replace(/(?:\r\n)+$/, '')}\r\n`;
+  return `\uFEFF${trimTrailingLineBreaks(body)}\r\n`;
 };
 
 export const createRosterCsvTemplate = (
