@@ -281,7 +281,11 @@ test('CORS responses preserve credentials, origin scoping, and no-store semantic
       `${REQUEST_ORIGIN}/api/v1/state`,
       {
         method: 'OPTIONS',
-        headers: { origin: ALLOWED_CROSS_ORIGIN },
+        headers: {
+          origin: ALLOWED_CROSS_ORIGIN,
+          'access-control-request-method': 'PUT',
+          'access-control-request-headers': 'content-type, x-csrf-token, x-epet-workspace, x-epet-sync-user, x-epet-sync-access',
+        },
       },
     ));
     assert.equal(preflight.status, 204);
@@ -301,7 +305,7 @@ test('CORS responses preserve credentials, origin scoping, and no-store semantic
     );
     assert.equal(
       preflight.headers.get('access-control-allow-headers'),
-      'content-type, x-csrf-token, x-epet-workspace, x-request-id',
+      'content-type, x-csrf-token, x-epet-workspace, x-request-id, x-epet-sync-user, x-epet-sync-access',
     );
 
     const denied = await fixture.handler(new Request(

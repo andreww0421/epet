@@ -27,6 +27,7 @@ import {
 } from './types';
 import { normalizeExamRecords } from '../examAnalytics';
 import { normalizeArchivedAt, isArchivedClass } from '../../shared/domain/classArchive';
+import { assertWorkspaceResourceBounds, checkedWarningPoints } from '../../shared/validation/workspaceValidation';
 import {
   createMentorFeedbackEvidenceRecord,
   normalizeLearningEvidenceRecords,
@@ -440,6 +441,8 @@ export const createInitialData = (now = Date.now()): AppData => ({
 });
 
 export const normalizeStudent = (student: any, fallbackIndex: number, now = Date.now()): Student => {
+  assertWorkspaceResourceBounds(student);
+  const warningPoints = checkedWarningPoints(student?.warningPoints);
   const normalizedStudent: Student = {
     id: typeof student?.id === 'string' && student.id ? student.id : `student-${now}-${fallbackIndex}`,
     name: typeof student?.name === 'string' && student.name.trim() ? student.name.trim() : `Student ${fallbackIndex + 1}`,
@@ -460,10 +463,10 @@ export const normalizeStudent = (student: any, fallbackIndex: number, now = Date
       losses: Math.max(0, Math.floor(toFiniteNumber(student?.stats?.losses, 0))),
     },
     rankPoints: Math.max(0, Math.floor(toFiniteNumber(student?.rankPoints, 0))),
-    warningPoints: Math.max(0, Math.floor(toFiniteNumber(student?.warningPoints, 0))),
+    warningPoints,
     activeWarningTimestamps: Array.isArray(student?.activeWarningTimestamps) 
       ? student.activeWarningTimestamps.map(Number)
-      : Array.from({ length: Math.max(0, Math.floor(toFiniteNumber(student?.warningPoints, 0))) }).map(() => now),
+      : Array.from({ length: warningPoints }, () => now),
     nextUpgradeGachaLevel:
       student?.nextUpgradeGachaLevel == null
         ? getUpcomingUpgradeGachaLevel(clamp(Math.floor(toFiniteNumber(student?.pet?.level, 1)), 1, 10))
@@ -706,6 +709,7 @@ export const normalizeStudent = (student: any, fallbackIndex: number, now = Date
 };
 
 export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
+  assertWorkspaceResourceBounds(raw);
   const initialData = createInitialData(now);
   const rawSettings = raw?.settings ?? {};
   const schoolTimeZone = normalizeSchoolTimeZone(rawSettings?.schoolTimeZone);

@@ -3,6 +3,7 @@ import { CLASS_ARCHIVE_CONFIRMATIONS, CLASS_DELETE_CONFIRMATION, deleteClassFrom
 import { getString, readJsonBody, MAX_AUTH_BODY_BYTES } from '../http/body';
 import { json } from '../http/response';
 import { enforceRole } from '../middleware/authorization';
+import { WorkspaceConflictError } from '../contracts';
 import type { RouteHandler, WorkspaceRouteContext } from './types';
 
 /** Explicit admin operations share the repository's atomic revision/audit write. */
@@ -44,10 +45,18 @@ export const handleClassRoutes: RouteHandler<WorkspaceRouteContext> = async (con
     throw error;
   }
   if (data === workspace.data) return json({ action, ...workspace }, 200, headers);
-  const saved = await repository.put(workspaceId, data, body.expectedRevision, {
-    actorUserId: authorized.user.id,
-    action: `class.privacy.${action}`,
-    requestId: `privacy_${crypto.randomUUID()}`,
-  });
-  return json({ action, ...saved }, 200, headers);
+  try {
+    const saved = await repository.put(workspaceId, data, body.expectedRevision, {
+      actorUserId: authorized.user.id,
+      action: `class.privacy.${action}`,
+      requestId: `privacy_${crypto.randomUUID()}`,
+    });
+    return json({ action, ...saved }, 200, headers);
+  } catch (error) {
+    if (error instanceof WorkspaceConflictError) {
+      // Admin authorization above permits the same full snapshot as precheck.
+      return json({ error: 'REVISION_CONFLICT', current: error.current }, 409, headers);
+    }
+    throw error;
+  }
 };

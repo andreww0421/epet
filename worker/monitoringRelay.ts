@@ -68,7 +68,10 @@ export const handleMonitoringRelay = async (
   if (url.search || request.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() !== 'application/json') return json(400, 'INVALID_MONITORING_REQUEST');
   const declaredLength = request.headers.get('content-length');
   if (declaredLength && (!/^\d+$/.test(declaredLength) || Number(declaredLength) > MONITORING_BODY_LIMIT)) return json(413, 'PAYLOAD_TOO_LARGE');
-  if (!await quota(request.headers.get('cf-connecting-ip'))) return new Response(null, { status: 429, headers: { 'retry-after': '60', 'cache-control': 'no-store' } });
+  let allowed: boolean;
+  try { allowed = await quota(request.headers.get('cf-connecting-ip')); }
+  catch { return json(503, 'MONITORING_UNAVAILABLE'); } // Never recursively report intake failure.
+  if (!allowed) return new Response(null, { status: 429, headers: { 'retry-after': '60', 'cache-control': 'no-store' } });
   try {
     const report = scrubErrorReport(await readLimitedJson(request), 'frontend');
     if (!report) return json(400, 'INVALID_MONITORING_REQUEST');

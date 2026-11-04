@@ -7,7 +7,7 @@ import {
 export type AnalyticsSink = (event: AnalyticsEvent) => void | Promise<void>;
 export type AnalyticsConfiguration = { enabled: boolean; environment: AnalyticsEnvironment; sink: AnalyticsSink };
 
-const browserOptOut = (): boolean => {
+export const analyticsPrivacyOptOut = (): boolean => {
   try {
     const signals = globalThis.navigator as (Navigator & { globalPrivacyControl?: boolean; doNotTrack?: string }) | undefined;
     return signals?.globalPrivacyControl === true || signals?.doNotTrack === '1' || signals?.doNotTrack === 'yes';
@@ -15,7 +15,7 @@ const browserOptOut = (): boolean => {
 };
 
 /** No network, browser identifiers, storage, queue, console logging or Sentry dependency. */
-export const createAnalyticsClient = (privacyOptOut: () => boolean = browserOptOut) => {
+export const createAnalyticsClient = (privacyOptOut: () => boolean = analyticsPrivacyOptOut) => {
   let active: AnalyticsConfiguration | undefined;
   let delivering = false;
   let pending = 0;

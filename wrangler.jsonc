@@ -14,7 +14,9 @@
     "mode": "smart"
   },
   "observability": {
-    "enabled": true
+    "enabled": true,
+    "logs": { "enabled": true, "invocation_logs": false },
+    "traces": { "enabled": false }
   },
   "triggers": {
     "crons": ["17 3 * * *"]
@@ -23,6 +25,8 @@
     "BOT_PROTECTION_REQUIRED": "false",
     "EMAIL_VERIFICATION_REQUIRED": "true",
     "MONITORING_ENVIRONMENT": "production",
+    "PRODUCT_ANALYTICS_ENABLED": "false",
+    "PRODUCT_ANALYTICS_ENVIRONMENT": "production",
     "PUBLIC_APP_URL": "https://epet-api.jtwen12345us.workers.dev/",
     "REGISTRATION_ENABLED": "false"
   },

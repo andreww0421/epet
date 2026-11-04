@@ -9,8 +9,13 @@ import type {
   Student,
 } from '../src/store/types';
 import {
+  assertWorkspaceData, assertWorkspaceSerializationBounds,
+  assertRetainedRevisionSerializationBounds,
+} from '../shared/validation/workspaceValidation';
+import {
   findPermanentlyDeletedClassIds,
-  findPermanentlyDeletedStudentIds,
+  findPermanentlyDeletedStudents,
+  findUnambiguousDeletedStudentIds,
   purgeClassesFromWorkspaceData,
   purgeStudentsFromWorkspaceData,
 } from '../shared/domain/studentPrivacy';
@@ -18,6 +23,7 @@ import {
   AUTH_RATE_LIMIT_RETENTION_MS,
   clampAuditQueryLimit,
   createEmptyStoredWorkspace,
+  MAX_D1_STATE_BYTES,
   MAX_STORED_REVISIONS,
   utf8Size,
 } from '../shared/domain/repositoryPolicy';
@@ -29,6 +35,8 @@ import {
   workspaceAuditStatement,
 } from './projectionStatements';
 import {
+  assertProductOnboardingDateRange,
+  isProductOnboardingEnrollmentTime,
   EmailAlreadyExistsError,
   InvalidWorkspaceInvitationError,
   WorkspaceAlreadyClaimedError,
@@ -37,6 +45,7 @@ import {
   WorkspaceMembershipNotFoundError,
   WorkspaceNotFoundError,
   WorkspaceOwnerTransferRequiredError,
+  WorkspaceOwnershipConflictError,
   type AuditEventRecord,
   type AcceptWorkspaceInvitationInput,
   type AuthCleanupResult,
@@ -54,6 +63,10 @@ import {
   type DeleteWorkspaceInput,
   type EmailVerificationTokenRecord,
   type PasswordResetTokenRecord,
+  type PasswordCredential,
+  type ProductOnboardingRepository,
+  type ProductOnboardingState,
+  type ProductOnboardingSummary,
   type StoredWorkspace,
   type UserWorkspaceAccess,
   type WorkspaceMember,
@@ -69,8 +82,6 @@ import {
   type WorkspaceAuditQuery,
   type WorkspaceWriteContext,
 } from '../server/contracts';
-
-const MAX_D1_STATE_BYTES = 900 * 1024;
 
 type WorkspaceRow = {
   revision: number;
@@ -105,6 +116,8 @@ export type WorkspaceReadMode = 'normalized' | 'verify' | 'blob';
 
 export type D1WorkspaceRepositoryOptions = {
   readMode?: WorkspaceReadMode;
+  /** Fixed operational categories only; never receives an error, SQL or identity. */
+  onOperationalIssue?: (issue: 'database' | 'projection') => void;
 };
 
 export type WorkspaceProjectionReconciliationResult = {
@@ -371,13 +384,28 @@ const decodeInvitation = (row: InvitationRow): WorkspaceInvitationRecord => ({
   revokedAt: row.revoked_at,
 });
 
-const serializeWorkspace = (data: AppData) => {
+const encodeWorkspace = (data: AppData) => {
   const dataJson = JSON.stringify(data);
   const dataSizeBytes = utf8Size(dataJson);
   if (dataSizeBytes > MAX_D1_STATE_BYTES) {
-    throw new WorkspaceDataTooLargeError();
+    throw new WorkspaceDataTooLargeError({
+      limitBytes: MAX_D1_STATE_BYTES,
+      limitKind: 'workspace_snapshot',
+    });
   }
   return { dataJson, dataSizeBytes };
+};
+
+const serializeWorkspace = (data: AppData) => {
+  assertWorkspaceSerializationBounds(data);
+  const encoded = encodeWorkspace(data);
+  assertWorkspaceData(data);
+  return encoded;
+};
+
+const serializeRetainedRevision = (data: AppData) => {
+  assertRetainedRevisionSerializationBounds(data);
+  return encodeWorkspace(data);
 };
 
 const auditMetadataJson = (event: AuditEventRecord) =>
@@ -386,24 +414,40 @@ const auditMetadataJson = (event: AuditEventRecord) =>
 const createProjectionWriteToken = () => crypto.randomUUID();
 
 export class D1WorkspaceRepository
-implements WorkspaceRepository, AuthRepository {
+implements WorkspaceRepository, AuthRepository, ProductOnboardingRepository {
   constructor(
     private readonly database: D1Database,
     private readonly options: D1WorkspaceRepositoryOptions = {},
   ) {}
 
   async get(workspaceId: string): Promise<StoredWorkspace> {
-    const metadata = await this.database
-      .prepare(
-        `SELECT revision, updated_at
-         FROM workspaces
-         WHERE workspace_id = ?`,
-      )
-      .bind(workspaceId)
-      .first<WorkspaceMetadataRow>();
+    const reported = new Set<'database' | 'projection'>();
+    const reportIssue = (issue: 'database' | 'projection') => {
+      if (reported.has(issue)) return;
+      reported.add(issue);
+      try { this.options.onOperationalIssue?.(issue); } catch { /* Monitoring cannot alter repository behavior. */ }
+    };
+    const readBlob = async () => {
+      try { return await this.getBlobWorkspace(workspaceId); }
+      catch (error) { reportIssue('database'); throw error; }
+    };
+    let metadata: WorkspaceMetadataRow | null;
+    try {
+      metadata = await this.database
+        .prepare(
+          `SELECT revision, updated_at
+           FROM workspaces
+           WHERE workspace_id = ?`,
+        )
+        .bind(workspaceId)
+        .first<WorkspaceMetadataRow>();
+    } catch (error) {
+      reportIssue('database');
+      throw error;
+    }
     if (!metadata) return createEmptyStoredWorkspace();
     if (this.options.readMode === 'blob') {
-      return this.getBlobWorkspace(workspaceId);
+      return readBlob();
     }
 
     try {
@@ -425,7 +469,7 @@ implements WorkspaceRepository, AuthRepository {
             };
           }
         } else {
-          const blob = await this.getBlobWorkspace(workspaceId);
+          const blob = await readBlob();
           const matched = await this.recordProjectionComparison(
             blob,
             projection,
@@ -438,13 +482,15 @@ implements WorkspaceRepository, AuthRepository {
               data: projection.data,
             };
           }
+          if (!matched) reportIssue('projection');
           return blob;
         }
-      }
+      } else reportIssue('projection');
     } catch {
+      reportIssue('database');
       console.error('Normalized workspace read failed; using blob fallback');
     }
-    return this.getBlobWorkspace(workspaceId);
+    return readBlob();
   }
 
   private async getBlobWorkspace(workspaceId: string): Promise<StoredWorkspace> {
@@ -580,7 +626,7 @@ implements WorkspaceRepository, AuthRepository {
         student.bossRewardRecords = [];
       }
       classroom.students.push(student);
-      studentsById.set(`${row.class_id}:${student.id}`, student);
+      studentsById.set(JSON.stringify([row.class_id, student.id]), student);
     }
 
     const appendStudentRecord = (
@@ -588,7 +634,7 @@ implements WorkspaceRepository, AuthRepository {
       key: 'pointAdjustmentRecords' | 'disciplineRecords' |
         'bossRewardRecords',
     ) => {
-      const student = studentsById.get(`${row.class_id}:${row.student_id}`);
+      const student = studentsById.get(JSON.stringify([row.class_id, row.student_id]));
       if (!student) return;
       const records = student[key] ?? [];
       (records as unknown[]).push(JSON.parse(row.record_json));
@@ -609,10 +655,10 @@ implements WorkspaceRepository, AuthRepository {
       exam.results = [];
       classroom.examRecords ??= [];
       classroom.examRecords.push(exam);
-      examsById.set(`${row.class_id}:${exam.id}`, exam);
+      examsById.set(JSON.stringify([row.class_id, exam.id]), exam);
     }
     for (const row of examResultRows) {
-      const exam = examsById.get(`${row.class_id}:${row.exam_id}`);
+      const exam = examsById.get(JSON.stringify([row.class_id, row.exam_id]));
       if (exam) exam.results.push(JSON.parse(row.record_json));
     }
     for (const row of evidenceRows) {
@@ -699,6 +745,34 @@ implements WorkspaceRepository, AuthRepository {
       ),
       ...projectionStatements(this.database, workspaceId, revision, writeToken),
     ]);
+  }
+
+  // Recovery inspection must not refresh cached status, repair projections or
+  // fall back to the blob and mistake that fallback for a successful restore.
+  // This compares reconstructed content; recoveryValidation additionally checks
+  // redundant parent records, indexed scalar columns, schema and authorization.
+  async inspectWorkspaceProjection(
+    workspaceId: string,
+  ): Promise<WorkspaceProjectionReconciliationResult> {
+    const blob = await this.getBlobWorkspace(workspaceId);
+    if (!blob.data) {
+      return { workspaceId, revision: 0, status: 'missing', repaired: false };
+    }
+    const projection = await this.loadNormalizedProjection(workspaceId, blob.revision);
+    const matched = projection &&
+      await checksumData(blob.data) === await checksumData(projection.data);
+    const current = await this.database.prepare(
+      'SELECT revision FROM workspaces WHERE workspace_id = ?',
+    ).bind(workspaceId).first<{ revision: number }>();
+    return {
+      workspaceId,
+      revision: blob.revision,
+      status: !projection ? 'missing' : matched && current?.revision === blob.revision
+        ? 'verified' : 'mismatch',
+      repaired: false,
+      expectedCounts: workspaceEntityCounts(blob.data),
+      actualCounts: projection ? workspaceEntityCounts(projection.data) : undefined,
+    };
   }
 
   async reconcileWorkspaceProjection(
@@ -810,6 +884,75 @@ implements WorkspaceRepository, AuthRepository {
     return report;
   }
 
+  async getProductOnboarding(userId: string): Promise<ProductOnboardingState | null> {
+    const row = await this.database.prepare(
+      `SELECT cohort_day, started, local_reported, backend_persisted
+       FROM auth_product_onboarding WHERE user_id = ?`,
+    ).bind(userId).first<{
+      cohort_day: string; started: number; local_reported: number; backend_persisted: number;
+    }>();
+    return row ? { cohortDay: row.cohort_day, started: row.started === 1,
+      localReported: row.local_reported === 1, backendPersisted: row.backend_persisted === 1 } : null;
+  }
+
+  async enrollProductOnboarding(input: {
+    userId: string; cohortStart: number; now: number;
+  }): Promise<ProductOnboardingState | null> {
+    const existing = await this.getProductOnboarding(input.userId);
+    if (existing) return existing;
+    if (!isProductOnboardingEnrollmentTime(input.cohortStart, input.now)) return null;
+    // Eligibility is part of INSERT, so concurrent enrollment cannot create
+    // duplicate cohorts or enroll after an already committed teaching write.
+    await this.database.prepare(
+      `INSERT OR IGNORE INTO auth_product_onboarding (user_id, cohort_day)
+       SELECT user_id, ? FROM users
+       WHERE user_id = ? AND status = 'active' AND created_at >= ?
+         AND created_at <= ? AND created_at >= ?
+         AND NOT EXISTS (
+           SELECT 1 FROM audit_events WHERE actor_user_id = ?
+             AND action IN ('workspace.state.put', 'workspace.privacy.import')
+         )`,
+    ).bind(new Date(input.now).toISOString().slice(0, 10), input.userId,
+      input.cohortStart, input.now, input.now - 300_000, input.userId).run();
+    return this.getProductOnboarding(input.userId);
+  }
+
+  async updateProductOnboarding(userId: string, stage: 'started' | 'local_completed'):
+    Promise<ProductOnboardingState | null> {
+    if (stage === 'started') {
+      await this.database.prepare(
+        'UPDATE auth_product_onboarding SET started = 1 WHERE user_id = ?',
+      ).bind(userId).run();
+    } else if (stage === 'local_completed') {
+      await this.database.prepare(
+        'UPDATE auth_product_onboarding SET local_reported = 1 WHERE user_id = ? AND started = 1',
+      ).bind(userId).run();
+    }
+    return this.getProductOnboarding(userId);
+  }
+
+  async summarizeProductOnboarding(input: { fromDay: string; toDay: string }):
+    Promise<ProductOnboardingSummary[]> {
+    assertProductOnboardingDateRange(input.fromDay, input.toDay);
+    const rows = await this.database.prepare(
+      `SELECT cohort_day, COUNT(*) AS enrolled, SUM(started) AS started,
+              SUM(local_reported) AS local_reported, SUM(backend_persisted) AS backend_persisted
+       FROM auth_product_onboarding WHERE cohort_day >= ? AND cohort_day <= ?
+       GROUP BY cohort_day ORDER BY cohort_day`,
+    ).bind(input.fromDay, input.toDay).all<{
+      cohort_day: string; enrolled: number; started: number;
+      local_reported: number; backend_persisted: number;
+    }>();
+    return rows.results.map((row) => ({ cohortDay: row.cohort_day, enrolled: row.enrolled,
+      started: row.started, localReported: row.local_reported, backendPersisted: row.backend_persisted }));
+  }
+
+  async confirmProductOnboarding(userId: string): Promise<void> {
+    await this.database.prepare(
+      'UPDATE auth_product_onboarding SET started = 1, backend_persisted = 1 WHERE user_id = ?',
+    ).bind(userId).run();
+  }
+
   async put(
     workspaceId: string,
     data: AppData,
@@ -829,25 +972,13 @@ implements WorkspaceRepository, AuthRepository {
     const updatedAt = Date.now();
     const nextRevision = current.revision + 1;
     const writeToken = createProjectionWriteToken();
-    const deletedStudentIds = findPermanentlyDeletedStudentIds(
+    const deletedStudents = findPermanentlyDeletedStudents(
       current.data,
       data,
     );
     const deletedClassIds = findPermanentlyDeletedClassIds(current.data, data);
     const revisionPurgeStatements: D1PreparedStatement[] = [];
-    if (deletedStudentIds.size > 0) {
-      for (const deletedStudentId of deletedStudentIds) {
-        revisionPurgeStatements.push(this.database.prepare(
-          `UPDATE audit_events SET target_id = NULL
-           WHERE workspace_id = ? AND target_type = 'student' AND target_id = ?
-             AND EXISTS (
-               SELECT 1 FROM workspace_projection_state
-               WHERE workspace_id = ? AND source_revision = ? AND write_token = ?
-             )`,
-        ).bind(workspaceId, deletedStudentId, workspaceId, nextRevision, writeToken));
-      }
-    }
-    if (deletedStudentIds.size > 0 || deletedClassIds.size > 0) {
+    if (deletedStudents.length > 0 || deletedClassIds.size > 0) {
       const snapshots = await this.database
         .prepare(
           `SELECT workspace_id, revision, updated_at, actor_user_id,
@@ -857,11 +988,30 @@ implements WorkspaceRepository, AuthRepository {
         )
         .bind(workspaceId)
         .all<RevisionSnapshotRow>();
-      for (const snapshot of snapshots.results) {
-        const purged = serializeWorkspace(purgeClassesFromWorkspaceData(
+      const snapshotData = snapshots.results.map((snapshot) => JSON.parse(snapshot.data_json) as AppData);
+      const unscopedAuditIds = findUnambiguousDeletedStudentIds(deletedStudents, [
+        current.data, data, ...snapshotData,
+      ]);
+      for (const { classId, studentId } of deletedStudents) {
+        revisionPurgeStatements.push(this.database.prepare(
+          `UPDATE audit_events SET target_id = NULL
+           WHERE workspace_id = ? AND target_type = 'student' AND target_id = ?
+             AND CASE WHEN json_valid(metadata_json) THEN
+               CASE WHEN json_type(metadata_json, '$.classId') = 'text'
+                 THEN json_extract(metadata_json, '$.classId') = ? ELSE ? END
+               ELSE ? END
+             AND EXISTS (
+               SELECT 1 FROM workspace_projection_state
+               WHERE workspace_id = ? AND source_revision = ? AND write_token = ?
+             )`,
+        ).bind(workspaceId, studentId, classId, unscopedAuditIds.has(studentId) ? 1 : 0,
+          unscopedAuditIds.has(studentId) ? 1 : 0, workspaceId, nextRevision, writeToken));
+      }
+      for (const [index, snapshot] of snapshots.results.entries()) {
+        const purged = serializeRetainedRevision(purgeClassesFromWorkspaceData(
           purgeStudentsFromWorkspaceData(
-            JSON.parse(snapshot.data_json) as AppData,
-            deletedStudentIds,
+            snapshotData[index],
+            deletedStudents,
           ),
           deletedClassIds,
         ));
@@ -950,10 +1100,10 @@ implements WorkspaceRepository, AuthRepository {
         writeToken,
         context.action === 'class.privacy.delete' ? {
           deletedClassCount: deletedClassIds.size,
-          deletedStudentCount: deletedStudentIds.size,
+          deletedStudentCount: deletedStudents.length,
         } : undefined,
       ),
-      ...(deletedStudentIds.size > 0
+      ...(deletedStudents.length > 0
         ? [workspaceAuditStatement(
             this.database,
             workspaceId,
@@ -965,7 +1115,7 @@ implements WorkspaceRepository, AuthRepository {
               requestId: `evt_privacy_student_${workspaceId}_${nextRevision}`,
             },
             writeToken,
-            { deletedStudentCount: deletedStudentIds.size },
+            { deletedStudentCount: deletedStudents.length },
           )]
         : []),
       ...(deletedClassIds.size > 0
@@ -982,7 +1132,7 @@ implements WorkspaceRepository, AuthRepository {
             writeToken,
             {
               deletedClassCount: deletedClassIds.size,
-              deletedStudentCount: deletedStudentIds.size,
+              deletedStudentCount: deletedStudents.length,
             },
           )]
         : []),
@@ -1439,43 +1589,62 @@ implements WorkspaceRepository, AuthRepository {
   async transferWorkspaceOwnership(
     input: TransferWorkspaceOwnershipInput,
   ): Promise<void> {
-    const [source, target] = await Promise.all([
-      this.getWorkspaceMembership(input.workspaceId, input.fromUserId),
-      this.getWorkspaceMembership(input.workspaceId, input.toUserId),
-    ]);
-    if (source?.role !== 'owner' || !target || target.role === 'owner') {
-      throw new WorkspaceMembershipNotFoundError();
-    }
-    await this.database.batch([
+    // This batch is one transaction. The claim pointer CAS validates both
+    // memberships at write time, including the sole-owner invariant. Every
+    // subsequent write consumes the immediately preceding statement's result;
+    // do not insert another statement into this changes() chain.
+    const results = await this.database.batch([
+      this.database
+        .prepare(
+          `INSERT INTO workspace_claims (workspace_id, claimed_by_user_id, claimed_at)
+           SELECT source.workspace_id, target.user_id, ?
+           FROM workspace_memberships AS source
+           INNER JOIN workspace_memberships AS target
+             ON target.workspace_id = source.workspace_id
+           WHERE source.workspace_id = ? AND source.user_id = ? AND source.role = 'owner'
+             AND target.user_id = ? AND target.role <> 'owner'
+             AND (SELECT COUNT(*) FROM workspace_memberships AS owners
+                  WHERE owners.workspace_id = source.workspace_id AND owners.role = 'owner') = 1
+           ON CONFLICT(workspace_id) DO UPDATE SET
+             claimed_by_user_id = excluded.claimed_by_user_id,
+             claimed_at = excluded.claimed_at
+           WHERE workspace_claims.claimed_by_user_id = ?`,
+        )
+        .bind(input.transferredAt, input.workspaceId, input.fromUserId, input.toUserId, input.fromUserId),
+      this.database
+        .prepare(
+          `UPDATE workspace_memberships
+           SET role = CASE WHEN user_id = ? THEN 'admin' ELSE 'owner' END,
+               created_by_user_id = CASE WHEN user_id = ? THEN ? ELSE created_by_user_id END
+           WHERE workspace_id = ? AND changes() = 1
+             AND ((user_id = ? AND role = 'owner') OR (user_id = ? AND role <> 'owner'))`,
+        )
+        .bind(input.fromUserId, input.toUserId, input.fromUserId,
+          input.workspaceId, input.fromUserId, input.toUserId),
+      this.database
+        .prepare(
+          `INSERT INTO audit_events (
+             event_id, workspace_id, actor_user_id, action, target_type,
+             target_id, metadata_json, created_at
+           ) SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE changes() = 2`,
+        )
+        .bind(input.auditEvent.id, input.auditEvent.workspaceId ?? null,
+          input.auditEvent.actorUserId ?? null, input.auditEvent.action,
+          input.auditEvent.targetType ?? null, input.auditEvent.targetId ?? null,
+          auditMetadataJson(input.auditEvent), input.auditEvent.createdAt),
       this.database
         .prepare(
           `DELETE FROM workspace_class_assignments
-           WHERE workspace_id = ? AND user_id IN (?, ?)`,
+           WHERE workspace_id = ? AND user_id IN (?, ?) AND changes() = 1`,
         )
         .bind(input.workspaceId, input.fromUserId, input.toUserId),
-      this.database
-        .prepare(
-          `UPDATE workspace_memberships
-           SET role = 'admin'
-           WHERE workspace_id = ? AND user_id = ? AND role = 'owner'`,
-        )
-        .bind(input.workspaceId, input.fromUserId),
-      this.database
-        .prepare(
-          `UPDATE workspace_memberships
-           SET role = 'owner', created_by_user_id = ?
-           WHERE workspace_id = ? AND user_id = ?`,
-        )
-        .bind(input.fromUserId, input.workspaceId, input.toUserId),
-      this.database
-        .prepare(
-          `UPDATE workspace_claims
-           SET claimed_by_user_id = ?, claimed_at = ?
-           WHERE workspace_id = ?`,
-        )
-        .bind(input.toUserId, input.transferredAt, input.workspaceId),
-      auditStatement(this.database, input.auditEvent),
     ]);
+    // The CAS predicate plus transaction isolation guarantees two role rows
+    // after a successful claim write. These cardinalities report a lost CAS;
+    // they are not a substitute for the in-transaction success gates above.
+    if (results[0].meta.changes !== 1 || results[1].meta.changes !== 2 || results[2].meta.changes !== 1) {
+      throw new WorkspaceOwnershipConflictError();
+    }
   }
 
   async deleteWorkspace(input: DeleteWorkspaceInput): Promise<void> {
@@ -1737,6 +1906,12 @@ implements WorkspaceRepository, AuthRepository {
                  ELSE updated_at
                END
            WHERE user_id = ? AND status = 'active'
+             AND password_algorithm = ? AND password_salt = ?
+             AND password_hash = ? AND password_iterations = ?
+             AND NOT EXISTS (
+               SELECT 1 FROM workspace_memberships
+               WHERE workspace_id = ? AND user_id = users.user_id
+             )
              AND EXISTS (
                SELECT 1
                FROM workspace_invitations
@@ -1750,6 +1925,11 @@ implements WorkspaceRepository, AuthRepository {
           input.acceptedAt,
           input.acceptedAt,
           input.user.id,
+          input.user.password.algorithm,
+          input.user.password.salt,
+          input.user.password.hash,
+          input.user.password.iterations,
+          input.invitation.workspaceId,
           input.invitation.id,
           input.tokenHash,
           input.acceptedAt,
@@ -1762,7 +1942,8 @@ implements WorkspaceRepository, AuthRepository {
           `UPDATE workspace_invitations
            SET accepted_at = ?, accepted_by_user_id = ?
            WHERE token_hash = ? AND invitation_id = ?
-             AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?`,
+             AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?
+             AND changes() = 1`,
         )
         .bind(
           input.acceptedAt,
@@ -1771,6 +1952,34 @@ implements WorkspaceRepository, AuthRepository {
           input.invitation.id,
           input.acceptedAt,
         ),
+    );
+    // Claim this acceptance attempt with its unique audit ID. Timestamp/user
+    // alone cannot distinguish concurrent or replayed calls in one millisecond.
+    statements.push(this.database
+      .prepare(
+        `INSERT INTO audit_events (
+           event_id, workspace_id, actor_user_id, action, target_type,
+           target_id, metadata_json, created_at
+         )
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?
+         FROM workspace_invitations
+         WHERE invitation_id = ? AND accepted_at = ?
+           AND accepted_by_user_id = ? AND changes() = 1`,
+      )
+      .bind(
+        input.auditEvent.id,
+        input.auditEvent.workspaceId ?? null,
+        input.auditEvent.actorUserId ?? null,
+        input.auditEvent.action,
+        input.auditEvent.targetType ?? null,
+        input.auditEvent.targetId ?? null,
+        auditMetadataJson(input.auditEvent),
+        input.auditEvent.createdAt,
+        input.invitation.id,
+        input.acceptedAt,
+        input.user.id,
+      ));
+    statements.push(
       this.database
         .prepare(
           `INSERT OR IGNORE INTO workspace_memberships (
@@ -1778,7 +1987,8 @@ implements WorkspaceRepository, AuthRepository {
            )
            SELECT workspace_id, ?, role, ?, created_by_user_id
            FROM workspace_invitations
-           WHERE invitation_id = ? AND accepted_at = ? AND accepted_by_user_id = ?`,
+           WHERE invitation_id = ? AND accepted_at = ? AND accepted_by_user_id = ?
+             AND EXISTS (SELECT 1 FROM audit_events WHERE event_id = ?)`,
         )
         .bind(
           input.user.id,
@@ -1786,6 +1996,7 @@ implements WorkspaceRepository, AuthRepository {
           input.invitation.id,
           input.acceptedAt,
           input.user.id,
+          input.auditEvent.id,
         ),
     );
     if (
@@ -1804,7 +2015,8 @@ implements WorkspaceRepository, AuthRepository {
                ON invitations.invitation_id = ?
                AND invitations.accepted_at = ?
                AND invitations.accepted_by_user_id = ?
-             WHERE classes.workspace_id = ? AND classes.class_id = ?`,
+             WHERE classes.workspace_id = ? AND classes.class_id = ?
+               AND EXISTS (SELECT 1 FROM audit_events WHERE event_id = ?)`,
           )
           .bind(
             input.invitation.workspaceId,
@@ -1816,40 +2028,13 @@ implements WorkspaceRepository, AuthRepository {
             input.user.id,
             input.invitation.workspaceId,
             classId,
+            input.auditEvent.id,
           ),
       ));
     }
-    statements.push(this.database
-      .prepare(
-        `INSERT INTO audit_events (
-           event_id, workspace_id, actor_user_id, action, target_type,
-           target_id, metadata_json, created_at
-         )
-         SELECT ?, ?, ?, ?, ?, ?, ?, ?
-         FROM workspace_invitations
-         WHERE invitation_id = ? AND accepted_at = ?
-           AND accepted_by_user_id = ?`,
-      )
-      .bind(
-        input.auditEvent.id,
-        input.auditEvent.workspaceId ?? null,
-        input.auditEvent.actorUserId ?? null,
-        input.auditEvent.action,
-        input.auditEvent.targetType ?? null,
-        input.auditEvent.targetId ?? null,
-        auditMetadataJson(input.auditEvent),
-        input.auditEvent.createdAt,
-        input.invitation.id,
-        input.acceptedAt,
-        input.user.id,
-      ));
     const results = await this.database.batch(statements);
     if ((results[invitationUpdateIndex].meta.changes ?? 0) !== 1) {
-      const membership = await this.getWorkspaceMembership(
-        input.invitation.workspaceId,
-        input.user.id,
-      );
-      if (!membership) throw new InvalidWorkspaceInvitationError();
+      throw new InvalidWorkspaceInvitationError();
     }
   }
 
@@ -1902,6 +2087,12 @@ implements WorkspaceRepository, AuthRepository {
              SELECT 1
              FROM workspaces
              WHERE workspace_id = ?
+           ) AND NOT EXISTS (
+             SELECT 1 FROM workspace_memberships
+             WHERE workspace_id = ? AND role = 'owner' AND user_id <> ?
+           ) AND NOT EXISTS (
+             SELECT 1 FROM workspace_memberships
+             WHERE workspace_id = ? AND user_id = ? AND role <> 'owner'
            )`,
         )
         .bind(
@@ -1909,6 +2100,10 @@ implements WorkspaceRepository, AuthRepository {
           input.userId,
           input.createdAt,
           input.workspaceId,
+          input.workspaceId,
+          input.userId,
+          input.workspaceId,
+          input.userId,
         ),
       this.database
         .prepare(
@@ -1924,12 +2119,17 @@ implements WorkspaceRepository, AuthRepository {
              SELECT 1
              FROM workspace_claims
              WHERE workspace_id = ? AND claimed_by_user_id = ?
+           ) AND NOT EXISTS (
+             SELECT 1 FROM workspace_memberships
+             WHERE workspace_id = ? AND role = 'owner' AND user_id <> ?
            )`,
         )
         .bind(
           input.workspaceId,
           input.userId,
           input.createdAt,
+          input.userId,
+          input.workspaceId,
           input.userId,
           input.workspaceId,
           input.userId,
@@ -1969,7 +2169,7 @@ implements WorkspaceRepository, AuthRepository {
       )
       .bind(input.workspaceId)
       .first<ClaimRow>();
-    if (!claim) throw new WorkspaceNotFoundError();
+    if (!claim) throw new WorkspaceAlreadyClaimedError();
     if (claim.claimed_by_user_id !== input.userId) {
       throw new WorkspaceAlreadyClaimedError();
     }
@@ -1978,14 +2178,18 @@ implements WorkspaceRepository, AuthRepository {
       input.workspaceId,
       input.userId,
     );
-    if (!membership) {
-      throw new Error('Workspace claim did not create a membership');
+    if (!membership || membership.role !== 'owner') {
+      throw new WorkspaceAlreadyClaimedError();
     }
     return membership;
   }
 
-  async createAuthSession(session: AuthSessionRecord): Promise<void> {
-    await this.database
+  async createAuthSession(
+    session: AuthSessionRecord,
+    expectedPassword: PasswordCredential,
+  ): Promise<boolean> {
+    // The insert and credential check serialize with the reset/revocation batch.
+    const result = await this.database
       .prepare(
         `INSERT INTO auth_sessions (
            token_hash,
@@ -1996,7 +2200,10 @@ implements WorkspaceRepository, AuthRepository {
            last_seen_at,
            revoked_at
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         SELECT ?, ?, ?, ?, ?, ?, ? FROM users
+         WHERE user_id = ? AND status = 'active'
+           AND password_algorithm = ? AND password_salt = ?
+           AND password_hash = ? AND password_iterations = ?`,
       )
       .bind(
         session.tokenHash,
@@ -2006,8 +2213,14 @@ implements WorkspaceRepository, AuthRepository {
         session.expiresAt,
         session.lastSeenAt,
         session.revokedAt,
+        session.userId,
+        expectedPassword.algorithm,
+        expectedPassword.salt,
+        expectedPassword.hash,
+        expectedPassword.iterations,
       )
       .run();
+    return (result.meta.changes ?? 0) === 1;
   }
 
   async getAuthSessionByTokenHash(

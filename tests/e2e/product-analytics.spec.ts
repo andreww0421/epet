@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import type { AnalyticsEvent, AnalyticsEventName } from '../../src/analytics';
+import type { ProductAnalyticsFlow, ProductAnalyticsWorkflowEvent } from '../../shared/productAnalytics/schema';
 import {
   E2eApiSession,
   addClassViaUi,
@@ -12,7 +13,8 @@ import {
   testAccount,
 } from './support/fixtures';
 
-type AnalyticsTestWindow = Window & { __epetTestAnalytics?: AnalyticsEvent[] };
+type AnalyticsTestWindow = Window & { __epetTestAnalytics?: AnalyticsEvent[];
+  __epetTestWorkflowAnalytics?: ProductAnalyticsWorkflowEvent[] };
 let analyticsOwner: E2eApiSession;
 
 // The local harness supplies a synthetic development sink. Only its already
@@ -21,10 +23,14 @@ const installCollector = async (page: Page) => {
   await page.addInitScript(() => {
     const target = window as AnalyticsTestWindow;
     target.__epetTestAnalytics = [];
+    target.__epetTestWorkflowAnalytics = [];
     window.addEventListener('epet-test-product-analytics', (event) => {
       if (event instanceof CustomEvent) {
         target.__epetTestAnalytics?.push(event.detail as AnalyticsEvent);
       }
+    });
+    window.addEventListener('epet-test-workflow-analytics', (event) => {
+      if (event instanceof CustomEvent) target.__epetTestWorkflowAnalytics?.push(event.detail as ProductAnalyticsWorkflowEvent);
     });
   });
 };
@@ -35,6 +41,21 @@ const clearCollected = (page: Page) => page.evaluate(() => {
 });
 const eventsNamed = async (page: Page, name: AnalyticsEventName) =>
   (await collected(page)).filter((event) => event.name === name);
+const workflows = (page: Page, flow?: ProductAnalyticsFlow) => page.evaluate((selected) =>
+  ((window as AnalyticsTestWindow).__epetTestWorkflowAnalytics ?? []).filter((event) => !selected || event.flow === selected), flow);
+const assertWorkflowPayloads = (events: ProductAnalyticsWorkflowEvent[], forbidden: string[]) => {
+  expect(events.length).toBeGreaterThan(0);
+  for (const event of events) {
+    expect(Object.keys(event).sort()).toEqual([
+      'attempt', ...(event.flow === 'class_create' ? ['class_context'] : []), 'flow', 'kind', 'schema_version', 'stage',
+    ].sort());
+    expect(event.schema_version).toBe(2);
+    expect(event.kind).toBe('workflow');
+    expect(event.attempt).toMatch(/^[0-9a-f-]{36}$/i);
+  }
+  const serialized = JSON.stringify(events);
+  for (const value of forbidden.filter(Boolean)) expect(serialized.includes(value)).toBe(false);
+};
 
 const openIsolatedConsole = async (page: Page, name: string) => {
   const created = await analyticsOwner.createWorkspace(name);
@@ -171,18 +192,31 @@ test.describe('Anonymous teacher product analytics', () => {
       ...(classroom?.examRecords?.map(({ id }) => id) ?? []),
       ...cookies.filter(({ name }) => /epet_(session|csrf)/.test(name)).map(({ value }) => value),
     ]);
+    const lifecycle = await workflows(page);
+    for (const flow of ['class_create', 'roster_import', 'point_increase', 'exam_create'] as const) {
+      const perFlow = lifecycle.filter((event) => event.flow === flow);
+      const attempts = [...new Set(perFlow.map((event) => event.attempt))];
+      expect(attempts).toHaveLength(flow === 'point_increase' ? 2 : 1);
+      for (const attempt of attempts) expect(perFlow.filter((event) => event.attempt === attempt).map((event) => event.stage))
+        .toEqual(['started', 'local_completed', 'backend_acknowledged']);
+    }
+    assertWorkflowPayloads(lifecycle, [workspaceName, workspaceId, className, ...studentNames, pointReason,
+      evidenceTitle, evidenceContent, examTitle, bossName, '73.5', analyticsOwner.account.email,
+      analyticsOwner.session.user.id, classroom?.id ?? '', ...(classroom?.students.map(({ id }) => id) ?? []),
+      ...cookies.filter(({ name }) => /epet_(session|csrf)/.test(name)).map(({ value }) => value)]);
     // Hydrating an already saved workspace emits navigation, not completions.
     await page.reload();
-    await expect(page.getByRole('heading', { name: 'Today', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '首頁', exact: true })).toBeVisible();
     await expect.poll(async () => (await collected(page)).map(({ name }) => name)).toEqual(['feature_opened']);
+    expect(await workflows(page)).toEqual([]);
   });
 
   test('repeated teacher navigation is deduplicated and presentation is not tracked', async ({ page }) => {
     await openIsolatedConsole(page, 'AnalyticsPrivateNavigationWorkspace');
     await selectTeacherDestination(page, 'Class', '學生');
     await selectTeacherDestination(page, 'Class', '學生');
-    await selectTeacherDestination(page, 'Class', '獎勵');
-    await selectTeacherDestination(page, 'Class', '獎勵');
+    await selectTeacherDestination(page, 'Class', '加減分');
+    await selectTeacherDestination(page, 'Class', '加減分');
     expect((await eventsNamed(page, 'feature_opened')).map(({ metadata }) => metadata)).toEqual([
       { feature: 'students' }, { feature: 'points' },
     ]);
@@ -196,7 +230,7 @@ test.describe('Anonymous teacher product analytics', () => {
     expect(await collected(page)).toEqual(beforePresentation);
     await page.getByRole('button', { name: '結束投影', exact: true }).click();
     await page.getByRole('button', { name: '已停止投影，返回控制台' }).click();
-    await expect(page.getByRole('heading', { name: 'Today', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '首頁', exact: true })).toBeVisible();
     // A genuinely new console lifetime may open Today once again.
     expect((await eventsNamed(page, 'feature_opened')).map(({ metadata }) => metadata)).toEqual([
       { feature: 'students' }, { feature: 'points' }, { feature: 'today' },
@@ -229,6 +263,7 @@ test.describe('Anonymous teacher product analytics', () => {
     await page.getByRole('button', { name: '產生個別 A4 PDF', exact: true }).click();
     await expect(page.getByText('報告視窗遭瀏覽器阻擋，請允許彈出式視窗後重試。')).toBeVisible();
     expect(await eventsNamed(page, 'report_generated')).toHaveLength(0);
+    expect((await workflows(page, 'report_exam')).map((event) => event.stage)).toEqual(['started', 'rejected']);
     await page.evaluate(() => {
       const target = window as Window & { __epetTestOriginalOpen?: typeof window.open };
       if (!target.__epetTestOriginalOpen) throw new Error('Synthetic popup override is missing');
@@ -267,6 +302,10 @@ test.describe('Anonymous teacher product analytics', () => {
       workspaceId, studentName, studentId, examTitle, teacherComment, '87.5', '88.5',
       analyticsOwner.account.email, analyticsOwner.account.password,
     ]);
+    expect((await workflows(page, 'report_exam')).map((event) => event.stage))
+      .toEqual(['started', 'rejected', 'started', 'local_completed']);
+    expect((await workflows(page, 'report_weekly')).map((event) => event.stage)).toEqual(['started', 'local_completed']);
+    expect((await workflows(page, 'exam_create')).filter((event) => event.stage === 'started')).toHaveLength(1);
   });
 
   test('browser privacy opt-out disables analytics without disabling teacher actions', async ({ page }) => {
@@ -285,5 +324,70 @@ test.describe('Anonymous teacher product analytics', () => {
     await selectTeacherDestination(page, 'Learning', '學習證據');
     await expect(page.getByRole('tab', { name: '學習證據', exact: true })).toHaveAttribute('aria-selected', 'true');
     expect(await collected(page)).toEqual([]);
+    expect(await workflows(page)).toEqual([]);
+  });
+
+  test('class dialog cancellation is distinct from local completion and backend persistence', async ({ page }) => {
+    await openIsolatedConsole(page, 'AnalyticsCancellationWorkspace');
+    await selectDashboardTab(page, '學生');
+    await page.getByRole('button', { name: '新增班級' }).click();
+    await page.getByRole('dialog', { name: '新增班級' }).getByRole('button', { name: '取消', exact: true }).click();
+    expect((await workflows(page, 'class_create')).map((event) => event.stage)).toEqual(['started', 'cancelled']);
+    await addClassViaUi(page, 'AnalyticsAcceptedAfterCancel');
+    const events = await workflows(page, 'class_create');
+    expect(events.map((event) => event.stage)).toEqual(['started', 'cancelled', 'started', 'local_completed', 'backend_acknowledged']);
+    expect(events[0].class_context).toBe('first');
+    expect(events[2].class_context).toBe('subsequent');
+  });
+
+  test('identical 409 remote equivalence never claims a fresh backend acknowledgement', async ({ page }) => {
+    await openIsolatedConsole(page, 'AnalyticsEquivalentConflictWorkspace');
+    await page.route('**/api/v1/state', async (route) => {
+      const request = route.request();
+      if (request.method() !== 'PUT') { await route.continue(); return; }
+      // Commit the actual business write, then model a lost response followed by
+      // the existing identical-remote 409 recovery contract.
+      const response = await route.fetch();
+      expect(response.status()).toBe(200);
+      const current = await response.json();
+      await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: 'REVISION_CONFLICT', current }) });
+    });
+    await selectDashboardTab(page, '學生');
+    await page.getByRole('button', { name: '新增班級' }).click();
+    await page.getByLabel('班級名稱').fill('AnalyticsEquivalentClass');
+    const saved = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/v1/state' && response.request().method() === 'PUT');
+    await page.getByLabel('班級名稱').press('Enter');
+    expect((await saved).status()).toBe(409);
+    await expect(page.locator('[title="後端已同步"]')).toBeVisible();
+    await expect.poll(async () => (await workflows(page, 'class_create')).map((event) => event.stage))
+      .toEqual(['started', 'local_completed', 'unconfirmed']);
+    expect((await workflows(page)).some((event) => event.stage === 'backend_acknowledged')).toBe(false);
+  });
+
+  test('dynamic DNT drops an in-flight acknowledgement and later teacher actions still save', async ({ page }) => {
+    await openIsolatedConsole(page, 'AnalyticsDynamicDntWorkspace');
+    let entered!: () => void;
+    const intercepted = new Promise<void>((resolve) => { entered = resolve; });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    await page.route('**/api/v1/state', async (route) => {
+      if (route.request().method() !== 'PUT') { await route.continue(); return; }
+      const response = await route.fetch();
+      entered();
+      await released;
+      await route.fulfill({ response });
+    });
+    await selectDashboardTab(page, '學生');
+    await page.getByRole('button', { name: '新增班級' }).click();
+    await page.getByLabel('班級名稱').fill('AnalyticsDynamicDntClass');
+    await page.getByLabel('班級名稱').press('Enter');
+    await intercepted;
+    await page.evaluate(() => Object.defineProperty(navigator, 'doNotTrack', { configurable: true, value: '1' }));
+    release();
+    await expect(page.locator('[title="後端已同步"]')).toBeVisible();
+    expect((await workflows(page, 'class_create')).map((event) => event.stage)).toEqual(['started', 'local_completed']);
+    await page.unroute('**/api/v1/state');
+    await addStudentViaUi(page, 'AnalyticsStillFunctionalWithDnt');
+    expect((await workflows(page)).some((event) => event.stage === 'backend_acknowledged')).toBe(false);
   });
 });

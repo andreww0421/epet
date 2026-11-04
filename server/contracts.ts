@@ -25,6 +25,46 @@ export type WorkspaceWriteContext = {
   requestId?: string;
 };
 
+export type ProductOnboardingState = {
+  cohortDay: string;
+  started: boolean;
+  localReported: boolean;
+  backendPersisted: boolean;
+};
+
+export type ProductOnboardingSummary = {
+  cohortDay: string;
+  enrolled: number;
+  started: number;
+  localReported: number;
+  backendPersisted: number;
+};
+
+export interface ProductOnboardingRepository {
+  getProductOnboarding(userId: string): Promise<ProductOnboardingState | null>;
+  enrollProductOnboarding(input: {
+    userId: string; cohortStart: number; now: number;
+  }): Promise<ProductOnboardingState | null>;
+  updateProductOnboarding(userId: string, stage: 'started' | 'local_completed'):
+    Promise<ProductOnboardingState | null>;
+  confirmProductOnboarding(userId: string): Promise<void>;
+  summarizeProductOnboarding(input: { fromDay: string; toDay: string }):
+    Promise<ProductOnboardingSummary[]>;
+}
+
+export const isProductOnboardingEnrollmentTime = (cohortStart: number, now: number) =>
+  Number.isSafeInteger(cohortStart) && cohortStart >= 0 &&
+  Number.isSafeInteger(now) && now >= cohortStart && now <= 8_640_000_000_000_000;
+
+export const assertProductOnboardingDateRange = (fromDay: string, toDay: string) => {
+  const validDay = (day: string) => /^\d{4}-\d{2}-\d{2}$/.test(day) &&
+    Number.isFinite(Date.parse(day)) && new Date(day).toISOString().slice(0, 10) === day;
+  if (!validDay(fromDay) || !validDay(toDay) || toDay < fromDay ||
+      Date.parse(toDay) - Date.parse(fromDay) > 90 * 86_400_000) {
+    throw new Error('Invalid product onboarding summary range');
+  }
+};
+
 export type AuthUserStatus = 'active' | 'disabled';
 export type PasswordAlgorithm = 'PBKDF2-HMAC-SHA256';
 
@@ -322,7 +362,12 @@ export interface AuthRepository {
   claimLegacyWorkspace(
     input: ClaimLegacyWorkspaceInput,
   ): Promise<WorkspaceMembershipRecord>;
-  createAuthSession(session: AuthSessionRecord): Promise<void>;
+  // Only issue a session for the exact credential that was authenticated.
+  // Implementations must compare and insert atomically with password resets.
+  createAuthSession(
+    session: AuthSessionRecord,
+    expectedPassword: PasswordCredential,
+  ): Promise<boolean>;
   getAuthSessionByTokenHash(tokenHash: string): Promise<AuthSessionRecord | null>;
   setAuthSessionActiveWorkspace(
     tokenHash: string,
@@ -365,8 +410,16 @@ export class WorkspaceConflictError extends Error {
 }
 
 export class WorkspaceDataTooLargeError extends Error {
-  constructor() {
+  readonly limitBytes?: number;
+  readonly limitKind?: 'workspace_snapshot' | 'request_body';
+
+  constructor(limit?: {
+    limitBytes: number;
+    limitKind: 'workspace_snapshot' | 'request_body';
+  }) {
     super('Workspace data is too large');
+    this.limitBytes = limit?.limitBytes;
+    this.limitKind = limit?.limitKind;
   }
 }
 
@@ -397,6 +450,12 @@ export class WorkspaceMembershipNotFoundError extends Error {
 export class WorkspaceOwnerTransferRequiredError extends Error {
   constructor() {
     super('Workspace ownership must be transferred or deleted first');
+  }
+}
+
+export class WorkspaceOwnershipConflictError extends Error {
+  constructor() {
+    super('Workspace ownership changed; reload membership before retrying');
   }
 }
 

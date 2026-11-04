@@ -4,6 +4,8 @@ dist/
 coverage/
 .tmp-rule-tests/
 .playwright-cli/
+# Local verification artifacts, including synthetic account/runtime metadata.
+/output/
 output/playwright/
 output/privacy-test-tmp/
 output/privacy-unit/

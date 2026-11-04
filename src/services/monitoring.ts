@@ -95,7 +95,8 @@ export const initializeFrontendMonitoring = (
       target.removeEventListener('error', uncaught);
       target.removeEventListener('unhandledrejection', rejected);
       reporter = undefined;
-      void Promise.resolve(client.close(MONITORING_TIMEOUT_MS)).catch(() => undefined);
+      try { void Promise.resolve(client.close(MONITORING_TIMEOUT_MS)).catch(() => undefined); }
+      catch { /* A synchronous SDK teardown failure must not affect logout/unmount. */ }
     };
   } catch { return () => undefined; }
 };

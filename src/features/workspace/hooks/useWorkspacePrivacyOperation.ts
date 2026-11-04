@@ -51,6 +51,10 @@ export const useWorkspacePrivacyOperation = (
         const en = language === 'en';
         setError(code.includes('SYNC_REQUIRED')
           ? (en ? 'Finish synchronizing this workspace before taking action.' : '請先完成工作區同步，再執行資料操作。')
+          : code.includes('PAYLOAD_TOO_LARGE')
+            ? (en ? 'The backup exceeds the storage limit. No data was replaced. Organize the backup and review it again; no automatic retry will occur.' : '備份超出儲存容量，資料未被取代。請整理備份後重新預覽確認；系統不會自動重試。')
+          : code.includes('INVALID_APP_DATA') || code.includes('INVALID_JSON')
+            ? (en ? 'The backup failed validation. No data was replaced. Correct the file and review it again.' : '備份未通過資料驗證，資料未被取代。請修正檔案後重新預覽確認。')
           : code.includes('TARGET_CHANGED')
             ? (en ? 'The selected record changed. Cancel, reload and review the target again.' : '所選資料已變更。請取消、重新載入並再次檢查對象。')
           : code.includes('LAST_ACTIVE_CLASS')

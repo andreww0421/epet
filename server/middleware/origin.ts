@@ -22,7 +22,7 @@ export const getCorsHeaders = (
       ...(allowedOrigin ? { 'access-control-allow-origin': allowedOrigin } : {}),
       ...(allowedOrigin ? { 'access-control-allow-credentials': 'true' } : {}),
       'access-control-allow-headers':
-        'content-type, x-csrf-token, x-epet-workspace, x-request-id',
+        'content-type, x-csrf-token, x-epet-workspace, x-request-id, x-epet-sync-user, x-epet-sync-access',
       'access-control-allow-methods': 'GET, PUT, POST, PATCH, DELETE, OPTIONS',
       vary: 'Origin',
     },

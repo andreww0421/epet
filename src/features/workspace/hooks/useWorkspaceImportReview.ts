@@ -4,6 +4,7 @@ import { getWorkspaceImportImpact, hasWorkspaceImportShape, matchesWorkspaceImpo
 import { importWorkspaceBackup } from '../../../services/backendApi';
 import type { AppData, Language } from '../../../store/types';
 import { normalizeAppData } from '../../../store/utils';
+import { assertWorkspaceData } from '../../../../shared/validation/workspaceValidation';
 import { useWorkspacePrivacyOperation } from './useWorkspacePrivacyOperation';
 
 export type WorkspaceImportReview = {
@@ -28,10 +29,10 @@ export const useWorkspaceImportReview = (
   const reviewImport = async (input: unknown, workspaceId = operation.workspaceId) => {
     if (!workspaceId || workspaceId !== current.current.workspaceId || !current.current.allowed ||
         !hasWorkspaceImportShape(input)) return false;
-    const now = Date.now();
-    const data = normalizeAppData(input, now);
     return operation.execute(async (targetWorkspaceId, expectedRevision, existing) => {
       if (!existing || targetWorkspaceId !== workspaceId || !current.current.allowed) throw new Error('TARGET_CHANGED');
+      assertWorkspaceData(input, 'legacy');
+      const data = normalizeAppData(input, Date.now());
       setReview({ workspaceId, expectedRevision,
         workspaceName: session?.workspaces.find((item) => item.id === workspaceId)?.name ?? '',
         data, currentImpact: getWorkspaceImportImpact(existing), incomingImpact: getWorkspaceImportImpact(data) });

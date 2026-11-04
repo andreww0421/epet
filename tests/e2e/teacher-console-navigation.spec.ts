@@ -16,6 +16,8 @@ import {
 } from './support/fixtures';
 
 let consoleOwner: E2eApiSession;
+const consoleAreas = ['Today', 'Class', 'Learning', 'Activities', 'Settings'] as const;
+const consoleAreaLabels = { Today: '首頁', Class: '班級', Learning: '教學', Activities: '活動', Settings: '管理設定' } as const;
 
 const openOwnerConsole = async (page: Page, workspaceName: string) => {
   const created = await consoleOwner.createWorkspace(workspaceName);
@@ -23,6 +25,18 @@ const openOwnerConsole = async (page: Page, workspaceName: string) => {
   if (!workspaceId) throw new Error('Workspace is missing');
   await openConsoleWithApiSession(page, consoleOwner);
   return workspaceId;
+};
+
+const openTodayPointAdjustment = async (page: Page, direction: '給予積分' | '扣除積分') => {
+  const trigger = page.getByRole('region', { name: '快速操作', exact: true })
+    .getByRole('button', { name: '加減分', exact: true });
+  await trigger.focus();
+  await page.keyboard.press('Enter');
+  const initialDialog = page.getByRole('dialog', { name: '給予積分', exact: true });
+  await expect(initialDialog.getByLabel('回饋原因與積分', { exact: true })).toBeFocused();
+  await initialDialog.getByRole('group', { name: '加減分方向', exact: true })
+    .getByRole('radio', { name: direction, exact: true }).check();
+  return { trigger, dialog: page.getByRole('dialog', { name: direction, exact: true }) };
 };
 
 const presentationNames = ['AlphaPrivateLearner', 'BetaPrivateLearner', 'GammaPrivateLearner'];
@@ -53,7 +67,7 @@ const seedPresentationConsole = async (page: Page, hiddenLeaderboard = false) =>
     }],
   }, snapshot.revision, workspaceId);
   await page.reload();
-  await expect(page.getByRole('heading', { name: 'Today', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '首頁', exact: true })).toBeVisible();
   return workspaceId;
 };
 
@@ -71,14 +85,15 @@ test.describe('Teacher Console information architecture', () => {
   test('task areas are primary, Settings is secondary, and Today retains class context', async ({ context, page }, info) => {
     const workspaceId = await openOwnerConsole(page, 'console-primary');
     const navigation = page.getByRole('navigation', { name: 'Teacher Console', exact: true });
-    const areas = ['Today', 'Class', 'Learning', 'Activities', 'Insights', 'Settings'];
-    await expect(navigation.getByRole('button')).toHaveCount(6);
-    for (const area of areas) {
-      await expect(navigation.getByRole('button', { name: area, exact: true })).toBeVisible();
+    await expect(navigation.getByRole('button')).toHaveCount(5);
+    for (const area of consoleAreas) {
+      await expect(navigation.getByRole('button', { name: consoleAreaLabels[area], exact: true })).toBeVisible();
     }
-    await expect(navigation.getByRole('button', { name: 'Today', exact: true }))
+    await expect(navigation.getByRole('button', { name: 'Insights', exact: true })).toHaveCount(0);
+    await expect(navigation.locator('#console-area-settings').locator('..').getByRole('button')).toHaveCount(1);
+    await expect(navigation.getByRole('button', { name: '首頁', exact: true }))
       .toHaveAttribute('aria-current', 'page');
-    await expect(page.getByRole('heading', { name: 'Today', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '首頁', exact: true })).toBeVisible();
     const snapshot = await loadBrowserState(context, workspaceId);
     await expect(page.locator('#classSelect')).toHaveValue(snapshot.data?.currentClassId ?? '');
     const quickActions = page.getByRole('region', { name: '快速操作', exact: true });
@@ -86,21 +101,22 @@ test.describe('Teacher Console information architecture', () => {
     const desktopScreenshot = info.outputPath('teacher-console-desktop.png');
     await page.screenshot({ path: desktopScreenshot, fullPage: true });
     await info.attach('Teacher Console desktop', { path: desktopScreenshot, contentType: 'image/png' });
-    for (const label of ['給予積分', '扣除積分', '新增評語', '新增學習證據', '建立／匯入考試', '開始課堂活動']) {
+    await expect(quickActions.getByRole('button', { name: /^(加減分|記錄成績|學習紀錄|開始活動)$/ })).toHaveCount(4);
+    for (const label of ['加減分', '記錄成績', '學習紀錄', '開始活動']) {
       const button = quickActions.getByRole('button', { name: label, exact: true });
       await expect(button).toBeVisible();
-      if (label !== '開始課堂活動') await expect(button).toBeDisabled();
+      if (label !== '開始活動') await expect(button).toBeDisabled();
     }
     const destinations = [
       ['Class', '學生'],
       ['Learning', '學習證據'],
       ['Activities', '魔王管理'],
-      ['Insights', '個人分析'],
+      ['Class', '個人分析'],
       ['Settings', '規則'],
     ] as const;
     for (const [area, destination] of destinations) {
       await selectTeacherDestination(page, area, destination);
-      await expect(navigation.getByRole('button', { name: area, exact: true }))
+      await expect(navigation.getByRole('button', { name: consoleAreaLabels[area], exact: true }))
         .toHaveAttribute('aria-current', 'page');
       await expect(navigation.locator('[aria-current="page"]')).toHaveCount(1);
       await expect(page.getByRole('tab', { name: destination, exact: true }))
@@ -108,36 +124,45 @@ test.describe('Teacher Console information architecture', () => {
       await expect(page.getByRole('tabpanel', { name: destination, exact: true })).toBeVisible();
       await expect(page.locator('#classSelect')).toHaveValue(snapshot.data?.currentClassId ?? '');
       if (area === 'Class' || area === 'Activities' || area === 'Settings') {
-        const screenshot = info.outputPath(`teacher-console-${area.toLowerCase()}.png`);
+        const screenshot = info.outputPath(`teacher-console-${area.toLowerCase()}-${destination}.png`);
         await page.screenshot({ path: screenshot, fullPage: true });
         await info.attach(`Teacher Console ${area}`, { path: screenshot, contentType: 'image/png' });
       }
     }
   });
 
-  test('navigation fits a mobile viewport and supports keyboard activation', async ({ page }, info) => {
+  test('four-area navigation fits mobile, tablet and desktop viewports and supports keyboard activation', async ({ page }, info) => {
     await openOwnerConsole(page, 'console-mobile');
-    await page.setViewportSize({ width: 375, height: 812 });
     const navigation = page.getByRole('navigation', { name: 'Teacher Console', exact: true });
-    for (const area of ['Today', 'Class', 'Learning', 'Activities', 'Insights', 'Settings']) {
-      const button = navigation.getByRole('button', { name: area, exact: true });
-      await button.focus();
-      await expect(button).toBeFocused();
-      await page.keyboard.press('Enter');
-      await expect(button).toHaveAttribute('aria-current', 'page');
-      await expect(button).toBeInViewport();
-      const bounds = await navigation.boundingBox();
-      expect(bounds).not.toBeNull();
-      expect(bounds!.x).toBeGreaterThanOrEqual(0);
-      expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(375);
+    for (const width of [320, 375, 768, 1280]) {
+      await page.setViewportSize({ width, height: 900 });
+      for (const area of consoleAreas) {
+        const button = navigation.getByRole('button', { name: consoleAreaLabels[area], exact: true });
+        await button.focus();
+        await expect(button).toBeFocused();
+        await page.keyboard.press('Enter');
+        await expect(button).toHaveAttribute('aria-current', 'page');
+        await expect(button).toBeInViewport();
+        const target = await button.boundingBox();
+        expect(target).not.toBeNull();
+        expect(target!.height).toBeGreaterThanOrEqual(44);
+        const bounds = await navigation.boundingBox();
+        expect(bounds).not.toBeNull();
+        expect(bounds!.x).toBeGreaterThanOrEqual(0);
+        expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+      }
+      expect(await page.evaluate(() =>
+        document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      )).toBe(true);
     }
+    await page.setViewportSize({ width: 375, height: 812 });
     await selectTeacherDestination(page, 'Class', '學生');
     const students = page.getByRole('tab', { name: '學生', exact: true });
     await students.focus();
     await page.keyboard.press('ArrowRight');
     await expect(page.getByRole('tab', { name: '分組', exact: true })).toBeFocused();
     await page.keyboard.press('End');
-    await expect(page.getByRole('tab', { name: '紀錄', exact: true })).toBeFocused();
+    await expect(page.getByRole('tab', { name: '班級分析', exact: true })).toBeFocused();
     await page.keyboard.press('Home');
     await expect(students).toBeFocused();
     await expect(page.getByRole('tablist').locator('[tabindex="0"]')).toHaveCount(1);
@@ -148,21 +173,51 @@ test.describe('Teacher Console information architecture', () => {
     const mobileScreenshot = info.outputPath('teacher-console-mobile.png');
     await page.screenshot({ path: mobileScreenshot, fullPage: true });
     await info.attach('Teacher Console mobile', { path: mobileScreenshot, contentType: 'image/png' });
-    await page.setViewportSize({ width: 320, height: 812 });
-    for (const area of ['Today', 'Class', 'Learning', 'Activities', 'Insights', 'Settings']) {
-      const button = navigation.getByRole('button', { name: area, exact: true });
-      await button.focus();
-      await page.keyboard.press('Enter');
-      await expect(button).toHaveAttribute('aria-current', 'page');
-      await expect(button).toBeInViewport();
-      const bounds = await navigation.boundingBox();
-      expect(bounds).not.toBeNull();
-      expect(bounds!.x).toBeGreaterThanOrEqual(0);
-      expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(320);
-    }
-    expect(await page.evaluate(() =>
-      document.documentElement.scrollWidth <= document.documentElement.clientWidth,
-    )).toBe(true);
+  });
+
+  test('analysis entries stay in their class or teaching workflow with one flat keyboard order and no writes', async ({ context, page }) => {
+    const workspaceId = await openOwnerConsole(page, 'console-contextual-analysis');
+    const baseline = await loadBrowserState(context, workspaceId);
+    const writes: string[] = [];
+    page.on('request', (request) => {
+      if (new URL(request.url()).pathname === '/api/v1/state' && request.method() === 'PUT') writes.push(request.method());
+    });
+    const navigation = page.getByRole('navigation', { name: 'Teacher Console', exact: true });
+    await selectTeacherDestination(page, 'Class', '紀錄');
+    const records = page.getByRole('tab', { name: '紀錄', exact: true });
+    await records.focus();
+    await page.keyboard.press('ArrowRight');
+    const studentAnalysis = page.getByRole('tab', { name: '個人分析', exact: true });
+    await expect(studentAnalysis).toBeFocused();
+    await expect(studentAnalysis).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('tabpanel', { name: '個人分析', exact: true })).toBeVisible();
+    await expect(navigation.getByRole('button', { name: '班級', exact: true })).toHaveAttribute('aria-current', 'page');
+    await expect(page.getByRole('tablist').getByText('分析入口', { exact: true })).toBeVisible();
+    await page.keyboard.press('ArrowRight');
+    const classAnalysis = page.getByRole('tab', { name: '班級分析', exact: true });
+    await expect(classAnalysis).toBeFocused();
+    await expect(page.getByRole('tabpanel', { name: '班級分析', exact: true })).toBeVisible();
+    await page.keyboard.press('ArrowLeft');
+    await expect(studentAnalysis).toBeFocused();
+    await page.keyboard.press('ArrowLeft');
+    await expect(records).toBeFocused();
+    await selectTeacherDestination(page, 'Learning', '每週回饋報告');
+    await page.getByRole('tab', { name: '每週回饋報告', exact: true }).focus();
+    await page.keyboard.press('ArrowRight');
+    const trends = page.getByRole('tab', { name: '學習趨勢', exact: true });
+    await expect(trends).toBeFocused();
+    await expect(trends).toHaveAttribute('aria-selected', 'true');
+    await expect(navigation.getByRole('button', { name: '教學', exact: true })).toHaveAttribute('aria-current', 'page');
+    await expect(page.getByRole('tablist').locator('[aria-selected="true"]')).toHaveCount(1);
+    await expect(page.getByRole('tablist').locator('[tabindex="0"]')).toHaveCount(1);
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('tabpanel', { name: '學習趨勢', exact: true })).toBeFocused();
+    await selectTeacherDestination(page, 'Class', '加減分');
+    await expect(page.getByRole('tab', { name: '加減分', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await selectTeacherDestination(page, 'Learning');
+    await expect(trends).toHaveAttribute('aria-selected', 'true');
+    expect(writes).toEqual([]);
+    expect(await loadBrowserState(context, workspaceId)).toEqual(baseline);
   });
 
   test('evidence, assessment, goal and settings drafts survive destination changes without a write', async ({ context, page }) => {
@@ -311,17 +366,13 @@ test.describe('Teacher Console information architecture', () => {
     await expect(page.getByRole('heading', { name: '隊伍排行榜', exact: true })).toBeVisible();
   });
 
-  test('Today opens the canonical give/deduct dialog in one action and preserves required reasons and focus', async ({ context, page }) => {
+  test('Today opens the canonical point dialog and preserves both directions, required reasons and focus', async ({ context, page }) => {
     const workspaceId = await openOwnerConsole(page, 'today-points');
     const studentName = 'E2E Today 積分學生';
     await addStudentViaUi(page, studentName);
     await selectTeacherDestination(page, 'Today');
-    const quick = page.getByRole('region', { name: '快速操作', exact: true });
     for (const [label, amount, signedAmount] of [['給予積分', '8', 8], ['扣除積分', '3', -3]] as const) {
-      const trigger = quick.getByRole('button', { name: label, exact: true });
-      await trigger.focus();
-      await page.keyboard.press('Enter');
-      const dialog = page.getByRole('dialog', { name: label, exact: true });
+      const { trigger, dialog } = await openTodayPointAdjustment(page, label);
       await dialog.getByRole('button', { name: '自訂積分', exact: true }).click();
       await expect(dialog.getByLabel('選擇學生', { exact: true })).toBeFocused();
       await expect(dialog.getByRole('button', { name: '確認調整', exact: true })).toBeDisabled();
@@ -332,7 +383,7 @@ test.describe('Teacher Console information architecture', () => {
       await performSyncedAction(page, () => dialog.getByRole('button', { name: '確認調整', exact: true }).click());
       await expect(dialog).not.toBeVisible();
       await expect(trigger).toBeFocused();
-      await expect(page.getByRole('heading', { name: 'Today', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { name: '首頁', exact: true })).toBeVisible();
       const snapshot = await loadBrowserState(context, workspaceId);
       const student = snapshot.data?.classes[0]?.students.find((item) => item.name === studentName);
       const manualRecord = student?.pointAdjustmentRecords?.find((record) => record.reasonLabel === `E2E Today ${label}`);
@@ -343,13 +394,13 @@ test.describe('Teacher Console information architecture', () => {
     const adjustedStudent = finalState.data?.classes[0]?.students[0];
     expect(adjustedStudent?.pointAdjustmentRecords?.some((record) => record.source === 'participationTopUp')).toBe(true);
     expect(adjustedStudent?.points).toBe(200 + (adjustedStudent?.pointAdjustmentRecords ?? []).reduce((total, record) => total + record.amount, 0));
-    // Default configured shortcuts take exactly two clicks, retaining reason, competency and guardrails.
-    for (const label of ['給予積分', '扣除積分']) {
-      await quick.getByRole('button', { name: label, exact: true }).click();
-      const dialog = page.getByRole('dialog', { name: label, exact: true });
+    // Both configured directions retain their reason, competency and guardrails.
+    for (const label of ['給予積分', '扣除積分'] as const) {
+      const { trigger, dialog } = await openTodayPointAdjustment(page, label);
       const presetId = await dialog.getByLabel('回饋原因與積分', { exact: true }).inputValue();
       await performSyncedAction(page, () => dialog.getByRole('group', { name: '套用至學生', exact: true }).getByRole('button', { name: studentName, exact: true }).click());
       await expect(dialog).not.toBeVisible();
+      await expect(trigger).toBeFocused();
       const updated = await loadBrowserState(context, workspaceId);
       const record = updated.data?.classes[0]?.students[0]?.pointAdjustmentRecords?.find((record) => record.reasonId === presetId && record.source === 'quick');
       expect(record?.source).toBe('quick');
@@ -373,7 +424,7 @@ test.describe('Teacher Console information architecture', () => {
     await performSyncedAction(page, () => comments.getByRole('button', { name: '儲存每日評語', exact: true }).click());
 
     await selectTeacherDestination(page, 'Today');
-    await page.getByRole('region', { name: '快速操作', exact: true }).getByRole('button', { name: '新增學習證據', exact: true }).click();
+    await page.getByRole('region', { name: '快速操作', exact: true }).getByRole('button', { name: '學習紀錄', exact: true }).click();
     await expect(page.getByRole('tab', { name: '學習證據', exact: true })).toHaveAttribute('aria-selected', 'true');
     const evidenceForm = page.getByRole('heading', { name: '新增學習證據', exact: true }).locator('..');
     await evidenceForm.getByLabel('證據層級').selectOption('needsSupport');
@@ -381,7 +432,7 @@ test.describe('Teacher Console information architecture', () => {
     await performSyncedAction(page, () => evidenceForm.getByRole('button', { name: '儲存學習證據', exact: true }).click());
 
     await selectTeacherDestination(page, 'Today');
-    await page.getByRole('region', { name: '快速操作', exact: true }).getByRole('button', { name: '建立／匯入考試', exact: true }).click();
+    await page.getByRole('region', { name: '快速操作', exact: true }).getByRole('button', { name: '記錄成績', exact: true }).click();
     await expect(page.getByRole('tab', { name: '考試分析', exact: true })).toHaveAttribute('aria-selected', 'true');
     await page.getByLabel('考試名稱').fill('E2E Today 評量');
     await page.locator('input[data-score-row="0"][data-score-column="0"]').fill('85');
@@ -396,7 +447,7 @@ test.describe('Teacher Console information architecture', () => {
     await expect(summary.getByText('待補導師評語', { exact: true }).locator('..').locator('dd')).toHaveText('0');
     const recent = page.getByRole('region', { name: '最近活動', exact: true });
     for (const name of ['每日評語', '學習證據', '考試更新']) await expect(recent.getByRole('button', { name, exact: true })).toHaveCount(name === '學習證據' ? 2 : 1);
-    await page.getByRole('region', { name: '快速操作', exact: true }).getByRole('button', { name: '開始課堂活動', exact: true }).click();
+    await page.getByRole('region', { name: '快速操作', exact: true }).getByRole('button', { name: '開始活動', exact: true }).click();
     await expect(page.getByRole('tab', { name: '寵物', exact: true })).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByRole('button', { name: '扭蛋 (-200)', exact: true })).toBeVisible();
     const snapshot = await loadBrowserState(context, workspaceId);
@@ -409,8 +460,7 @@ test.describe('Teacher Console information architecture', () => {
     await addStudentViaUi(page, studentName);
     await selectTeacherDestination(page, 'Today');
     for (let index = 0; index < 3; index += 1) {
-      await page.getByRole('button', { name: '扣除積分', exact: true }).click();
-      const dialog = page.getByRole('dialog', { name: '扣除積分', exact: true });
+      const { dialog } = await openTodayPointAdjustment(page, '扣除積分');
       await dialog.getByRole('button', { name: '自訂積分', exact: true }).click();
       await dialog.getByLabel('選擇學生', { exact: true }).selectOption({ label: studentName });
       await dialog.getByLabel('積分數量', { exact: true }).fill('1');
@@ -424,7 +474,7 @@ test.describe('Teacher Console information architecture', () => {
     for (const width of [375, 320]) {
       await page.setViewportSize({ width, height: 812 });
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-      const give = page.getByRole('button', { name: '給予積分', exact: true });
+      const give = page.getByRole('region', { name: '快速操作', exact: true }).getByRole('button', { name: '加減分', exact: true });
       await give.focus();
       await page.keyboard.press('Enter');
       const dialog = page.getByRole('dialog', { name: '給予積分', exact: true });
@@ -469,18 +519,27 @@ test.describe('Teacher Console information architecture', () => {
     const page = await context.newPage();
     try {
       await loginViaUi(page, viewerAccount);
-      await expect(page.getByRole('region', { name: '快速操作', exact: true }).getByRole('button')).toHaveCount(3);
-      await expect(page.getByRole('button', { name: '給予積分', exact: true })).toHaveCount(0);
-      await expect(page.getByRole('button', { name: '扣除積分', exact: true })).toHaveCount(0);
+      const quick = page.getByRole('region', { name: '快速操作', exact: true });
+      await expect(quick.getByRole('button', { name: '加減分', exact: true })).toHaveCount(0);
+      await expect(quick.getByRole('button', { name: '開始活動', exact: true })).toHaveCount(0);
+      for (const name of ['個人分析', '紀錄', '每週回饋報告']) await expect(quick.getByRole('button', { name, exact: true })).toBeVisible();
+      await expect(quick.getByRole('button')).toHaveCount(3);
       const navigation = page.getByRole('navigation', { name: 'Teacher Console', exact: true });
-      for (const area of ['Today', 'Class', 'Learning', 'Insights']) {
-        await expect(navigation.getByRole('button', { name: area, exact: true })).toBeVisible();
+      for (const area of ['Today', 'Class', 'Learning'] as const) {
+        await expect(navigation.getByRole('button', { name: consoleAreaLabels[area], exact: true })).toBeVisible();
       }
-      await expect(navigation.getByRole('button', { name: 'Activities', exact: true })).toHaveCount(0);
-      await expect(navigation.getByRole('button', { name: 'Settings', exact: true })).toHaveCount(0);
+      await expect(navigation.getByRole('button')).toHaveCount(3);
+      await expect(navigation.getByRole('button', { name: '活動', exact: true })).toHaveCount(0);
+      await expect(navigation.getByRole('button', { name: '管理設定', exact: true })).toHaveCount(0);
       await selectTeacherDestination(page, 'Class', '紀錄');
       await expect(page.getByRole('tab', { name: '學生', exact: true })).toHaveCount(0);
-      await expect(page.getByRole('tab', { name: '獎勵', exact: true })).toHaveCount(0);
+      await expect(page.getByRole('tab', { name: '加減分', exact: true })).toHaveCount(0);
+      for (const destination of ['個人分析', '班級分析']) {
+        await selectTeacherDestination(page, 'Class', destination);
+        await expect(page.getByRole('tabpanel', { name: destination, exact: true })).toBeVisible();
+      }
+      await selectTeacherDestination(page, 'Learning', '學習趨勢');
+      await expect(page.getByRole('tabpanel', { name: '學習趨勢', exact: true })).toBeVisible();
       await selectTeacherDestination(page, 'Learning', '每週回饋報告');
       await expect(page.getByRole('button', { name: '保存考試', exact: true })).toHaveCount(0);
       await selectTeacherDestination(page, 'Learning', '考試分析');

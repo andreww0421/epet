@@ -1,4 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { beginProductWorkflow, cancelProductWorkflow, rejectProductWorkflow,
+  type ProductWorkflowToken } from '../../../analytics/workflows';
 import { getActiveClasses } from '../../../../shared/domain/classArchive';
 import { Plus, RefreshCw, Trash2, Users } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
@@ -49,10 +51,19 @@ export const StudentManagementSection = ({
   const currentStudents = currentClass?.students ?? [];
   const [newStudentName, setNewStudentName] = useState('');
   const [showAddClass, setShowAddClass] = useState(false);
+  const classWorkflowRef = useRef<ProductWorkflowToken | null>(null);
   const [classToDelete, setClassToDelete] = useState<{ classroom: ClassData; workspaceId: string | null } | null>(null);
   const runMutation = useWorkspaceMutationGuard(canWrite);
   const lifecycle = useClassLifecycleAction(lang, flushChanges);
   useEffect(() => { setClassToDelete(null); }, [lifecycle.workspaceId]);
+  useEffect(() => () => cancelProductWorkflow(classWorkflowRef.current), []);
+  useEffect(() => {
+    if (!visible || !canWrite) {
+      cancelProductWorkflow(classWorkflowRef.current);
+      classWorkflowRef.current = null;
+      setShowAddClass(false);
+    }
+  }, [visible, canWrite]);
 
   const handleAddStudent = () => {
     if (!newStudentName.trim()) return;
@@ -80,7 +91,10 @@ export const StudentManagementSection = ({
           {canAdministerWorkspace && (
             <div className="flex flex-wrap gap-3 items-end">
               <button
-                onClick={() => setShowAddClass(true)}
+                onClick={() => {
+                  classWorkflowRef.current = beginProductWorkflow('class_create');
+                  setShowAddClass(true);
+                }}
                 className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors"
               >
                 <Plus className="h-4 w-4 mr-2" />
@@ -147,10 +161,17 @@ export const StudentManagementSection = ({
       <AddClassDialog
         open={visible && canWrite && showAddClass}
         onAdd={(name) => {
-          runMutation(() => addClass(name));
+          let accepted = false;
+          runMutation(() => { addClass(name); accepted = true; });
+          if (!accepted) rejectProductWorkflow(classWorkflowRef.current);
+          classWorkflowRef.current = null;
           setShowAddClass(false);
         }}
-        onClose={() => setShowAddClass(false)}
+        onClose={() => {
+          cancelProductWorkflow(classWorkflowRef.current);
+          classWorkflowRef.current = null;
+          setShowAddClass(false);
+        }}
         tLang={tLang}
       />
 

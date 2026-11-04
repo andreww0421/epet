@@ -9,7 +9,7 @@
 
 推送到 `main` 後，GitHub Actions 會先驗證程式與已套用的 D1 migration，再將前端靜態資源與 API 一起部署到 Cloudflare Worker。Schema expansion 由獨立手動 workflow 執行；資料搬移與 destructive contract 操作依 [`docs/database-migration-policy.md`](docs/database-migration-policy.md) 分階段處理。
 
-推送到 `staging`，或在非 `main` branch 手動執行 `staging.yml`，會使用獨立的 `epet-staging` Worker／D1／GitHub environment，並執行唯讀 Playwright smoke。Production 的 Worker 名稱、URL、D1 與 workflow 保持不變；staging 尚需管理員設定獨立資源與 secrets，不能共用或複製正式學生資料。設定方式、部署邊界與 `npm run test:e2e:staging` 見 [`docs/staging-deployment.md`](docs/staging-deployment.md)。
+Staging workflow 已備妥：完成管理員設定後，推送到 `staging` 或在受信任的非 `main` branch 手動執行 `staging.yml`，會使用獨立 `epet-staging` Worker／D1／GitHub environment 並執行唯讀 smoke。截至 2026-10-28，使用者確認 Worker／D1 尚未建立，live isolation 尚未驗證；管理員應先盤點並重用合適資源，再建立缺項、限制 token 與設定獨立 secrets／Turnstile／測試寄信。Production 設定不變，也不複製正式學生資料。步驟與驗收限制見 [`docs/staging-deployment.md`](docs/staging-deployment.md)。
 
 ## 目前功能
 
@@ -124,7 +124,7 @@ npm run dev:full
 
 只啟動前端可使用 `npm run dev`；Vite 會將 `/api` 代理到本機 `8787`。
 
-首次使用請建立導師帳號。密碼長度為 12–128 字元；登入 token 只保存在該分頁工作階段的 `sessionStorage`。未登入者不能讀寫工作區資料。
+首次使用請建立導師帳號。密碼長度為 12–128 字元；登入憑證由 HttpOnly cookie 保存。未登入者不能讀寫工作區資料。未同步草稿另存在分頁的 sessionStorage，綁定使用者、工作區、角色與班級授權範圍；最後編輯 24 小時內，同人同權限重新登入並通過伺服器驗證後可恢復。成功同步會移除對應草稿，其他身分的草稿保持隔離，不會自動載入。
 
 ## 驗證
 
@@ -179,10 +179,12 @@ npx playwright test --headed
 | `exam.spec.ts` | 建立考試、貼上匯入成績、超過滿分的輸入不得套用 |
 | `permissions.spec.ts` | viewer 拒絕寫入、teacher 班級範圍、admin 新增班級、owner 移轉所有權、CSRF／Origin 拒絕 |
 | `data-safety.spec.ts` | 已同步資料的工作區往返保護、真實 revision conflict、禁止不安全切換、草稿下載與重載後恢復同步、不污染另一工作區 |
+| `conflict-recovery.spec.ts` | 真實雙頁面 409、明確丟棄／保留、重整／登出／工作區往返、斷線與儲存失敗重試、降權隔離及恢復 Autosave |
+| `tests/e2e-capacity/capacity-recovery.spec.ts`（`npm run test:e2e:capacity`） | 獨立本機 D1：真實 413、重整不重送、保留／採用／清理、限班隔離、400／429、網路／5xx 有界重試及遺失回應後的等待期限 |
 | `dashboard-refactor.spec.ts` | 每週學習目標、設定儲存、Boss 建立、全班積分空投與 undo 的 feature wiring／持久化 |
 | `class-lifecycle.spec.ts` | 班級封存／重新開啟／永久刪除、唯讀學習與考試歷史、公開展示限制與確認流程 |
 
-可用 `npm run test:e2e -- tests/e2e/authentication.spec.ts` 執行單一檔案，或用 `npx playwright show-report output/playwright/report` 查看最近報告。suite 固定單一 worker；每個案例使用獨立、隨機命名的虛構帳號，透過正式 API 與邀請流程建立角色，不直接注入前端 store 或繞過權限檢查。資料安全案例僅攔截網路以製造延遲／斷線，衝突回應由真實 API 產生。不要將測試 server 暴露至網際網路；不要用真實師生資料執行測試或分享含 session 資訊的 trace。
+可用 `npm run test:e2e -- tests/e2e/authentication.spec.ts` 執行單一檔案，或用 `npx playwright show-report output/playwright/report` 查看最近報告。suite 固定單一 worker，僅使用隨機命名的虛構帳號；功能套件可重用合法 session，並為各案例建立獨立工作區，避免 setup 流量耗盡登入配額。角色透過正式 API 與邀請流程建立，不直接注入前端 store 或繞過權限檢查。資料安全案例僅攔截網路以製造延遲／斷線，衝突回應由真實 API 產生。大量驗證可分批啟動獨立測試 server，保留既有限流。不要將測試 server 暴露至網際網路；不要用真實師生資料執行測試或分享含 session 資訊的 trace。
 
 範圍限制：此 suite 測試 Chromium + Node JSON repository，不等同 Cloudflare Worker／D1 的瀏覽器端 E2E；D1 仍由 `npm test` 中的既有整合測試保護。Email／Turnstile 外部服務沒有納入 browser suite；測試 process 使用既有選項關閉這兩項外部依賴，正式啟動設定完全不變。Linux 首次安裝 browser 如缺系統函式庫，可改用 `npx playwright install --with-deps chromium`。
 
@@ -190,7 +192,7 @@ npx playwright test --headed
 
 `workspace round-trip preserves already synchronized students` 已從紅燈回歸案例改為通過：在工作區 A 與 B 分別新增學生並完成同步，多次往返後，UI 與兩邊 API 快照都保持不變，切換動作也不會產生 PUT 或空白 pending draft。
 
-同步層現在先停止舊工作區生命週期，再重設與載入新工作區；session generation 會讓舊讀取、儲存與重試失效，而每個 state request 會固定攜帶建立它的 workspace ID。切換仍須先完成既有儲存，衝突或斷線時會維持原工作區並保留本機草稿。
+同步層現在先停止舊工作區生命週期，再重設與載入新工作區；session generation 會讓舊讀取、儲存與重試失效，而每個 state request 會固定攜帶建立它的 workspace ID。切換先完成既有儲存；真正版本衝突、永久拒絕或重試耗盡暫停時，可明確確認後保留草稿並切換／登出，或確認丟棄本機修改並採用雲端版本。一般離線／寫入中仍保留 flush 保護，詳見[工作區版本衝突恢復](docs/workspace-conflict-recovery.md)與[容量／重試政策](docs/workspace-capacity-and-retry.md)。
 
 獨立重現：
 
@@ -285,7 +287,7 @@ Dashboard 的 feature 邊界、component responsibilities 與後續拆分項目�
 - 每次資料請求都先驗證 `__Host-epet_session` HttpOnly cookie，再驗證工作區 membership；工作區 ID 本身不是憑證
 - 所有變更狀態的 API 都要求同站 `Origin` 與 double-submit CSRF token；session token 不提供給 JavaScript，也不保存於 Web Storage
 - D1 保留最近 25 份 workspace revision 快照，供稽核與受控復原
-- autosave 使用串行 queue、退避重試、版本衝突保護與 `sessionStorage` 未同步草稿；登出或切換工作區前會先 flush
+- autosave 使用串行 queue、最多 5 次自動退避重試、Retry-After、版本衝突保護與 `sessionStorage` 未同步草稿；400／413 等永久拒絕暫停且重整不重送，確定衝突／暫停時可確認保留草稿後離開，或確認丟棄並採用雲端版本
 - 核心班級、學生、考試、學習證據、加減分、處罰與魔王獎勵交易式雙寫至正規化表；驗證後預設由正規化投影讀取，`data_json` 僅保留為相容寫入與緊急回滾副本
 - owner／admin 可邀請成員、管理角色與班級範圍；owner 可移轉所有權及雙重確認刪除工作區
 - 帳號可自助刪除，但必須先移轉或刪除其擁有的工作區

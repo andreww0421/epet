@@ -74,6 +74,12 @@ FileReader 開始讀檔時即固定工作區；確認畫面及操作 hook 也固
 
 原有 revision 預覽與受控 restore 也保留；該操作獨立授權、以目前 revision 寫入並記錄 `workspace.revision.restore`，可能恢復尚未清除的舊生命週期狀態。已永久刪除的班級已從保留快照清除，不能由該路徑取回。但外部備份可以重新引入先前刪除的資料，必須先確認授權與保存政策。
 
+### 整庫備份復原與刪除一致性（2026-10-30）
+
+D1 SQL／Time Travel 還原會帶回備份當時的班級、學生成績、retained revisions、Membership 與授權，不是本節受控 revision restore。須先隔離，再依獨立於被還原資料庫的 suppression journal，重做備份時點後的學生刪除／匿名化、整班刪除及安全撤銷，才能考慮重開流量。學生定位使用 `(workspaceId, classId, studentId)`；另一班或租戶相同 Student ID 不可一起處理。
+
+完整流程及未驗證界線見 [災難復原 Runbook](disaster-recovery.md)。新增合成 SQL round-trip 會驗封存 metadata、同 ID 其他班資料不變、空班歷史清除、匿名化保留數值及 privacy replay 的重複執行；這不建立正式外部 journal，也不能宣稱供應商備份已永久抹除。
+
 ## 模組責任與變更範圍
 
 | 邊界／檔案 | 責任 |

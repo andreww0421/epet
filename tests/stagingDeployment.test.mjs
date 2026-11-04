@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import {
   assertStagingBranch,
@@ -44,6 +45,193 @@ const isLedgerRead = (args) => args[0] === 'd1' && args[1] === 'execute';
 const isPresenceRead = (args) => isLedgerRead(args) && args.some((argument) => argument.includes('sqlite_master'));
 const withoutComments = (source) => source.split('\n')
   .filter((line) => !line.trimStart().startsWith('#')).join('\n');
+
+// Exercise the real CLI boundary with a recording-only Wrangler substitute.
+// This fixture has no Cloudflare client, credentials or network implementation.
+const withStagingCli = async (mode, check, failDeploy = false, casing = 'upper') => {
+  const fixture = await mkdtemp(join(tmpdir(), 'epet-staging-cli-test-'));
+  try {
+    const migrationPolicy = JSON.parse(await readFile(join(root, 'migrations/policy.json'), 'utf8'));
+    const files = [
+      'scripts/staging.mjs', 'scripts/staging-policy.mjs',
+      'scripts/staging-target.mjs', 'scripts/migration-policy.mjs',
+      'wrangler.jsonc', 'wrangler.staging.jsonc', 'migrations/policy.json',
+      ...Object.keys({ ...migrationPolicy.historical, ...migrationPolicy.expansions })
+        .map((name) => `migrations/${name}`),
+    ];
+    for (const file of files) {
+      const target = join(fixture, file);
+      await mkdir(dirname(target), { recursive: true });
+      await copyFile(join(root, file), target);
+    }
+    const callsPath = join(fixture, 'calls.jsonl');
+    const wranglerPath = join(fixture, 'node_modules/wrangler/bin/wrangler.js');
+    await mkdir(dirname(wranglerPath), { recursive: true });
+    await writeFile(wranglerPath, `
+const { appendFileSync, readFileSync } = require('node:fs');
+const args = process.argv.slice(2);
+const readFlag = (flag) => args[args.indexOf(flag) + 1];
+const config = JSON.parse(readFileSync(readFlag('--config'), 'utf8'));
+const secretsPath = args.includes('--secrets-file') ? readFlag('--secrets-file') : undefined;
+const watched = [
+  'CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_KEY', 'CLOUDFLARE_EMAIL',
+  'CF_API_TOKEN', 'CF_ACCOUNT_ID', 'CF_API_KEY', 'CF_EMAIL',
+  'TURNSTILE_SITE_KEY', 'TURNSTILE_SECRET_KEY', 'RESEND_API_KEY',
+  'SENTRY_DSN', 'SENTRY_FRONTEND_DSN', 'SENTRY_RELEASE', 'MONITORING_ENVIRONMENT',
+  'WRANGLER_CI_OVERRIDE_NAME', 'CLOUDFLARE_ENV', 'CLOUDFLARE_API_BASE_URL',
+  'CF_API_BASE_URL', 'WRANGLER_API_ENVIRONMENT', 'CLOUDFLARE_COMPLIANCE_REGION',
+  'WRANGLER_LOG_SANITIZE', 'CI',
+];
+const envEntries = Object.entries(process.env).filter(([key]) => watched.includes(key.toUpperCase()));
+appendFileSync(process.env.EPET_STAGING_TEST_CALLS, JSON.stringify({
+  args, config, secretsPath,
+  secrets: secretsPath ? JSON.parse(readFileSync(secretsPath, 'utf8')) : undefined,
+  emptyEnv: readFileSync(readFlag('--env-file'), 'utf8'),
+  envKeys: envEntries.map(([key]) => key),
+  env: Object.fromEntries(envEntries.map(([key, value]) => [key.toUpperCase(), value])),
+}) + '\\n');
+if (args[0] === 'deploy' && process.env.EPET_STAGING_TEST_FAIL_DEPLOY === 'true') {
+  process.exitCode = 9;
+} else if (args.includes('--json')) {
+  const policy = JSON.parse(readFileSync('migrations/policy.json', 'utf8'));
+  const results = args.some((arg) => arg.includes('sqlite_master'))
+    ? [{ ledger_exists: 1 }]
+    : [...Object.keys(policy.historical), ...Object.keys(policy.expansions)].sort()
+        .map((name) => ({ name }));
+  console.log(JSON.stringify([{ success: true, results }]));
+} else {
+  console.log('Synthetic Wrangler operation completed.');
+}
+`);
+    const childEnvironment = {
+        ...process.env, ...settings,
+        GITHUB_ACTIONS: 'true', GITHUB_REF_TYPE: 'branch', GITHUB_REF: 'refs/heads/staging',
+        STAGING_CLOUDFLARE_ACCOUNT_ID: 'synthetic-staging-account',
+        STAGING_CLOUDFLARE_API_TOKEN: 'synthetic-staging-token',
+        STAGING_TURNSTILE_SITE_KEY: 'synthetic-staging-site',
+        STAGING_TURNSTILE_SECRET_KEY: 'synthetic-staging-turnstile',
+        STAGING_RESEND_API_KEY: 'synthetic-staging-email',
+        CLOUDFLARE_API_TOKEN: 'synthetic-production-token',
+        CLOUDFLARE_ACCOUNT_ID: 'synthetic-production-account',
+        CLOUDFLARE_API_KEY: 'synthetic-production-key', CLOUDFLARE_EMAIL: 'synthetic@example.test',
+        CF_API_TOKEN: 'synthetic-legacy-production-token',
+        CF_ACCOUNT_ID: 'synthetic-production-account', CF_API_KEY: 'synthetic-production-key',
+        CF_EMAIL: 'synthetic@example.test', TURNSTILE_SITE_KEY: 'synthetic-production-site',
+        TURNSTILE_SECRET_KEY: 'synthetic-production-turnstile',
+        RESEND_API_KEY: 'synthetic-production-email', SENTRY_DSN: 'synthetic-production-dsn',
+        SENTRY_FRONTEND_DSN: 'synthetic-production-dsn', SENTRY_RELEASE: 'synthetic-production-release',
+        MONITORING_ENVIRONMENT: 'production', CI: 'false',
+        WRANGLER_CI_OVERRIDE_NAME: production.name, CLOUDFLARE_ENV: 'production',
+        CLOUDFLARE_API_BASE_URL: 'https://wrong-api.example.test',
+        CF_API_BASE_URL: 'https://legacy-wrong-api.example.test',
+        WRANGLER_API_ENVIRONMENT: 'staging', CLOUDFLARE_COMPLIANCE_REGION: 'fedramp_high',
+        WRANGLER_LOG: 'debug', WRANGLER_LOG_SANITIZE: 'false',
+        EPET_STAGING_TEST_CALLS: callsPath,
+        EPET_STAGING_TEST_FAIL_DEPLOY: String(failDeploy),
+    };
+    if (casing !== 'upper') {
+      // Windows environment lookup is case-insensitive even though spreading
+      // process.env produces a case-sensitive object. Inspect every spelling.
+      for (const name of Object.keys(childEnvironment).filter((key) =>
+        /^(?:CLOUDFLARE_|CF_|TURNSTILE_|RESEND_|SENTRY_|MONITORING_|WRANGLER_CI_OVERRIDE_NAME$|WRANGLER_API_ENVIRONMENT$|WRANGLER_LOG_SANITIZE$|CI$)/.test(key))) {
+        const value = childEnvironment[name];
+        delete childEnvironment[name];
+        const alias = casing === 'lower' ? name.toLowerCase()
+          : name.toLowerCase().replace(/[a-z]/g, (character, index) =>
+              index % 2 ? character.toUpperCase() : character);
+        childEnvironment[alias] = value;
+      }
+    }
+    const result = spawnSync(process.execPath, [join(fixture, 'scripts/staging.mjs'), mode], {
+      cwd: fixture, encoding: 'utf8', env: childEnvironment,
+    });
+    assert.ifError(result.error);
+    const calls = (await readFile(callsPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`,
+      /synthetic-(?:production|staging|legacy-production)-(?:token|turnstile|email|dsn)/);
+    await check({ result, calls, fixture });
+  } finally {
+    // Only remove the exact directory allocated by this test's mkdtemp.
+    await rm(fixture, { recursive: true, force: true });
+  }
+};
+
+const assertIsolatedChild = (call, offline = false) => {
+  assert.equal(call.config.name, 'epet-staging');
+  assert.notEqual(call.config.d1_databases[0].database_id, production.d1_databases[0].database_id);
+  assert.equal(call.emptyEnv, '');
+  assert.equal(call.args.filter((arg) => arg === '--config').length, 1);
+  assert.equal(call.args.filter((arg) => arg === '--env-file').length, 1);
+  assert.ok(!call.args.includes('--env') && !call.args.includes('--name'));
+  assert.equal(call.envKeys.length, Object.keys(call.env).length, 'no case-aliased duplicates');
+  assert.deepEqual(call.env, {
+    ...(!offline && {
+      CLOUDFLARE_ACCOUNT_ID: 'synthetic-staging-account',
+      CLOUDFLARE_API_TOKEN: 'synthetic-staging-token',
+    }),
+    WRANGLER_LOG_SANITIZE: 'true', CI: 'true',
+  });
+};
+
+test('staging child dry-run cannot inherit production credentials or Wrangler target overrides', async () => {
+  await withStagingCli('dry-run', ({ result, calls }) => {
+    assert.equal(result.status, 0);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].args.slice(0, 2), ['deploy', '--dry-run']);
+    assertIsolatedChild(calls[0], true);
+  });
+});
+
+test('staging child deploy uses only staging settings and removes its temporary secrets', async () => {
+  await withStagingCli('deploy', async ({ result, calls }) => {
+    assert.equal(result.status, 0);
+    assert.deepEqual(calls.map((call) => call.args[0]), ['whoami', 'd1', 'deploy']);
+    calls.forEach((call) => assertIsolatedChild(call));
+    const deployment = calls.at(-1);
+    assert.equal(deployment.config.d1_databases[0].database_id, settings.STAGING_D1_DATABASE_ID);
+    assert.equal(deployment.config.vars.PUBLIC_APP_URL, 'https://epet-staging.example-account.workers.dev');
+    assert.deepEqual(deployment.secrets, {
+      TURNSTILE_SITE_KEY: 'synthetic-staging-site',
+      TURNSTILE_SECRET_KEY: 'synthetic-staging-turnstile', RESEND_API_KEY: 'synthetic-staging-email',
+    });
+    await assert.rejects(readFile(deployment.secretsPath), { code: 'ENOENT' });
+  });
+});
+
+test('staging child deployment failure is reported and temporary secrets are removed', async () => {
+  await withStagingCli('deploy', async ({ result, calls }) => {
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /exit 9/);
+    assert.deepEqual(calls.map((call) => call.args[0]), ['whoami', 'd1', 'deploy']);
+    calls.forEach((call) => assertIsolatedChild(call));
+    await assert.rejects(readFile(calls.at(-1).secretsPath), { code: 'ENOENT' });
+  }, true);
+});
+
+for (const casing of ['lower', 'mixed']) {
+  test(`staging child case-insensitive ${casing} aliases cannot override targets, credentials or logging`, async () => {
+    for (const mode of ['dry-run', 'deploy']) {
+      await withStagingCli(mode, ({ result, calls }) => {
+        assert.equal(result.status, 0);
+        calls.forEach((call) => assertIsolatedChild(call, mode === 'dry-run'));
+      }, false, casing);
+    }
+  });
+}
+
+test('staging child ledger operations have the same sanitized target boundary', async () => {
+  for (const mode of ['check', 'migrate']) {
+    await withStagingCli(mode, ({ result, calls }) => {
+      assert.equal(result.status, 0);
+      assert.ok(calls.length > 0);
+      calls.forEach((call) => {
+        assertIsolatedChild(call);
+        assert.deepEqual(call.args.slice(0, 3), ['d1', 'execute', 'epet-staging']);
+        assert.ok(!call.args.includes('apply'));
+      });
+    });
+  }
+});
 
 test('actual staging configuration separates Worker, D1, origin, and required secrets without mutating production', () => {
   const before = structuredClone(production);
@@ -400,9 +588,9 @@ test('CLI isolates process credentials, keeps generated config root-relative, an
     'TURNSTILE_SITE_KEY', 'TURNSTILE_SECRET_KEY', 'RESEND_API_KEY',
     'SENTRY_DSN', 'SENTRY_FRONTEND_DSN', 'SENTRY_RELEASE', 'MONITORING_ENVIRONMENT',
   ]) {
-    assert.ok(source.includes(`delete childEnv.${name}`), name);
+    assert.ok(source.includes(`'${name}'`), name);
   }
-  assert.match(source, /Object\.assign\(childEnv, credentials\)/);
+  assert.match(source, /Object\.assign\(childEnv, credentials,/);
   assert.match(source, /'--env-file', emptyEnvPath/);
   assert.match(source, /await writeFile\(emptyEnvPath, ''\)/);
   assert.match(source, /finally\s*\{/);

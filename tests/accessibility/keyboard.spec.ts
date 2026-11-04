@@ -6,7 +6,7 @@ test('Teacher Console destinations: one tab stop, arrows, Home/End and associate
   await selectTeacherDestination(page, 'Class', '學生');
   const students = page.getByRole('tab', { name: '學生', exact: true });
   const groups = page.getByRole('tab', { name: '分組', exact: true });
-  const records = page.getByRole('tab', { name: '紀錄', exact: true });
+  const lastDestination = page.getByRole('tab', { name: '班級分析', exact: true });
   await students.focus();
   await expect(page.getByRole('tablist').locator('[tabindex="0"]')).toHaveCount(1);
   await page.keyboard.press('ArrowRight');
@@ -18,14 +18,19 @@ test('Teacher Console destinations: one tab stop, arrows, Home/End and associate
   await page.keyboard.press('Shift+Tab');
   await expect(groups).toBeFocused();
   await page.keyboard.press('End');
-  await expect(records).toBeFocused();
+  await expect(lastDestination).toBeFocused();
   await page.keyboard.press('ArrowRight');
   await expect(students).toBeFocused();
   await page.keyboard.press('ArrowLeft');
-  await expect(records).toBeFocused();
+  await expect(lastDestination).toBeFocused();
   await page.keyboard.press('Home');
   await expect(students).toBeFocused();
   await expect(students).toHaveAttribute('aria-selected', 'true');
+  await page.getByRole('tab', { name: '紀錄', exact: true }).focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(page.getByRole('tab', { name: '個人分析', exact: true })).toBeFocused();
+  await page.keyboard.press('ArrowLeft');
+  await expect(page.getByRole('tab', { name: '紀錄', exact: true })).toBeFocused();
 });
 
 test('Small viewport: dialog fits viewport and keyboard focus is visible', async ({ teacherPage: page }, info) => {

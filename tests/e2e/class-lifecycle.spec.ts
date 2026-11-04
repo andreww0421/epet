@@ -47,7 +47,7 @@ const confirmArchive = async (page: Page, kind: 'archive' | 'reopen') => {
   const response = page.waitForResponse((r) => new URL(r.url()).pathname.endsWith(`/privacy/${kind}`) && r.request().method() === 'POST');
   await dialog.getByRole('button', { name: kind === 'archive' ? '確認封存' : '確認重新開啟', exact: true }).click();
   expect((await response).status()).toBe(200);
-  await expect(page.getByRole('heading', { name: 'Today', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '首頁', exact: true })).toBeVisible();
   await waitForBackendSync(page);
 };
 const confirmDeletion = async (page: Page) => {
@@ -62,7 +62,7 @@ const confirmDeletion = async (page: Page) => {
   const response = page.waitForResponse((r) => new URL(r.url()).pathname.endsWith('/privacy/delete') && r.request().method() === 'POST');
   await button.click();
   expect((await response).status()).toBe(200);
-  await expect(page.getByRole('heading', { name: 'Today', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '首頁', exact: true })).toBeVisible();
   await waitForBackendSync(page);
 };
 
@@ -185,7 +185,7 @@ test('full JSON backup recovery requires reviewed replacement and restores archi
     confirmation: 'IMPORT WORKSPACE', acknowledgeReplacement: true,
     expectedRevision: before.revision,
   });
-  await expect(page.getByRole('heading', { name: 'Today', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '首頁', exact: true })).toBeVisible();
   await waitForBackendSync(page);
   const restored = await owner.loadState(workspaceId);
   expect(restored.data!.classes).toEqual(backup.classes);
@@ -298,7 +298,7 @@ test('legacy local backup review waits for an in-flight settings save and import
     const response = await imported;
     expect(response.status()).toBe(200);
     expect(response.request().postDataJSON()).toMatchObject({ expectedRevision: synchronized.revision });
-    await expect(page.getByRole('heading', { name: 'Today', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '首頁', exact: true })).toBeVisible();
     await waitForBackendSync(page);
     const restored = await owner.loadState(workspaceId);
     expect(restored.data!.classes.map((classroom) => classroom.id)).toEqual(['legacy-backup-class']);

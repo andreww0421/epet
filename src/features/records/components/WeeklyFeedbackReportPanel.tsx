@@ -14,6 +14,7 @@ import {
   getWeeklyFeedbackReport,
 } from '../../../weeklyFeedbackReport';
 import { trackAnalytics } from '../../../analytics';
+import { beginProductWorkflow, completeLocalProductWorkflow, rejectProductWorkflow } from '../../../analytics/workflows';
 
 type DashboardCopy = (typeof translations)[keyof typeof translations];
 
@@ -90,16 +91,20 @@ export const WeeklyFeedbackReportPanel = ({
     `${value > 0 ? '+' : ''}${value}${suffix}`;
 
   const handleExport = () => {
-    const csv = createWeeklyFeedbackReportCsv(report, lang, competencyLabels);
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `epet-weekly-feedback-${report.weekStartDate}.csv`;
-    document.body.appendChild(anchor);
-    anchor.click();
-    trackAnalytics('report_generated', { report_type: 'weekly_feedback', format: 'csv' });
-    anchor.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    const workflow = beginProductWorkflow('report_weekly');
+    try {
+      const csv = createWeeklyFeedbackReportCsv(report, lang, competencyLabels);
+      const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `epet-weekly-feedback-${report.weekStartDate}.csv`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      completeLocalProductWorkflow(workflow);
+      trackAnalytics('report_generated', { report_type: 'weekly_feedback', format: 'csv' });
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (error) { rejectProductWorkflow(workflow); throw error; }
   };
 
   return (

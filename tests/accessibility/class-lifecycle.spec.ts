@@ -67,7 +67,7 @@ test('Archived class history: retained learning and assessment controls remain a
     new URL(response.url()).pathname.endsWith('/privacy/archive') && response.request().method() === 'POST');
   await dialog.getByRole('button', { name: '確認封存', exact: true }).click();
   expect((await archived).status()).toBe(200);
-  await expect(page.getByRole('heading', { name: 'Today', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '首頁', exact: true })).toBeVisible();
   await waitForBackendSync(page);
   await openLifecycle(page);
   await page.getByRole('button', { name: `檢視封存歷史 ${className}`, exact: true }).click();

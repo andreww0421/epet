@@ -24,7 +24,7 @@ import {
   isValidWorkspaceId,
 } from '../shared/domain/workspaceIdentifiers';
 import {
-  findPermanentlyDeletedStudentIds as findSharedDeletedStudents,
+  findPermanentlyDeletedStudents as findSharedDeletedStudents,
   purgeStudentsFromWorkspaceData as purgeSharedStudents,
 } from '../shared/domain/studentPrivacy';
 import {
@@ -64,7 +64,7 @@ import type {
   WorkspaceRole as LegacyWorkspaceRole,
 } from '../server/contracts';
 import {
-  findPermanentlyDeletedStudentIds as findLegacyDeletedStudents,
+  findPermanentlyDeletedStudents as findLegacyDeletedStudents,
   purgeStudentsFromWorkspaceData as purgeLegacyStudents,
 } from '../server/studentPrivacy';
 import {

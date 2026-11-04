@@ -1,4 +1,5 @@
 import React, { useRef, useState } from 'react';
+import { beginProductWorkflow, completeLocalProductWorkflow, rejectProductWorkflow } from '../../../analytics/workflows';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -157,9 +158,13 @@ export const RosterImportPanel: React.FC<RosterImportPanelProps> = ({
   };
 
   const handleImport = () => {
-    if (!preview?.canApply || preview.additions.length === 0) return;
-    const added = onImport(preview.additions);
-    if (added > 0) resetPreview();
+    const workflow = beginProductWorkflow('roster_import');
+    if (!preview?.canApply || preview.additions.length === 0) { rejectProductWorkflow(workflow); return; }
+    try {
+      const added = onImport(preview.additions);
+      if (added > 0) { completeLocalProductWorkflow(workflow); resetPreview(); }
+      else rejectProductWorkflow(workflow);
+    } catch (error) { rejectProductWorkflow(workflow); throw error; }
   };
 
   const errorCount = preview?.issues.filter((issue) => issue.severity === 'error').length ?? 0;

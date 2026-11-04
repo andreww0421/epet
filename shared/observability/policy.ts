@@ -4,6 +4,7 @@ export const ERROR_CATEGORIES = [
   'frontend.api.http', 'frontend.api.network', 'frontend.api.timeout',
   'frontend.api.response', 'worker.unhandled', 'worker.api.http',
   'worker.background', 'worker.scheduled',
+  'worker.database', 'worker.projection', 'worker.email', 'worker.configuration',
 ] as const;
 export const ROUTE_GROUPS = [
   'auth', 'workspace', 'student', 'learning', 'analytics', 'boss',

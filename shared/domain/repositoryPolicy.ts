@@ -1,4 +1,5 @@
 export const MAX_STORED_REVISIONS = 25;
+export const MAX_D1_STATE_BYTES = 900 * 1024;
 export const AUTH_RATE_LIMIT_RETENTION_MS = 24 * 60 * 60 * 1_000;
 
 export const createEmptyStoredWorkspace = () => ({

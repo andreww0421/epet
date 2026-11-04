@@ -3,9 +3,14 @@ import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import { ApplicationErrorBoundary } from './components/ui/ApplicationErrorBoundary';
 import { initializeFrontendMonitoring, reportFrontendError } from './services/monitoring';
+import { initializeFirstPartyProductAnalytics } from './analytics/firstParty';
 import './index.css';
 
 const runtimeEnv = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env ?? {};
+initializeFirstPartyProductAnalytics({
+  enabled: runtimeEnv.VITE_PRODUCT_ANALYTICS_ENABLED,
+  environment: runtimeEnv.VITE_PRODUCT_ANALYTICS_ENVIRONMENT,
+});
 initializeFrontendMonitoring({
   enabled: runtimeEnv.VITE_MONITORING_ENABLED,
   environment: runtimeEnv.VITE_MONITORING_ENVIRONMENT,

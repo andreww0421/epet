@@ -113,6 +113,14 @@ Backfill 必須獨立於 schema deploy，使用穩定主鍵／keyset cursor、bo
 
 D1 Time Travel／restore 是獨立 disaster-recovery 操作，可能遺失 restore point 之後的寫入。必須依既有 operations runbook 核定 RPO/RTO、備份與維護窗口，不能在 deploy failure handler 自動還原。
 
+### 災難復原後的 Migration 驗收（2026-10-30）
+
+依 [disaster-recovery.md](disaster-recovery.md) 在隔離狀態核對整庫 schema、`d1_migrations`、資料與 serving／可回復 application 的相容性。SQL 完整備份已攜帶 schema／ledger，不可先套現行 migrations 再覆蓋備份，也不可還原後 raw replay `0001`–`0007`。Ledger filename 的順序與完整性是依據，正值 id 有間隔不等於缺 migration；缺少、未知或不相容歷史須人工處理，不能補造 ledger。
+
+`validateD1Recovery` 需由目前 release 的可信 migrations 建立獨立 pristine schema manifest，不能把待檢查資料庫自己的 schema 當成期望值。它唯讀檢查定義、ledger、D1 支援的 `quick_check(1)`／FK、workspace／retained revisions、projection／索引欄位、ownership 與 class assignments，不會修補或回報 privacy cleared。回傳 blocked／truncated 或查詢失敗時維持隔離；正常 repository 的 blob fallback 不能替代此驗收。
+
+`npm run db:drill:local` 僅在兩個新建本機 synthetic D1 bootstrap 一次歷史，再將完整 SQL 匯入空目的庫；不存取 remote，也不是正式 bootstrap 或 migration 工具。既有 migrations 原檔及 checksum 不變。本機成功不代表 hosted Time Travel 或完整容量 SQL 還原已驗證。
+
 ## Contract 操作的核准條件
 
 Destructive migration 不加入 `deploy.yml` 或 `database-expand.yml`，也不放入 `migrations/*.sql`。每次 contract 都使用獨立 PR、明確選定檔案、maintenance 執行紀錄，必要時才建立專用 workflow；不能重用無條件的 `migrations apply` 跑 contract。

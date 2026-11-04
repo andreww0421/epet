@@ -267,16 +267,16 @@ test.describe('Data safety', () => {
     releasePut?.();
 
     await expect(page.getByText(
-      '雲端已有較新的工作區版本，請重新整理後再繼續操作。',
+      '雲端已有較新的版本。本機草稿已保留，請選擇如何恢復。',
     )).toBeVisible();
     await expect(page.getByRole('alert', { name: '同步或權限警示', exact: true })).toBeVisible();
-    await expect(page.getByRole('button', { name: '給予積分', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '加減分', exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', {
       name: '下載本機草稿',
     })).toBeVisible();
     const draftPreserved = await page.evaluate((studentName) =>
       Object.entries(sessionStorage).some(([key, value]) =>
-        key.startsWith('epet-unsynced-workspace-v1:') &&
+        key.startsWith('epet-unsynced-workspace-v2:') &&
         value.includes(studentName)
       ), localStudent);
     expect(draftPreserved).toBe(true);

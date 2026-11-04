@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { trackAnalytics } from '../../../analytics';
+import { beginProductWorkflow, completeLocalProductWorkflow, rejectProductWorkflow } from '../../../analytics/workflows';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -403,8 +404,10 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
   };
 
   const saveDraft = () => {
-    if (readOnly) return;
+    const workflow = storedExam ? null : beginProductWorkflow('exam_create');
+    if (readOnly) { rejectProductWorkflow(workflow); return; }
     if (!canSave) {
+      rejectProductWorkflow(workflow);
       showToast(copy.completeRequired, 'error');
       return;
     }
@@ -591,35 +594,41 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
   };
 
   const printReport = () => {
+    const workflow = beginProductWorkflow('report_exam');
     if (!selectedStudent || !analysis || !canPrint) {
+      rejectProductWorkflow(workflow);
       showToast(copy.completeRequired, 'error');
       return;
     }
     const reportWindow = window.open('', '_blank', 'width=920,height=1180');
     if (!reportWindow) {
+      rejectProductWorkflow(workflow);
       showToast(copy.popupBlocked, 'error');
       return;
     }
-    if (!readOnly) saveDraft();
-    reportWindow.opener = null;
-    reportWindow.document.open();
-    reportWindow.document.write(
-      createExamReportHtml({
-        className: currentClass.name,
-        studentName: selectedStudent.name,
-        exam: draft,
-        exams: allExamsForAnalysis,
-        analysis,
-        lang,
-        scoreRange: reportScoreRange,
-        commentRange: reportCommentRange,
-        itemIds: selectedReportItemIds,
-      }),
-    );
-    reportWindow.document.close();
-    trackAnalytics('report_generated', { report_type: 'exam_summary', format: 'print' });
-    reportWindow.focus();
-    reportWindow.setTimeout(() => reportWindow.print(), 250);
+    try {
+      if (!readOnly) saveDraft();
+      reportWindow.opener = null;
+      reportWindow.document.open();
+      reportWindow.document.write(
+        createExamReportHtml({
+          className: currentClass.name,
+          studentName: selectedStudent.name,
+          exam: draft,
+          exams: allExamsForAnalysis,
+          analysis,
+          lang,
+          scoreRange: reportScoreRange,
+          commentRange: reportCommentRange,
+          itemIds: selectedReportItemIds,
+        }),
+      );
+      reportWindow.document.close();
+      completeLocalProductWorkflow(workflow);
+      trackAnalytics('report_generated', { report_type: 'exam_summary', format: 'print' });
+      reportWindow.focus();
+      reportWindow.setTimeout(() => reportWindow.print(), 250);
+    } catch (error) { rejectProductWorkflow(workflow); throw error; }
   };
 
   const renderItemTags = (

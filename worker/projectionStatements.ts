@@ -862,6 +862,7 @@ export const auditStatement = (
   database: D1Database,
   event: AuditEventRecord,
 ) => {
+  const scopedStudent = event.targetType === 'student' && typeof event.metadata?.classId === 'string';
   return database
     .prepare(
       `INSERT INTO audit_events (
@@ -874,7 +875,10 @@ export const auditStatement = (
          metadata_json,
          created_at
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, CASE WHEN ? THEN (
+         SELECT student_id FROM students
+         WHERE workspace_id = ? AND class_id = ? AND student_id = ?
+       ) ELSE ? END, ?, ?)`,
     )
     .bind(
       event.id,
@@ -882,6 +886,10 @@ export const auditStatement = (
       event.actorUserId ?? null,
       event.action,
       event.targetType ?? null,
+      scopedStudent ? 1 : 0,
+      event.workspaceId ?? null,
+      scopedStudent ? event.metadata!.classId as string : null,
+      event.targetId ?? null,
       event.targetId ?? null,
       auditMetadataJson(event),
       event.createdAt,

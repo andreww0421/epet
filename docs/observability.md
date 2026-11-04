@@ -1,5 +1,9 @@
 # Privacy-first observability
 
+營運增量日期：2026-10-31。監控程式與本機測試不等於正式通道已啟用；
+Production 的實際設定、接收及通知證據須分別記錄。警報條件、事件升級、
+狀態報表與人工設定見 [monitoring-operations-runbook.md](monitoring-operations-runbook.md)。
+
 ## Purpose
 
 Epet uses error monitoring only to answer operational questions such as which
@@ -279,13 +283,15 @@ Do not use real student or staff data for monitoring validation.
   a 1.5s deadline and 60s backoff after network/429/5xx failures. No offline
   queue, retry persistence, storage or unload beacon is used; some errors may
   be lost during navigation, outages or rate limiting.
-- The Sentry runtime is bundled with the frontend; the current entry chunk
-  exceeds Vite's 500kB warning threshold. Lazy-loading the SDK is a follow-up
-  performance trade-off because it would delay startup error capture.
-- Dependency audit reports outstanding high advisories in the existing
-  Wrangler/Miniflare development toolchain (including sharp/undici), not the
-  added Sentry SDKs. Resolve them in a separate tested toolchain update; do not
-  use `npm audit fix --force` or upgrade to an alpha only to clear this check.
+- The Sentry runtime is bundled with the frontend. The original 2026-10-06
+  build exceeded Vite's 500kB entry warning threshold; that is historical,
+  not a current-size claim. Assess current entry and split-chunk costs from
+  each release's build evidence before changing startup error capture.
+- The original 2026-10-06 audit reported high advisories in the then-current
+  Wrangler/Miniflare toolchain. That is historical evidence, not a current
+  vulnerability claim: the 2026-10-27 dependency/CI acceptance recorded their
+  tested remediation. Use the current lockfile and a dated audit result;
+  do not use `npm audit fix --force` or an alpha merely to clear a check.
 - Any future SDK upgrade must rerun envelope-shape and allowlist tests. The final
   transport must continue rebuilding, rather than forwarding, SDK envelopes.
 
@@ -320,6 +326,73 @@ API 5xx versus expected authentication failures, and the React error fallback.
 No real Sentry project, live staging/production DSN, provider privacy settings,
 or remote deployment was activated or verified by these tests. Those are
 explicit operator prerequisites, not assumptions based on synthetic delivery.
+
+## Operations monitoring increment (2026-10-31)
+
+Final local acceptance was completed on 2026-11-01. Production readbacks below
+remain dated 2026-10-31 and were not repeated as part of that local acceptance.
+
+The existing frontend relay, Worker isolation, error reconstruction, quotas,
+timeouts and privacy kill switches remain the foundation. Operational signals
+must extend fixed categories rather than attach exception text, SQL, provider
+responses, account identities or classroom content. Expected 401/403/409/413/429
+responses remain product/security outcomes; they are not automatically login
+outages or operational error events.
+
+Worker database, mail and projection categories allow incident routing without
+recording the underlying query, recipient or workspace. Authentication alerts
+use the broad auth route group and unexpected 5xx; this does not distinguish
+login from reset/verification/session failures and must not be described as
+per-user failed-login telemetry. A fallback to the blob, successful projection
+repair or truncated reconciliation is still an anomaly/incomplete observation,
+not evidence that all normalized records are healthy.
+
+Scheduled maintenance produces only a rebuilt aggregate operational report.
+The report contract is separate from Sentry's error-only envelope:
+
+- `schemaVersion: 1`, fixed `kind: scheduled-maintenance`;
+- allowlisted environment and optional commit SHA;
+- minute-level scheduled/completed time buckets and a fixed duration
+  bucket, never per-user or per-request timing;
+- bounded aggregate projection fields `checked`, `verified`, `mismatched`,
+  `missing`, `repaired`, `truncated`;
+- explicit `coverage: complete | incomplete | unknown` and
+  `health: ok | degraded | failed`.
+
+Only a completed operation with valid complete projection evidence and no
+remaining or repaired anomaly may be `ok`. A truncated scan cannot become
+complete simply because the checked subset matched. Reports contain no cleanup
+counts, IDs, student/class totals, raw details, exception, SQL or configuration
+secret. They are structured operational evidence, not a new public API, new
+database table or student analytics channel. They are not automatically sent
+to Sentry; its final transport still drops check-ins, logs and other non-error
+envelopes. A separate heartbeat/collector integration requires operator setup
+and synthetic verification before claiming missing-Cron alert coverage.
+
+Cloudflare platform collection is a separate privacy boundary. Workers Logs can
+include invocation request/response metadata and URL messages even if application
+Sentry payloads are safe. The local configuration explicitly disables invocation
+logs and traces; this is a proposed release configuration until deployed and
+read back. Automatic exception capture may still observe an escaping exception,
+so only fixed safe error text may cross the outer Worker boundary. Never enable
+full request logging, Logpush, Tail forwarding, Traces, Replay or source maps as
+a shortcut to incident debugging. Check the actual deployed configuration and
+provider policy as described in the operations runbook.
+
+Monitoring's fail-silent behavior protects teaching operations from a broken
+provider. It also means no event is not evidence of health. Missing/invalid DSN,
+disabled build flag, rate limiting, quota, transport failure, sampling, SDK
+disposal and provider retention can all leave a silent dashboard. Configuration
+presence, successful synthetic reception and notification receipt are distinct
+acceptance gates; production enablement must remain unknown until evidenced.
+
+On 2026-10-31, read-only checks found neither expected Sentry secret name on
+the selected production Worker, and an anonymous relay GET returned 404 without
+reading a body or submitting an event. This is not a verified active Sentry
+channel. The exact frontend environment build flag, current platform logging
+privacy settings, Sentry delivery and alert receipt were not established.
+See the dated [evidence table](monitoring-operations-runbook.md#2026-10-31-實際唯讀核對)
+for the scope and limitations; no production setting was changed.
 
 ## Implementation references
 

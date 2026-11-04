@@ -1,18 +1,18 @@
 # Teacher Today Dashboard
 
-Updated: 2026-10-03.
+Updated: 2026-11-04. The latest increment is described below; earlier validation records retain their original scope.
 
 ## Outcome and scope
 
 Teacher login and workspace session reset now open the Console at Today. The standalone Classroom remains available in the header. The current workspace and class stay visible across Console destinations. No feature, gameplay rule, API contract, authentication guard or persisted data structure is removed or changed.
 
-Today is a workbench, not another analytics screen: quick actions come first, followed by five small counts, actionable reminders and at most five recent events. Full analytics stays in Insights.
+Today is a workbench: four primary quick actions, five small counts, actionable reminders and at most five recent events. Full analytics is available within Class and Learning. An active, optional setup guide appears before the shortcuts; existing users see a compact invitation after them.
 
 ## Action flow
 
 | Action | Existing owner and behavior |
 | --- | --- |
-| Give / deduct points | Click the Today action, then a student to apply the visibly displayed configured reason and amount. The initial reason follows existing pinned/recent ordering, filtered by sign. Changing the reason is optional. No student is preselected and opening the dialog never writes. |
+| Give / deduct points | Open Points; positive is the default, or select the Deduct radio. Then select a student to apply the visibly displayed configured reason and amount. The initial reason follows existing pinned/recent ordering, filtered by sign. Changing the reason is optional. No student is preselected and opening the dialog never writes. |
 | Custom points | The same dialog exposes a custom form with a student picker, positive whole-number magnitude, required feedback reason and competency. Deduct sends the negative amount to the existing manual action. This intentionally needs more interaction than a configured shortcut. |
 | Add comment | One click opens the existing daily mentor feedback editor for the current class. |
 | Add evidence | One click opens the existing learning evidence editor. |
@@ -91,3 +91,47 @@ Other uncommitted architecture/security/deployment work predates this increment 
 - Browser navigation stays in memory; URL deep links and selecting a specific student from a reminder need a separate scoped routing/filter decision.
 - Large rosters use a scrollable button grid in the shortcut dialog; search/virtualization is deferred pending measured need.
 - Assistive-technology, non-Chromium, zoom and contrast-incomplete review remains in [accessibility backlog](accessibility-backlog.md). Automated tests are not a WCAG certification.
+
+## 2026-11-04: four shortcuts and optional first-use guide
+
+Current functional contract, privacy/storage policy, release/rollback boundary and before/after interaction counts: [Teacher onboarding](teacher-onboarding.md). The guide reuses existing AppData facts and feature owners. It adds no backend table or workspace settings field and does not repurpose optional analytics onboarding. Existing accounts remain opt-in. Fresh UI registration enrolls the new account once after verified workspace loading. The default class is reused; no guide action automatically creates another class or workspace.
+
+Gamification is a personal interface choice: hide/show entries without changing gameplay rules or stored education/game data. A permanent Today action restores the interface. The canonical points picker exposes direction radios and explicitly restores its original initial focus. The English navbar truncates its title on small screens so operation buttons remain visible at 320px.
+
+### Files in this increment
+
+| Files | Purpose |
+| --- | --- |
+| `src/features/teacher-console/model/todayActions.ts`, `components/TeacherTodayDashboard.tsx` | Four primary actions, comment secondary action, guide composition, reversible game interface preference; preserve existing overview model |
+| `src/features/rewards/components/PointAdjustmentDialog.tsx` | One canonical signed point picker, native direction radios and explicit initial focus |
+| `src/features/teacher-console/model/teacherSetup.ts`, `hooks/useTeacherSetup.ts`, `components/TeacherSetupGuide.tsx` | Scoped minimal functional flags, live completion facts, optional five-step guide, storage failure fallback |
+| `src/components/DashboardView.tsx`, `src/features/teacher-console/components/TeacherConsoleNavigation.tsx` | Existing destination/feature coordination and display-only game entry filtering |
+| `src/hooks/useBackendSync.ts` | Expose verified access metadata after authorized hydration/recovery, mask stale principal/workspace/role; existing save, CAS, draft and conflict logic retained |
+| `src/App.tsx`, `src/auth/AuthProvider.tsx` | Bind preferences to the server-derived scope, fresh registration enrollment, presentation-entry visibility and mobile navbar sizing |
+| `tests/teacherToday.test.ts`, `tests/teacherSetup.test.ts`, `package.json` | Four-action contract plus 18 functional-state tests, included in normal dashboard/verify checks |
+| `tests/e2e/teacher-onboarding.spec.ts`, `teacher-console-navigation.spec.ts` | Five new guide scenarios; preserve canonical editors, signed quick/manual point records, guardrails, keyboard and viewer coverage |
+| `tests/e2e/{conflict-recovery,data-safety}.spec.ts` | Update blocked-mutation absence assertions to the actual new Points button, retaining their original security meaning |
+| `tests/accessibility/pages.spec.ts` | Guide, mobile and teaching-focus axe scans; retain both signed dialog scan modes |
+| This document, `docs/teacher-onboarding.md` | Behavior, compatibility, task-step comparison, verification evidence and remaining limits |
+
+### Verification evidence
+
+Final verification results are recorded with the synthetic run logs in `output/playwright/teacher-setup/`. All browser operations use the isolated localhost server, synthetic accounts and temporary Node JSON fixtures. D1 checks use synthetic local databases. The dependency-clean replica uses the existing lockfile (Vite 8.1.6); source hashes are compared before recording final evidence. No deployment, production student access, remote migration or secret update is performed.
+
+Initial combined E2E: **35 passed / 4 failed**. Three failures exposed native modal focus moving to the newly inserted direction radios. The implementation now passes an explicit initial focus target; focus assertions were retained. One fixture reused the owner's session after intentionally revoking it during account-isolation testing; each scenario now obtains current independent API credentials. Second E2E: **19 passed / 1 failed** exposed English mobile navbar overflow. The title now shrinks/truncates while operation buttons retain their width; the original no-horizontal-scroll assertion remains. Subsequent console/guide E2E: **20 passed / 0 failed**.
+
+Final results (2026-11-04, local synthetic fixtures):
+
+| Command | Actual result |
+| --- | --- |
+| `npm run verify` | Exit 0; **829 passed** (94 legacy rule checks + 735 Node cases), 0 failed/skipped. Includes 8 migration checksum checks, TypeScript, Node/D1, auth/RBAC/CSRF/tenant/revision/privacy/restore checks, build, production analytics artifact guard and Worker dry-run. |
+| `npm run test:dashboard` | **40 passed / 0 failed**, including 18 new setup-state cases; also included in verify, not added again to its total. |
+| `npx playwright test tests/e2e/teacher-onboarding.spec.ts tests/e2e/teacher-console-navigation.spec.ts` | **20 passed / 0 failed**, including five new guide scenarios. |
+| `npx playwright test tests/e2e/draft-recovery.spec.ts tests/e2e/conflict-recovery.spec.ts tests/e2e/permissions.spec.ts tests/e2e/data-safety.spec.ts` | **24 passed / 2 failed**: both Permissions cases hit the unchanged shared-loopback login Rate Limit after the preceding suites; screenshot confirms the rate-limit message. No limit, security assertion or production setting was relaxed. |
+| `npx playwright test tests/e2e/permissions.spec.ts tests/e2e/teacher-onboarding.spec.ts` in a fresh isolated server | **7 passed / 0 failed**: both permission/CSRF/Origin cases and all five setup cases pass. The latter repeat previous coverage and are not counted as additional unique cases. Final scope is **46 distinct passing E2E scenarios across isolated runs**, not a claim that the original 26-case batch passed unchanged. |
+| `npx playwright test --config playwright.a11y.config.ts` | **21 passed / 0 failed**; 51 unique axe scan states, 0 confirmed violations. 23 pre-existing `color-contrast` incomplete states require manual review. All three new guide states have 0 violations and 0 incomplete findings. |
+| `git diff --check` for this increment | Exit 0. Existing Git CRLF conversion notices retained. |
+
+The workspace and dependency-clean replica match across **368 source/config/test files**, excluding runtime/student data. Logs, failure records, input hashes, final zh/en mobile screenshots and axe JSON are retained in `output/playwright/teacher-setup/`. The final short rerun also confirms the repaired mobile layout and modal focus without relaxing any assertion. Desktop and both mobile screenshots were visually inspected.
+
+Status: **Completed for local implementation and automated verification; not deployed**. No commercial-readiness security finding is closed by this UX increment. Browser-local preference retention, shared-device browser policy, non-Chromium/assistive-technology testing and the existing contrast-incomplete manual checks remain release considerations. No additional migration, secret or Cloudflare/GitHub setting is required for this increment.

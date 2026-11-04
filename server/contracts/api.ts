@@ -12,6 +12,11 @@ import type { MonitoringReporter } from '../../shared/observability/policy';
 export type { BotChallengeVerification } from '../../shared/contracts/botChallenge';
 
 export type ApiOptions = {
+  productAnalytics?: {
+    enabled: boolean;
+    environment: 'development' | 'staging' | 'production';
+    cohortStart: number;
+  };
   monitoringReporter?: MonitoringReporter;
   allowLocalWorkspaceIds?: boolean;
   allowedOrigins?: string[];

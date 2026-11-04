@@ -71,7 +71,7 @@ test('Classroom presentation: read-only content and guarded keyboard exit', asyn
   });
   expect(saved.status()).toBe(200);
   await page.reload();
-  await expect(page.getByRole('heading', { name: 'Today', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '首頁', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '展示大廳', exact: true }).click();
   await expect(page.getByRole('heading', { name: '寵物展示大廳' })).toBeVisible();
   await expect(page.getByRole('article').first()).toHaveAccessibleName(/\*+/);
@@ -115,22 +115,45 @@ test('Teacher Dashboard: students and rewards', async ({ teacherPage: page }, in
 
 test('Teacher Console: Today overview and class/learning insights', async ({ teacherPage: page }, info) => {
   await selectTeacherDestination(page, 'Today');
-  await expect(page.getByRole('heading', { name: 'Today', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '首頁', exact: true })).toBeVisible();
   await scanAccessibility(page, info, 'teacher-today');
   for (const name of ['給予積分', '扣除積分']) {
-    await page.getByRole('button', { name, exact: true }).click();
+    const trigger = page.getByRole('region', { name: '快速操作', exact: true })
+      .getByRole('button', { name: '加減分', exact: true });
+    await trigger.click();
+    const initialDialog = page.getByRole('dialog', { name: '給予積分', exact: true });
+    await expect(initialDialog.getByLabel('回饋原因與積分', { exact: true })).toBeFocused();
+    await initialDialog.getByRole('group', { name: '加減分方向', exact: true })
+      .getByRole('radio', { name, exact: true }).check();
     const dialog = page.getByRole('dialog', { name, exact: true });
-    await expect(dialog.getByLabel('回饋原因與積分', { exact: true })).toBeFocused();
     await scanAccessibility(page, info, name === '給予積分' ? 'today-give-preset' : 'today-deduct-preset');
     await dialog.getByRole('button', { name: '自訂積分', exact: true }).click();
     await scanAccessibility(page, info, name === '給予積分' ? 'today-give-custom' : 'today-deduct-custom');
     await page.keyboard.press('Escape');
-    await expect(page.getByRole('button', { name, exact: true })).toBeFocused();
+    await expect(trigger).toBeFocused();
   }
-  await selectTeacherDestination(page, 'Insights', '班級分析');
+  await selectTeacherDestination(page, 'Class', '班級分析');
   await scanAccessibility(page, info, 'teacher-class-insights');
-  await selectTeacherDestination(page, 'Insights', '學習趨勢');
+  await selectTeacherDestination(page, 'Learning', '學習趨勢');
   await scanAccessibility(page, info, 'teacher-learning-trends');
+});
+
+test('Teacher setup guide: optional steps, mobile controls and teaching focus', async ({ teacherPage: page }, info) => {
+  await selectTeacherDestination(page, 'Today');
+  const guide = page.getByRole('region', { name: '使用導覽', exact: true });
+  await guide.getByRole('button', { name: '開始使用導覽', exact: true }).click();
+  await expect(guide.getByRole('heading', { name: '從第一個班級開始', exact: true })).toBeVisible();
+  await scanAccessibility(page, info, 'teacher-setup-active');
+  await page.setViewportSize({ width: 320, height: 812 });
+  await scanAccessibility(page, info, 'teacher-setup-mobile');
+  const pause = guide.getByRole('button', { name: '稍後繼續', exact: true });
+  await pause.focus();
+  await page.keyboard.press('Enter');
+  await expect(guide.getByRole('button', { name: '繼續使用導覽', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '隱藏遊戲化介面', exact: true }).click();
+  await expect(page.getByRole('navigation', { name: 'Teacher Console', exact: true })
+    .getByRole('button', { name: '活動', exact: true })).toHaveCount(0);
+  await scanAccessibility(page, info, 'teacher-setup-teaching-focus');
 });
 
 test('Student analytics: evidence form and populated records', async ({ teacherPage: page }, info) => {

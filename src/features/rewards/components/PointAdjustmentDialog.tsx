@@ -59,6 +59,9 @@ export const PointAdjustmentDialog = ({
   const [activeSuggestion, setActiveSuggestion] = useState(-1);
   const [custom, setCustom] = useState(false);
   const [presetId, setPresetId] = useState('');
+  const [direction, setDirection] = useState<'give' | 'deduct'>(
+    target?.kind === 'picker' ? target.direction : 'give',
+  );
 
   useEffect(() => {
     setAmount('');
@@ -69,6 +72,7 @@ export const PointAdjustmentDialog = ({
     setActiveSuggestion(-1);
     setCustom(false);
     setPresetId('');
+    setDirection(target?.kind === 'picker' ? target.direction : 'give');
   }, [target]);
 
   const suggestions = useMemo(() => {
@@ -94,7 +98,7 @@ export const PointAdjustmentDialog = ({
   if (!target) return null;
   const picker = target.kind === 'picker';
   const presets = target.kind === 'picker' ? quickReasons.filter((option) =>
-    target.direction === 'give' ? option.amount > 0 : option.amount < 0) : [];
+    direction === 'give' ? option.amount > 0 : option.amount < 0) : [];
   const selectedPreset = presets.find((option) => option.id === presetId) ?? presets[0];
   const showPresets = picker && !custom && Boolean(onApplyPreset) && Boolean(selectedPreset);
   const selectedStudent = students.find((student) => student.id === studentId);
@@ -104,7 +108,7 @@ export const PointAdjustmentDialog = ({
   const canSubmit = Boolean(resolvedTarget) && Number.isFinite(parsedAmount) &&
     (picker ? parsedAmount > 0 && Number.isInteger(Number(amount)) : parsedAmount !== 0) && Boolean(reason.trim());
   const language = tLang === translations.en ? 'en' : 'zh';
-  const quickTitle = target.kind === 'picker' ? target.direction === 'give'
+  const quickTitle = target.kind === 'picker' ? direction === 'give'
     ? (language === 'en' ? 'Give points' : '給予積分')
     : (language === 'en' ? 'Deduct points' : '扣除積分') : '';
   const showSuggestions = suggestionsOpen && suggestions.length > 0;
@@ -116,7 +120,8 @@ export const PointAdjustmentDialog = ({
   };
 
   return (
-    <ModalDialog labelledBy="point-adjustment-title" describedBy="point-adjustment-description" onClose={onCancel} className="max-w-sm">
+    <ModalDialog labelledBy="point-adjustment-title" describedBy="point-adjustment-description" onClose={onCancel} className="max-w-sm"
+      initialFocusId={picker ? (showPresets ? 'today-point-preset' : 'today-point-student') : undefined}>
         <div className="p-6">
           <div className={`mb-4 flex h-11 w-11 items-center justify-center rounded-full ${
             target.kind === 'class'
@@ -147,6 +152,22 @@ export const PointAdjustmentDialog = ({
                 ? tLang.batchAdjustDesc.replace('{count}', target.count.toString())
                 : tLang.manualAdjustDesc.replace('{name}', target.name)}
           </p>
+          {picker && <fieldset className="mt-5">
+            <legend className="text-sm font-medium text-slate-700">{language === 'en' ? 'Point direction' : '加減分方向'}</legend>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              {(['give', 'deduct'] as const).map((value) => (
+                <label key={value} className={`flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-semibold focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-indigo-600 ${
+                  direction === value ? 'border-indigo-600 bg-indigo-50 text-indigo-900' : 'border-slate-300 text-slate-700 hover:bg-slate-50'
+                }`}>
+                  <input type="radio" name="point-adjustment-direction" value={value} checked={direction === value}
+                    onChange={() => { setDirection(value); setPresetId(''); }} className="accent-indigo-600" />
+                  {value === 'give'
+                    ? (language === 'en' ? 'Give points' : '給予積分')
+                    : (language === 'en' ? 'Deduct points' : '扣除積分')}
+                </label>
+              ))}
+            </div>
+          </fieldset>}
           {showPresets && <div className="mt-5 space-y-4">
             <div>
               <label htmlFor="today-point-preset" className="text-sm font-medium text-slate-700">{language === 'en' ? 'Feedback reason and points' : '回饋原因與積分'}</label>
@@ -294,7 +315,7 @@ export const PointAdjustmentDialog = ({
             type="button"
             hidden={showPresets}
             onClick={() => canSubmit && resolvedTarget && onConfirm({
-              amount: target.kind === 'picker' && target.direction === 'deduct' ? -parsedAmount : parsedAmount,
+              amount: picker && direction === 'deduct' ? -parsedAmount : parsedAmount,
               competency,
               reason,
               target: resolvedTarget,

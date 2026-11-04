@@ -1,6 +1,6 @@
 import { CloudflareClient, Scope } from '@sentry/cloudflare';
 import {
-  MONITORING_TIMEOUT_MS, resolveMonitoringConfig, scrubErrorReport,
+  MONITORING_TIMEOUT_MS, resolveMonitoringConfig, scrubErrorReport, safelyReport,
   type MonitoringReporter, type MonitoringSource,
 } from '../shared/observability/policy';
 import { safeSentryEvent, scrubSentryEvent, createPrivateSentryTransport } from '../shared/observability/sentry';
@@ -39,10 +39,28 @@ export const createWorkerReporter = (
       client.init();
       client.captureEvent(safeSentryEvent(report, config), {}, new Scope());
       const reportingClient = client;
-      context.waitUntil(reportingClient.flush(MONITORING_TIMEOUT_MS)
-        .catch(() => false).finally(() => reportingClient.dispose()));
+      context.waitUntil(Promise.resolve()
+        .then(() => reportingClient.flush(MONITORING_TIMEOUT_MS))
+        .catch(() => false)
+        .finally(async () => {
+          try { await reportingClient.dispose(); } catch { /* No SDK cleanup rejection may escape waitUntil. */ }
+        }));
     } catch {
-      try { client?.dispose(); } catch { /* Fail closed, including SDK cleanup failures. */ }
+      try { void Promise.resolve(client?.dispose()).catch(() => undefined); }
+      catch { /* Fail closed, including synchronous SDK cleanup failures. */ }
     }
   };
 };
+
+/** Observe only a fixed failure class; delivery data and the original error stay local. */
+export const monitorMailDelivery = <Delivery>(
+  deliver: ((delivery: Delivery) => Promise<void>) | undefined,
+  reporter: MonitoringReporter,
+  route: 'auth' | 'administration',
+): typeof deliver => deliver ? async (delivery) => {
+  try { await deliver(delivery); }
+  catch (error) {
+    safelyReport(reporter, { category: 'worker.email', route, method: 'unknown' });
+    throw error; // Existing enumeration-safe background handling owns the product outcome.
+  }
+} : undefined;

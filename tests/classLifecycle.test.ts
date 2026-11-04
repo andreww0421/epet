@@ -345,7 +345,7 @@ test('archive normalization shape drift permits active writes while retaining th
   const fixture = await createFixture();
   try {
     const archived = updateClassArchive(createData(), 'class-a', 'archive', now);
-    const current = anonymizeStudentInWorkspaceData(archived, 'student-a', 'anonymous-fixture');
+    const current = anonymizeStudentInWorkspaceData(archived, { classId: 'class-a', studentId: 'student-a' }, 'anonymous-fixture');
     await fixture.repository.put(fixture.workspaceId, current, 1);
     const rawDraft = structuredClone(current);
     rawDraft.classes[1].students[0].points += 1;
@@ -388,6 +388,11 @@ test('implicit admin CAS prevents a race that archives a class after ordinary PU
     const response = await dispatch(handleWorkspaceRoutes,
       fixture.context('/api/v1/state', { data: draft }, 'owner', 'PUT'));
     assert.equal(response.status, 409);
+    const conflict = await response.json() as { error: string; current: StoredWorkspace };
+    assert.equal(conflict.error, 'REVISION_CONFLICT');
+    assert.equal(conflict.current.revision, 2);
+    assert.equal(conflict.current.data?.classes[0].archivedAt, now);
+    assert.deepEqual(conflict.current.data?.classes.map((classroom) => classroom.id), ['class-a', 'class-b']);
     const saved = await fixture.repository.get(fixture.workspaceId);
     assert.equal(saved.data?.classes[0].archivedAt, now);
     assert.equal(saved.data?.classes[0].students[0].points, 210);

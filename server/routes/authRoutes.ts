@@ -28,7 +28,7 @@ import {
 } from '../middleware/rateLimit';
 import type { ApiRuntime } from '../services/apiRuntime';
 import { safelyReport } from '../../shared/observability/policy';
-import { isAppData } from '../services/workspaceValidation';
+import { assertWorkspaceData } from '../../shared/validation/workspaceValidation';
 import { createInitialData, normalizeAppData } from '../../src/store/utils';
 import type { AuthenticatedRouteContext, RouteResult } from './types';
 
@@ -105,9 +105,11 @@ export const handleAuthRoutes = async (
     await verifyBotChallenge(request, body, 'register');
 
     const displayName = getString(body.displayName);
-    const initialWorkspaceData = isAppData(body.initialWorkspaceData)
-      ? normalizeAppData(body.initialWorkspaceData)
-      : createInitialData();
+    let initialWorkspaceData = createInitialData();
+    if (Object.prototype.hasOwnProperty.call(body, 'initialWorkspaceData')) {
+      assertWorkspaceData(body.initialWorkspaceData);
+      initialWorkspaceData = normalizeAppData(body.initialWorkspaceData);
+    }
     const registration = await authService.register({
       email,
       password: getString(body.password),
@@ -297,6 +299,10 @@ export const handleAuthRoutes = async (
     );
     if (rateLimit.allowed) {
       await verifyBotChallenge(request, body, 'forgot');
+      if (!options.passwordResetMailer) {
+        // Independent of account existence: keep the same 202 response/timing.
+        safelyReport(options.monitoringReporter, { category: 'worker.configuration', route: 'auth', method: 'POST' });
+      }
     }
     const deliveryTask = rateLimit.allowed
       ? Promise.resolve()

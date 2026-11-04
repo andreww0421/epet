@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   AREA_LABELS, CONSOLE_DESTINATIONS, PRIMARY_AREAS, canOpenDestination,
-  getAreaDestinations, getDestination, resolveDestination,
+  getAreaDestinations, getAreaLabel, getAreaTaskDestinations, getAreaAnalysisDestinations,
+  isAnalysisDestination, getDestination, resolveDestination,
 } from '../src/features/teacher-console/model/navigation';
 import { buildTodayOverview } from '../src/features/teacher-console/model/todayOverview';
 import { createDashboardStudent } from '../src/features/students/model/createDashboardStudent';
@@ -12,14 +13,18 @@ const owner = { readOnly: false, canAdministerWorkspace: true };
 const teacher = { readOnly: false, canAdministerWorkspace: false };
 const viewer = { readOnly: true, canAdministerWorkspace: false };
 
-test('five task areas are primary and Settings is secondary, with unique flat destinations', () => {
-  assert.deepEqual(PRIMARY_AREAS.map((area) => AREA_LABELS[area]), ['Today', 'Class', 'Learning', 'Activities', 'Insights']);
+test('four task areas are primary and administrator settings stays secondary, preserving every destination', () => {
+  assert.deepEqual(PRIMARY_AREAS.map((area) => AREA_LABELS[area]), ['Today', 'Class', 'Learning', 'Activities']);
+  assert.deepEqual(PRIMARY_AREAS.map((area) => getAreaLabel(area, 'zh')), ['首頁', '班級', '教學', '活動']);
+  assert.equal(getAreaLabel('settings', 'zh'), '管理設定');
+  assert.equal(getAreaLabel('settings', 'en'), 'Settings');
+  assert.equal(getDestination('points').label.zh, '加減分');
+  assert.equal(CONSOLE_DESTINATIONS.length, 23);
   assert.equal(new Set(CONSOLE_DESTINATIONS.map((item) => item.id)).size, CONSOLE_DESTINATIONS.length);
   const mapping = {
-    class: ['students', 'groups', 'points', 'comments', 'records'],
-    learning: ['evidence', 'exams', 'goals', 'reports'],
+    class: ['students', 'groups', 'points', 'comments', 'records', 'student-insights', 'class-insights'],
+    learning: ['evidence', 'exams', 'goals', 'reports', 'trends'],
     activities: ['pets', 'boss', 'battle', 'activity-rewards', 'leaderboard'],
-    insights: ['student-insights', 'class-insights', 'trends'],
     settings: ['rules', 'reward-settings', 'workspace', 'security', 'governance'],
   } as const;
   for (const area of Object.keys(mapping) as (keyof typeof mapping)[]) {
@@ -31,9 +36,25 @@ test('five task areas are primary and Settings is secondary, with unique flat de
   }
 });
 
+test('analysis entries are scoped to their workflow without duplicating work destinations or changing identity', () => {
+  assert.deepEqual(getAreaTaskDestinations('class', owner).map((item) => item.id), ['students', 'groups', 'points', 'comments', 'records']);
+  assert.deepEqual(getAreaAnalysisDestinations('class', owner).map((item) => item.id), ['student-insights', 'class-insights']);
+  assert.deepEqual(getAreaTaskDestinations('learning', owner).map((item) => item.id), ['evidence', 'exams', 'goals', 'reports']);
+  assert.deepEqual(getAreaAnalysisDestinations('learning', owner).map((item) => item.id), ['trends']);
+  for (const area of PRIMARY_AREAS) {
+    const work = getAreaTaskDestinations(area, owner);
+    const analysis = getAreaAnalysisDestinations(area, owner);
+    assert.deepEqual([...work, ...analysis], getAreaDestinations(area, owner));
+    assert.ok(work.every((item) => !isAnalysisDestination(item.id)));
+    assert.ok(analysis.every((item) => isAnalysisDestination(item.id)));
+  }
+});
+
 test('navigation capability filtering never exposes write or administrator destinations to viewers', () => {
-  assert.deepEqual(getAreaDestinations('class', viewer).map((item) => item.id), ['records']);
-  assert.deepEqual(getAreaDestinations('learning', viewer).map((item) => item.id), ['exams', 'reports']);
+  assert.deepEqual(getAreaDestinations('class', viewer).map((item) => item.id), ['records', 'student-insights', 'class-insights']);
+  assert.deepEqual(getAreaDestinations('learning', viewer).map((item) => item.id), ['exams', 'reports', 'trends']);
+  assert.deepEqual(getAreaTaskDestinations('class', viewer).map((item) => item.id), ['records']);
+  assert.deepEqual(getAreaAnalysisDestinations('class', viewer).map((item) => item.id), ['student-insights', 'class-insights']);
   assert.equal(getAreaDestinations('activities', viewer).length, 0);
   assert.equal(getAreaDestinations('settings', viewer).length, 0);
   assert.equal(getAreaDestinations('settings', teacher).length, 0);
