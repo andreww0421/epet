@@ -173,14 +173,14 @@ test('response security policy preserves the Node document profile', () => {
   );
   assert.equal(headers.get('strict-transport-security'), null);
   assert.equal(headers.get('cross-origin-embedder-policy'), null);
-  assert.match(
-    BASE_CONTENT_SECURITY_POLICY,
-    new RegExp(`script-src 'self' ${TURNSTILE_CHALLENGE_ORIGIN}`),
-  );
-  assert.match(
-    BASE_CONTENT_SECURITY_POLICY,
-    new RegExp(`frame-src ${TURNSTILE_CHALLENGE_ORIGIN}`),
-  );
+  assert.equal(TURNSTILE_CHALLENGE_ORIGIN, 'https://challenges.cloudflare.com');
+  const directives = BASE_CONTENT_SECURITY_POLICY.split(';').map((value) => value.trim().split(/\s+/));
+  assert.deepEqual(directives.filter(([name]) => name === 'script-src'), [
+    ['script-src', "'self'", 'https://challenges.cloudflare.com'],
+  ]);
+  assert.deepEqual(directives.filter(([name]) => name === 'frame-src'), [
+    ['frame-src', 'https://challenges.cloudflare.com'],
+  ]);
   assert.match(BASE_CONTENT_SECURITY_POLICY, /frame-ancestors 'none'/);
   assert.doesNotMatch(BASE_CONTENT_SECURITY_POLICY, /script-src[^;]*unsafe-/);
 });

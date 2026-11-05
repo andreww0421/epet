@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import test from 'node:test';
+import { promisify } from 'node:util';
 
 import {
   MAX_ROSTER_FILE_BYTES,
@@ -57,6 +59,55 @@ test('roster parser auto-detects TSV and English name aliases', () => {
   assert.equal(preview.canApply, true);
   assert.equal(preview.delimiter, '\t');
   assert.deepEqual(preview.additions, ['Alice', 'Bob']);
+});
+
+test('roster preprocessing preserves quoted content and accepts every legacy trailing line break form', () => {
+  for (const suffix of ['\r\n', '\r', '\n', '\r\n\r\n\n\r', '\r\n \t']) {
+    const preview = previewRosterImport(`\uFEFF姓名,備註\r\n"Alice\r\nSmith","quoted, note"${suffix}`, []);
+    assert.equal(preview.canApply, true, JSON.stringify(suffix));
+    assert.deepEqual(preview.additions, ['Alice Smith']);
+    assert.deepEqual(preview.rows.map((row) => row.rowNumber), [2]);
+  }
+  const csv = createRosterCsvTemplate('en', ['Alice\r\nSmith']);
+  assert.equal(csv, '\uFEFFStudent Name\r\n"Alice\r\nSmith"\r\n');
+  assert.deepEqual(previewRosterImport(csv, []).additions, ['Alice Smith']);
+});
+
+test('accepted-size CRLF runs before a sentinel finish without regexp backtracking', { timeout: 15_000 }, async () => {
+  // Isolate the CPU trigger: a reintroduced regexp is killed by the parent
+  // timeout instead of blocking the entire test runner. The fixture is ~2 KiB.
+  const moduleUrl = new URL('../src/imports/tabularImport.ts', import.meta.url).href;
+  const script = `
+    import assert from 'node:assert/strict';
+    const { previewRosterImport, createRosterCsvTemplate } = await import(${JSON.stringify(moduleUrl)});
+    const newlines = '\\r\\n'.repeat(1024);
+    const rejected = previewRosterImport('姓名\\r\\n' + newlines + 'X', []);
+    assert.equal(rejected.canApply, false);
+    assert.ok(rejected.issues.some((issue) => issue.code === 'too-many-students'));
+    const quoted = previewRosterImport('姓名,備註\\r\\nAlice,"' + newlines + 'X"', []);
+    assert.equal(quoted.canApply, true);
+    assert.deepEqual(quoted.additions, ['Alice']);
+    const exported = createRosterCsvTemplate('en', [newlines + 'X']);
+    assert.ok(exported.endsWith('X"\\r\\n'));
+    console.log('bounded-line-break-regression-passed');
+  `;
+  const { stdout } = await promisify(execFile)(process.execPath,
+    ['--import', 'tsx', '--input-type=module', '--eval', script],
+    { timeout: 5_000, maxBuffer: 64 * 1024 });
+  assert.equal(stdout.trim(), 'bounded-line-break-regression-passed');
+});
+
+test('roster import retains the exact UTF-8 byte limit after line break preprocessing', () => {
+  const prefix = '姓名,備註\r\nAlice,';
+  const source = prefix + 'x'.repeat(MAX_ROSTER_FILE_BYTES - new TextEncoder().encode(prefix).byteLength);
+  const accepted = previewRosterImport(source, []);
+  assert.equal(accepted.sourceBytes, MAX_ROSTER_FILE_BYTES);
+  assert.equal(accepted.canApply, true);
+  assert.deepEqual(accepted.additions, ['Alice']);
+  const rejected = previewRosterImport(source + 'x', []);
+  assert.equal(rejected.canApply, false);
+  assert.equal(rejected.issues[0]?.code, 'file-too-large');
+  assert.deepEqual(rejected.additions, []);
 });
 
 test('roster parser warns and skips existing and repeated names', () => {
