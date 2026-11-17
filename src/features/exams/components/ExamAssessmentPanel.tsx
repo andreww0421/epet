@@ -21,11 +21,9 @@ import { useShallow } from 'zustand/react/shallow';
 import {
   MAX_EXAM_COMMENT_LENGTH,
   MAX_EXAM_ITEMS,
-  computeExamStudentAnalysis,
 } from '../../../examAnalytics';
 import {
   createExamReportHtml,
-  getExamReportSelection,
   type ExamReportCommentRange,
   type ExamReportScoreRange,
 } from '../../../examReport';
@@ -35,9 +33,12 @@ import {
   previewExamScorePaste,
 } from '../../../imports/tabularImport';
 import type { ExamRecord } from '../../../store/types';
-import { useStore } from '../../../store/useStore';
+import { getStoreSessionGeneration, useStore } from '../../../store/useStore';
 import type { LearningStudentSelection } from '../../learning/model/learningWorkflow';
 import { useScopedLearningDraft } from '../../learning/hooks/useScopedLearningDraft';
+import { createExamAssessmentContextSelector } from '../model/examAssessmentContext';
+import { getExamAssessmentCopy } from '../model/examAssessmentCopy';
+import { buildExamAssessmentModel, buildExamReportModel } from '../model/examAssessmentModel';
 import {
   cloneExam,
   createExamDraft,
@@ -58,13 +59,14 @@ type ExamAssessmentPanelProps = {
   visible?: boolean;
 };
 
-export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
+export const ExamAssessmentPanel = React.memo(function ExamAssessmentPanel({
   classId,
   readOnly = false,
   studentSelection,
   reportRequestId,
   visible = true,
-}) => {
+}: ExamAssessmentPanelProps) {
+  const selectContext = useMemo(() => createExamAssessmentContextSelector(classId), [classId]);
   const {
     currentClass,
     lang,
@@ -73,194 +75,14 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
     showToast,
   } = useStore(
     useShallow((state) => ({
-      currentClass: state.data.classes.find(
-        (classData) => classData.id === (classId ?? state.data.currentClassId),
-      ),
+      currentClass: selectContext(state.data, getStoreSessionGeneration()),
       lang: state.data.settings?.language || 'zh',
       saveExamRecord: state.saveExamRecord,
       deleteExamRecord: state.deleteExamRecord,
       showToast: state.showToast,
     })),
   );
-  const copy = lang === 'en'
-    ? {
-        title: 'Assessment Trends & Individual Reports',
-        hint: 'Enter one class assessment, review each learner’s trend and focus areas, add a comment, then print an individual A4 PDF.',
-        stepOne: '1. Enter class scores',
-        stepTwo: '2. Review trends',
-        stepThree: '3. Comment & PDF',
-        assessmentHistory: 'Assessment',
-        unsavedAssessment: 'New unsaved assessment',
-        newAssessment: 'New assessment',
-        assessmentTitle: 'Assessment title',
-        assessmentDate: 'Date',
-        save: 'Save assessment',
-        saved: 'Added to workspace',
-        unsaved: 'Unsaved changes',
-        syncHint: 'Workspace changes synchronize separately. Check the page’s sync status before leaving.',
-        saveFailed: 'The assessment was not added to this workspace. Your draft is still available; check the class and try again.',
-        discardDraft: 'Discard the unsaved assessment changes and open another assessment? Cancel to keep editing.',
-        delete: 'Delete',
-        deleteConfirm: 'Delete this assessment and every entered score?',
-        itemSettings: 'Assessment items',
-        itemSettingsHint: 'Each item can have a different maximum. Matching names are used for item-level trends.',
-        itemName: 'Item name',
-        maximum: 'Maximum',
-        addItem: 'Add item',
-        duplicateItems: 'Item names must be unique.',
-        classScores: 'Class score sheet',
-        classScoresHint: 'Click a learner for analysis. Paste an Excel or Google Sheets block into any score cell; Tab moves right and Enter moves down.',
-        downloadScoreTemplate: 'Download score CSV',
-        templateFailed: 'The score template could not be created.',
-        pastePreview: 'Score paste preview',
-        pasteConfirm: 'Apply to draft',
-        pasteCancel: 'Cancel',
-        pasteBlocked: 'Fix every error before applying this paste.',
-        pasteApplied: '{count} scores were added to the unsaved draft.',
-        pasteMoreIssues: '{count} more issues are not shown.',
-        pasteIssueMessages: {
-          'empty-paste': 'The pasted range is empty.',
-          'invalid-start-position': 'The starting score cell is invalid.',
-          'parse-error': 'The pasted table could not be parsed.',
-          'matrix-overflow': 'The pasted range extends beyond the score sheet.',
-          'invalid-score': 'Enter a valid numeric score.',
-          'negative-score': 'A score cannot be negative.',
-          'score-over-maximum': 'A score exceeds the item maximum.',
-          'formula-risk': 'Spreadsheet formulas are not accepted as scores.',
-          'no-score-changes': 'No score changes were found; blank cells remain unchanged.',
-        },
-        learner: 'Learner',
-        completion: 'Completion',
-        entered: 'scores entered',
-        noStudents: 'Add students before entering an assessment.',
-        individualAnalysis: 'Individual trend',
-        selectedLearner: 'Selected learner',
-        overall: 'Overall',
-        classAverage: 'Class average',
-        trend: 'Trend',
-        improving: 'Improving',
-        declining: 'Needs attention',
-        stable: 'Stable',
-        first: 'First record',
-        strengths: 'Strengths',
-        focusAreas: 'Focus areas',
-        missingScores: 'Missing scores',
-        none: 'None identified',
-        mentorComment: 'Teacher comment',
-        commentPlaceholder: 'Add specific, actionable feedback for the learner and family...',
-        printA4: 'Generate individual A4 PDF',
-        printHint: 'Opens the system print dialog. Choose “Save as PDF”; the page size is preset to A4.',
-        reportScope: 'Report content',
-        reportScopeHint: 'Choose score history, comment history, and assessment item rows independently. This changes only the PDF, not saved records.',
-        scoreRange: 'Score range',
-        commentRange: 'Comment range',
-        itemRows: 'Assessment item rows',
-        selectAllItems: 'Select all',
-        clearAllItems: 'Clear all',
-        rangeCurrentScore: 'Current assessment only',
-        rangeRecentScore: 'Latest 3 assessments',
-        rangeAllScore: 'All assessments to this date',
-        rangeCurrentComment: 'Current comment only',
-        rangeRecentComment: 'Latest 3 completed comments',
-        rangeAllComment: 'All comments to this date',
-        rangeNoComment: 'Do not include comments',
-        reportScopeSummary: '{scores} assessment(s) · {comments} comment(s) · {items} item row(s)',
-        popupBlocked: 'The report window was blocked. Allow pop-ups and try again.',
-        completeRequired: 'Add an assessment title and at least one unique item before saving.',
-        itemTrend: 'vs. previous',
-        itemComparison: 'Assessment item comparison',
-        classComparison: 'class',
-        score: 'Score',
-      }
-    : {
-        title: '考試趨勢與個別報告',
-        hint: '一次輸入全班考試成績，自動查看每位學生的趨勢與弱項，補上導師評語後產生個別 A4 PDF。',
-        stepOne: '1. 輸入全班成績',
-        stepTwo: '2. 查看趨勢弱項',
-        stepThree: '3. 補評語與 PDF',
-        assessmentHistory: '考試紀錄',
-        unsavedAssessment: '尚未保存的新考試',
-        newAssessment: '新增考試',
-        assessmentTitle: '考試名稱',
-        assessmentDate: '考試日期',
-        save: '保存考試',
-        saved: '已加入工作區',
-        unsaved: '有尚未保存的變更',
-        syncHint: '工作區變更會另行同步；離開前請確認頁面上的同步狀態。',
-        saveFailed: '考試尚未加入目前工作區，草稿仍保留；請確認班級後重試。',
-        discardDraft: '要丟棄尚未保存的考試變更並開啟另一份考試嗎？選擇取消可繼續編輯。',
-        delete: '刪除',
-        deleteConfirm: '確定刪除此考試及所有已輸入成績？',
-        itemSettings: '考試項目',
-        itemSettingsHint: '每個項目可設定不同滿分；歷次同名項目會用來計算項目趨勢。',
-        itemName: '項目名稱',
-        maximum: '滿分',
-        addItem: '新增項目',
-        duplicateItems: '項目名稱不可重複。',
-        classScores: '全班成績表',
-        classScoresHint: '點選學生可查看分析；也可將 Excel 或 Google 試算表的多格資料貼到任一成績格，Tab 向右、Enter 向下。',
-        downloadScoreTemplate: '下載成績 CSV 範本',
-        templateFailed: '無法產生成績範本。',
-        pastePreview: '成績貼上預覽',
-        pasteConfirm: '套用至草稿',
-        pasteCancel: '取消',
-        pasteBlocked: '請先修正所有錯誤，再套用這批成績。',
-        pasteApplied: '已將 {count} 筆成績加入尚未保存的草稿。',
-        pasteMoreIssues: '另有 {count} 個問題未顯示。',
-        pasteIssueMessages: {
-          'empty-paste': '貼上的範圍沒有資料。',
-          'invalid-start-position': '起始成績格無效。',
-          'parse-error': '無法解析貼上的表格。',
-          'matrix-overflow': '貼上範圍超出目前成績表。',
-          'invalid-score': '請輸入有效的數字成績。',
-          'negative-score': '成績不可小於零。',
-          'score-over-maximum': '成績超過該項目的滿分。',
-          'formula-risk': '成績欄不接受試算表公式。',
-          'no-score-changes': '沒有可套用的成績；空白儲存格會保留原值。',
-        },
-        learner: '學生',
-        completion: '輸入進度',
-        entered: '筆成績已輸入',
-        noStudents: '請先新增學生，再輸入考試成績。',
-        individualAnalysis: '個別趨勢分析',
-        selectedLearner: '目前學生',
-        overall: '整體得分率',
-        classAverage: '班級平均',
-        trend: '學習趨勢',
-        improving: '進步中',
-        declining: '需要關注',
-        stable: '大致持平',
-        first: '首次紀錄',
-        strengths: '優勢項目',
-        focusAreas: '優先加強',
-        missingScores: '尚待補登',
-        none: '目前未辨識',
-        mentorComment: '導師評語',
-        commentPlaceholder: '補上具體、可行動，且適合學生與家長閱讀的回饋...',
-        printA4: '產生個別 A4 PDF',
-        printHint: '會開啟系統列印視窗；選擇「另存為 PDF」即可，紙張已預設為 A4。',
-        reportScope: '報表內容範圍',
-        reportScopeHint: '成績、評語與評量項目列可分別選擇；只影響這次 PDF，不會刪除或隱藏原始紀錄。',
-        scoreRange: '成績範圍',
-        commentRange: '評語範圍',
-        itemRows: '輸出評量項目列',
-        selectAllItems: '全選',
-        clearAllItems: '全部取消',
-        rangeCurrentScore: '僅本次考試',
-        rangeRecentScore: '最近 3 次考試',
-        rangeAllScore: '截至本次的全部考試',
-        rangeCurrentComment: '僅本次評語',
-        rangeRecentComment: '最近 3 筆已填評語',
-        rangeAllComment: '截至本次的全部評語',
-        rangeNoComment: '不輸出評語',
-        reportScopeSummary: '已選 {scores} 次成績 · {comments} 筆評語 · {items} 個項目列',
-        popupBlocked: '報告視窗遭瀏覽器阻擋，請允許彈出式視窗後重試。',
-        completeRequired: '請填寫考試名稱，並保留至少一個名稱不重複的項目。',
-        itemTrend: '較上次',
-        itemComparison: '評量項目比較',
-        classComparison: '班平均',
-        score: '成績',
-      };
+  const copy = useMemo(() => getExamAssessmentCopy(lang), [lang]);
   const students = useMemo(
     () => currentClass?.students ?? [],
     [currentClass?.students],
@@ -342,66 +164,25 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
     }
   }, [exams]);
 
+  const effectiveStudentId = studentSelection?.studentId ?? selectedStudentId;
+  const assessment = useMemo(() => buildExamAssessmentModel({
+    draft, exams, students, selectedStudentId: effectiveStudentId, isDirty, readOnly,
+  }), [draft, exams, students, effectiveStudentId, isDirty, readOnly]);
+  const { storedExam, isPendingSave, hasDuplicateItemNames, canSave, canPrint,
+    allExamsForAnalysis, selectedStudent, analysis, studentAnalyses,
+    enteredScoreCount, totalScoreCount, completedStudentCount } = assessment;
+  const { reportSelection, reportCommentCount, selectedReportItemIds } = useMemo(() => buildExamReportModel({
+    draft, assessment, scoreRange: reportScoreRange, commentRange: reportCommentRange,
+    excludedItemIds: excludedReportItemIds,
+  }), [draft, assessment, reportScoreRange, reportCommentRange, excludedReportItemIds]);
+
   if (!currentClass) return null;
 
-  const storedExam = exams.find((exam) => exam.id === draft.id);
-  const isPendingSave = isDirty || !storedExam;
-  const normalizedItemNames = draft.items.map((item) =>
-    item.name.trim().toLocaleLowerCase()
-  );
-  const hasDuplicateItemNames =
-    new Set(normalizedItemNames.filter(Boolean)).size !==
-    normalizedItemNames.filter(Boolean).length;
-  const canSave =
-    Boolean(draft.title.trim()) &&
-    draft.items.length > 0 &&
-    draft.items.every((item) => item.name.trim() && item.maxScore > 0) &&
-    !hasDuplicateItemNames;
-  const canPrint = canSave && (!readOnly || Boolean(storedExam));
-  const allExamsForAnalysis = [
-    draft,
-    ...exams.filter((exam) => exam.id !== draft.id),
-  ];
-  const effectiveStudentId = studentSelection?.studentId ?? selectedStudentId;
-  const selectedStudent =
-    students.find((student) => student.id === effectiveStudentId) ?? students[0];
   const selectStudent = (studentId: string) => {
     if (!students.some((student) => student.id === studentId)) return;
     if (studentSelection) studentSelection.onStudentChange(studentId);
     else setSelectedStudentId(studentId);
   };
-  const analysis = selectedStudent
-    ? computeExamStudentAnalysis(
-        allExamsForAnalysis,
-        draft.id,
-        selectedStudent.id,
-      )
-    : null;
-  const reportSelection = analysis
-    ? getExamReportSelection({
-        exams: allExamsForAnalysis,
-        exam: draft,
-        analysis,
-        scoreRange: reportScoreRange,
-        commentRange: reportCommentRange,
-      })
-    : null;
-  const reportCommentCount = reportSelection?.commentEntries.filter(
-    (entry) => entry.comment.trim(),
-  ).length ?? 0;
-  const selectedReportItemIds = draft.items
-    .filter((item) => !excludedReportItemIds.includes(item.id))
-    .map((item) => item.id);
-  const enteredScoreCount = students.reduce((total, student) => {
-    const result = getStudentResult(draft, student.id);
-    return total + draft.items.filter((item) => hasExamScore(result?.scores[item.id])).length;
-  }, 0);
-  const totalScoreCount = students.length * draft.items.length;
-  const completedStudentCount = students.filter((student) => {
-    const result = getStudentResult(draft, student.id);
-    return draft.items.length > 0 &&
-      draft.items.every((item) => hasExamScore(result?.scores[item.id]));
-  }).length;
   const trendIcon =
     analysis?.trend === 'improving'
       ? TrendingUp
@@ -1071,11 +852,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                 <tbody>
                   {students.map((student, studentIndex) => {
                     const result = getStudentResult(draft, student.id);
-                    const studentAnalysis = computeExamStudentAnalysis(
-                      allExamsForAnalysis,
-                      draft.id,
-                      student.id,
-                    );
+                    const studentAnalysis = studentAnalyses.get(student.id)!;
                     const isSelected = selectedStudent?.id === student.id;
                     return (
                       <tr
@@ -1407,4 +1184,4 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
       )}
     </section>
   );
-};
+});

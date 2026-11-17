@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { translations } from '../i18n/translations';
 import type { Language, PetCareMode } from '../store/types';
@@ -51,7 +51,7 @@ const gameDestinations: ConsoleDestination[] = ['pets', 'battle', 'leaderboard',
 
 /** Draft editors stay mounted; activity dialogs close when leaving their page. */
 export const DashboardView = ({ readOnly = false, canExportFullData = false, canAdministerWorkspace = false, flushChanges = async () => true, workspaceName, syncStatus = 'connected', setup, draftAuthorization }: DashboardViewProps) => {
-  authorizeLearningDrafts(draftAuthorization);
+  const draftPermit = authorizeLearningDrafts(draftAuthorization);
   const data = useStore((state) => state.data);
   const lang = data.settings?.language || 'zh';
   const gameFeatures = resolveGameFeatures(data.settings?.gameFeatures);
@@ -73,16 +73,20 @@ export const DashboardView = ({ readOnly = false, canExportFullData = false, can
   useFeatureAnalytics(active, !readOnly);
   const area = getDestination(active).area;
   const selectedClassId = readOnly ? readOnlyClassId : data.currentClassId;
+  const sessionGeneration = getStoreSessionGeneration();
   const currentClass = data.classes.find((item) => item.id === selectedClassId);
   const learningStudentId = resolveLearningStudent(selectedClassId, currentClass?.students ?? [], learningSelection);
-  const studentSelection = {
-    studentId: learningStudentId,
-    onStudentChange: (studentId: string) => {
-      if (currentClass?.students.some((student) => student.id === studentId)) {
-        setLearningSelection({ classId: selectedClassId, studentId });
-      }
-    },
-  };
+  const onLearningStudentChange = useCallback((studentId: string) => {
+    if (getStoreSessionGeneration() !== sessionGeneration) return;
+    const classroom = useStore.getState().data.classes.find((item) => item.id === selectedClassId);
+    if (classroom?.students.some((student) => student.id === studentId)) {
+      setLearningSelection({ classId: selectedClassId, studentId });
+    }
+  // A new/revoked permit must also wake memoized editors with identical rosters.
+  }, [selectedClassId, sessionGeneration, draftPermit]);
+  const studentSelection = useMemo(() => ({
+    studentId: learningStudentId, onStudentChange: onLearningStudentChange,
+  }), [learningStudentId, onLearningStudentChange]);
   const workflowStep = active === 'exams' && examReportActive ? 'report' : getLearningWorkflowStep(active);
   const analyticsMode = active in analyticsModes ? analyticsModes[active as keyof typeof analyticsModes] : 'student';
   const analyticsVisible = active in analyticsModes;

@@ -16,7 +16,7 @@
     "test:rules": "tsx tests/gameRules.test.ts && tsx --test tests/gameDomainArchitecture.test.ts",
     "test:imports": "tsx --test tests/tabularImport.test.ts tests/workspaceImport.test.ts tests/workspaceImportApi.test.ts",
     "test:auth": "tsx --test tests/auth.test.ts tests/authConcurrency.test.ts tests/authProtection.test.ts",
-    "test:dashboard": "tsx --test tests/dashboardRefactor.test.ts tests/examDraft.test.ts tests/teacherConsole.test.ts tests/teacherToday.test.ts tests/teacherSetup.test.ts tests/gameFeatures.test.ts tests/gameFeaturePersistence.test.ts tests/storeCalculations.test.ts tests/learningSlice.test.ts",
+    "test:dashboard": "tsx --test tests/dashboardRefactor.test.ts tests/examDraft.test.ts tests/teacherConsole.test.ts tests/teacherToday.test.ts tests/teacherSetup.test.ts tests/gameFeatures.test.ts tests/gameFeaturePersistence.test.ts tests/storeCalculations.test.ts tests/learningSlice.test.ts tests/examAssessmentContext.test.ts tests/examAssessmentModel.test.ts",
     "test:classroom": "tsx --test tests/classroomRefactor.test.ts tests/classroomPresentation.test.ts",
     "test:pets": "tsx --test tests/petCardModel.test.ts",
     "test:security-ci": "tsx --test tests/securityCi.test.ts",
