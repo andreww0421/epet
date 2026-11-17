@@ -30,7 +30,7 @@
     "test:workspace-validation": "tsx --test tests/workspaceValidationSecurity.test.ts",
     "test:sync-reliability": "tsx --test tests/syncRetryPolicy.test.ts tests/workspaceCapacity.test.ts",
     "test:ownership": "tsx --test tests/ownershipConcurrency.test.ts",
-    "test:d1-core": "tsx --test tests/d1-core.test.ts",
+    "test:d1-core": "tsx --test tests/d1-core.test.ts tests/repositoryRows.test.ts",
     "test:recovery": "tsx --test tests/recoveryValidation.test.ts tests/disasterRecovery.test.ts",
     "db:drill:local": "tsx scripts/disaster-recovery.ts",
     "test:observability": "tsx --test tests/observabilityPrivacy.test.ts tests/backendApiMonitoring.test.ts tests/workerMonitoring.test.ts tests/workerMonitoringRuntime.test.ts tests/operationsMonitoring.test.ts tests/d1Monitoring.test.ts tests/operationalFailureSignals.test.ts",
