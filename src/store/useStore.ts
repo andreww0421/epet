@@ -1,16 +1,9 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage, type StateStorage } from 'zustand/middleware';
-import { 
-  AppData, Student, ClassData, UpgradeRewardState, PetAnimationMode,
-  PointAdjustmentSource, BattleMode, Language, BossRewardTier, BossVictoryResult,
-  ClassGoal, LearningCompetency, BossReward, BossAttackMode, MentorDailyFeedbackInput,
-  PointReasonOption, FeedbackReasonHistoryEntry, LearningEvidenceInput, ExamRecord,
-  DailyReflection, LearningEvidenceRecord, ClassDailyTaskCalendar,
+import type {
+  AppData, Student, PointAdjustmentSource, Language, LearningCompetency,
+  BossAttackMode, FeedbackReasonHistoryEntry,
 } from './types';
-import {
-  createLearningEvidenceRecord,
-  createMentorFeedbackEvidenceRecord,
-} from '../../shared/education';
 import { 
   translations, STORAGE_KEY, DEFAULT_MAX_TEAM_SIZE,
   DEFAULT_BATTLE_MODE, petNames
@@ -20,7 +13,6 @@ import {
   sanitizeTeamAssignments, getTeamMembers, createTeamId, normalizeWorldBoss,
   normalizePointReasonOptions, normalizeClassDailyTaskCalendar,
 } from './utils';
-import { normalizeExamRecords } from '../examAnalytics';
 import { createEnrolledStudent } from '../studentEnrollment';
 import { getPublicStudentName } from '../studentPresentation';
 import { resolveBossRewardsOnBackend } from '../services/backendApi';
@@ -32,7 +24,6 @@ import { findActiveClassIndex, getActiveClasses, isArchivedClass } from '../../s
 import { resolveGameFeatures } from '../../shared/gameFeatures';
 import { 
   applyFeedToStudent, applyPlayWithPet, claimDailyTaskForStudent,
-  saveMentorDailyFeedbackForStudent,
   reviveStudentPet, applyPointAdjustmentToStudent, createPointAdjustmentRecord,
   createEconomyEventRecord, appendEconomyEventToStudent,
   applyPenaltyToStudent, createDisciplineRecord, getNextUpgradeGachaLevel,
@@ -55,161 +46,17 @@ import {
   DEFAULT_POSITIVE_FEEDBACK_RATIO_TARGET, applyPointGuardrail,
   DEFAULT_MINIMUM_DAILY_PARTICIPATION_POINTS, DEFAULT_CATCH_UP_GAP_THRESHOLD,
   DEFAULT_DAILY_CATCH_UP_BONUS, applyParticipationSupportToStudent,
-  getDateKey, hasActiveLevelDecreaseCooldown, type SafetyActionKind,
+  hasActiveLevelDecreaseCooldown,
   normalizeDateKeyList, normalizeSchoolTimeZone, normalizeSchoolWeekdays,
-  normalizeDailyTaskMakeupWindowDays, isDateKey,
-  isLearningCompetency, getActiveClassGoals, getWeekStartDate,
+  normalizeDailyTaskMakeupWindowDays,
+  isLearningCompetency,
   getPetUpgradeBlockedReason, getPetUpgradeCost, PET_GACHA_COST,
-  type PointGuardrailOptions, type PointGuardrailOutcome,
+  type PointGuardrailOptions,
   type ParticipationSupportOptions,
 } from '../gameRules';
 
-type PointAdjustmentReason = {
-  id?: string;
-  label?: string;
-  competency?: LearningCompetency;
-};
-
-type PointUndoEntry = {
-  studentId: string;
-  recordId: string;
-  actualDelta: number;
-};
-
-type PointUndoAction = {
-  id: string;
-  classId: string;
-  label: string;
-  expiresAt: number;
-  entries: PointUndoEntry[];
-};
-
-type PointGuardrailApplication = {
-  studentId: string;
-  requestedAmount: number;
-  appliedAmount: number;
-  outcome: PointGuardrailOutcome;
-  participationTopUp: number;
-  catchUpBonus: number;
-};
-
-type SafetyUndoAction = {
-  id: string;
-  classId: string;
-  studentId: string;
-  originalRecordId: string;
-  actionKind: SafetyActionKind;
-  label: string;
-  expiresAt: number;
-};
-
-type StoreState = {
-  data: AppData;
-  view: 'dashboard' | 'classroom';
-  animatingPets: Record<string, PetAnimationMode | undefined>;
-  toast: { message: string; type: 'success' | 'error' } | null;
-  upgradeReward: UpgradeRewardState | null;
-  bossHitFeedback: { damage: number; id: number } | null;
-  bossAttackFeedback: {
-    targetNames: string[];
-    damage: number;
-    id: number;
-    mode?: BossAttackMode;
-    recoverAt?: number;
-  } | null;
-  showBossVictory: boolean;
-  bossVictoryResult: BossVictoryResult | null;
-  undoAction: PointUndoAction | null;
-  safetyUndoAction: SafetyUndoAction | null;
-
-  // Actions
-  setView: (view: 'dashboard' | 'classroom') => void;
-  showToast: (message: string, type?: 'success' | 'error') => void;
-  setUpgradeReward: (reward: UpgradeRewardState | null) => void;
-  triggerPetAnimation: (studentId: string, mode: PetAnimationMode, durationMs: number) => void;
-  
-  // Class / Setup Actions
-  switchClass: (classId: string) => void;
-  addClass: (name: string) => void;
-  deleteClass: (classId: string) => void;
-  importData: (importedData: any, now?: number) => void;
-  updateSettings: (settings: Partial<NonNullable<AppData['settings']>>) => void;
-  updateClassDailyTaskCalendar: (
-    classId: string,
-    calendar: ClassDailyTaskCalendar,
-  ) => void;
-  setClassGoal: (
-    goal: Pick<ClassGoal, 'title' | 'competency' | 'targetCount'> | null,
-    goalId?: string,
-  ) => void;
-  saveExamRecord: (exam: ExamRecord) => void;
-  deleteExamRecord: (examId: string) => void;
-
-  // Student CRUD
-  addStudent: (student: Student) => void;
-  addStudentsByName: (names: string[]) => number;
-  deleteStudent: (studentId: string) => void;
-  editStudentName: (studentId: string, newName: string) => void;
-  
-  // Student Stats & Discipline
-  addPoints: (
-    studentId: string,
-    pointsToAdd: number,
-    source?: PointAdjustmentSource,
-    reason?: PointAdjustmentReason,
-  ) => void;
-  adjustPointsForStudents: (
-    studentIds: string[],
-    pointsToAdd: number,
-    source?: PointAdjustmentSource,
-    reason?: PointAdjustmentReason,
-  ) => void;
-  airdropPoints: (pointsToAdd: number, reasonLabel?: string, competency?: LearningCompetency) => void;
-  replacePointReasons: (reasons: PointReasonOption[]) => void;
-  togglePinnedReason: (reasonId: string) => void;
-  undoLastPointAdjustment: () => void;
-  decreaseLevel: (studentId: string, reason?: string) => void;
-  warnStudent: (studentId: string) => void;
-  removeWarning: (studentId: string) => void;
-  disciplineStudent: (studentId: string, reason: string) => void;
-  undoLastSafetyAction: () => void;
-  removePenalty: (studentId: string) => void;
-  resetSeason: () => void;
-  
-  // Interactions
-  feedPet: (studentId: string) => void;
-  playWithPet: (studentId: string) => void;
-  claimDailyTask: (studentId: string) => boolean;
-  setDailyTaskExcusedDate: (studentId: string, date: string, excused: boolean) => void;
-  saveMentorDailyFeedback: (studentId: string, feedback: MentorDailyFeedbackInput) => void;
-  addLearningEvidence: (studentId: string, evidence: LearningEvidenceInput) => void;
-  revivePet: (studentId: string) => void;
-  upgradePet: (studentId: string) => void;
-  gachaPet: (studentId: string) => void;
-  rerollPetFromUpgrade: (studentId: string, claimedLevel: number) => void;
-  advanceUpgradeRewardProgress: (studentId: string, claimedLevel: number) => void;
-  
-  // Team & Battle
-  setTeammate: (studentId: string, teammateIds?: string[]) => void;
-  battle: (attackerId: string, defenderId: string) => void;
-  
-  // Boss
-  summonBoss: (
-    name: string,
-    maxHp: number,
-    rewardTiers: BossRewardTier[],
-    participationReward?: BossReward,
-    improvementReward?: BossReward,
-  ) => void;
-  removeBoss: () => void;
-  executeAttackBoss: (studentId: string) => Promise<void>;
-  executeBossAttack: () => void;
-  clearBossRecovery: () => void;
-  dismissBossVictory: () => void;
-
-  // Lifecycle
-  triggerDecay: () => void;
-};
+import type { StoreState, PointAdjustmentReason, PointUndoEntry, PointGuardrailApplication } from './storeTypes';
+import { createLearningSlice } from './slices/learningSlice';
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 const petAnimationTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -220,7 +67,6 @@ let safetyUndoTimer: ReturnType<typeof setTimeout> | undefined;
 const POINT_UNDO_WINDOW_MS = 10_000;
 const SAFETY_UNDO_WINDOW_MS = 10_000;
 const MAX_BULK_STUDENTS = 200;
-const MAX_LEARNING_EVIDENCE_RECORDS = 2000;
 const PII_CACHE_ENABLED = (
   import.meta as ImportMeta & {
     env?: Record<string, string | undefined>;
@@ -229,27 +75,6 @@ const PII_CACHE_ENABLED = (
 
 const normalizeImportedStudentName = (name: string) =>
   name.normalize('NFKC').trim().replace(/\s+/g, ' ');
-
-const syncMentorFeedbackEvidence = (
-  records: LearningEvidenceRecord[],
-  classId: string,
-  studentId: string,
-  reflection: DailyReflection,
-) => [
-  createMentorFeedbackEvidenceRecord(
-    classId,
-    studentId,
-    {
-      id: reflection.id,
-      competency: reflection.competency,
-      assessment: reflection.mentorAssessment,
-      text: reflection.text,
-      createdAt: reflection.createdAt,
-    },
-    records,
-  ),
-  ...records,
-].slice(0, MAX_LEARNING_EVIDENCE_RECORDS);
 
 const createStudentFromImportedName = (name: string, index: number): Student =>
   createEnrolledStudent({
@@ -482,7 +307,7 @@ const prependFeedbackReason = (
 
 export const useStore = create<StoreState>()(
   persist(
-    (set, get) => ({
+    (set, get, store) => ({
       data: normalizeAppData({}),
       view: 'dashboard',
       animatingPets: {},
@@ -770,142 +595,7 @@ export const useStore = create<StoreState>()(
         };
       }),
 
-      updateClassDailyTaskCalendar: (classId, calendar) => set((state) => {
-        const currentClassIndex = findActiveClassIndex(state.data, classId);
-        if (currentClassIndex === -1) return state;
-        const nextClasses = [...state.data.classes];
-        nextClasses[currentClassIndex] = {
-          ...nextClasses[currentClassIndex],
-          dailyTaskCalendar: normalizeClassDailyTaskCalendar(
-            calendar,
-            state.data.settings,
-          ),
-        };
-        return { data: { ...state.data, classes: nextClasses } };
-      }),
-
-      setClassGoal: (goal, goalId) => set((state) => {
-        const currentClassIndex = findActiveClassIndex(state.data);
-        if (currentClassIndex === -1) return state;
-
-        const now = Date.now();
-        const nextClasses = [...state.data.classes];
-        const currentGoals = nextClasses[currentClassIndex].classGoals ?? [];
-        const schoolTimeZone = state.data.settings?.schoolTimeZone;
-        const currentWeekStart = getWeekStartDate(now, schoolTimeZone);
-        const activeGoals = getActiveClassGoals(currentGoals, now, schoolTimeZone);
-        const currentGoal = goalId
-          ? currentGoals.find((existingGoal) => existingGoal.id === goalId)
-          : undefined;
-        const canKeepProgress = currentGoal?.competency === goal?.competency;
-        let nextGoals: ClassGoal[];
-
-        if (!goal) {
-          nextGoals = goalId
-            ? currentGoals.filter((existingGoal) => existingGoal.id !== goalId)
-            : currentGoals.filter((existingGoal) => !activeGoals.includes(existingGoal));
-        } else {
-          const nextGoal: ClassGoal = {
-            id: currentGoal?.id ?? `goal-${now}-${currentGoals.length}`,
-            title: goal.title.trim(),
-            competency: goal.competency,
-            targetCount: Math.max(1, Math.floor(toFiniteNumber(goal.targetCount, 10))),
-            createdAt: canKeepProgress && currentGoal ? currentGoal.createdAt : now,
-            weekStartDate: currentGoal?.weekStartDate ?? currentWeekStart,
-          };
-
-          if (currentGoal) {
-            nextGoals = currentGoals.map((existingGoal) =>
-              existingGoal.id === currentGoal.id ? nextGoal : existingGoal,
-            );
-          } else {
-            if (activeGoals.length >= 3) {
-              get().showToast(
-                translations[state.data.settings?.language || 'zh'].classGoalLimitReached,
-                'error',
-              );
-              return state;
-            }
-            nextGoals = [...currentGoals, nextGoal].slice(-156);
-          }
-        }
-
-        nextClasses[currentClassIndex] = {
-          ...nextClasses[currentClassIndex],
-          classGoals: nextGoals,
-        };
-        const tLang = translations[state.data.settings?.language || 'zh'];
-        get().showToast(goal ? tLang.classGoalSaved : tLang.classGoalCleared, 'success');
-        return { data: { ...state.data, classes: nextClasses } };
-      }),
-
-      saveExamRecord: (exam) => {
-        const workflowBefore = get().data;
-        const existingExam = workflowBefore.classes.find((item) => item.id === workflowBefore.currentClassId)
-          ?.examRecords?.some((item) => item.id === exam.id);
-        const workflow = existingExam ? null : beginProductWorkflow('exam_create');
-        let created = false;
-        set((state) => {
-          const currentClassIndex = findActiveClassIndex(state.data);
-          if (currentClassIndex === -1) return state;
-          const currentClass = state.data.classes[currentClassIndex];
-          const now = Date.now();
-          const normalizedExam = normalizeExamRecords(
-            [{ ...exam, updatedAt: now }],
-            new Set(currentClass.students.map((student) => student.id)),
-            now,
-          )[0];
-          if (!normalizedExam || normalizedExam.items.length === 0) return state;
-          created = !(currentClass.examRecords ?? []).some(
-            (candidate) => candidate.id === normalizedExam.id,
-          );
-
-          const nextClasses = [...state.data.classes];
-          nextClasses[currentClassIndex] = {
-            ...currentClass,
-            examRecords: [
-              normalizedExam,
-              ...(currentClass.examRecords ?? []).filter(
-                (candidate) => candidate.id !== normalizedExam.id,
-              ),
-            ].sort(
-              (left, right) =>
-                right.examDate.localeCompare(left.examDate) ||
-                right.createdAt - left.createdAt,
-            ),
-          };
-          const lang = state.data.settings?.language || 'zh';
-          get().showToast(
-            lang === 'en' ? 'Assessment saved.' : '考試成績已保存。',
-            'success',
-          );
-          return { data: { ...state.data, classes: nextClasses } };
-        });
-        if (workflow) recordProductWorkflowCommandResult(workflow, workflowBefore, get().data, created);
-        if (created) trackAnalytics('exam_created', {});
-      },
-
-      deleteExamRecord: (examId) => set((state) => {
-        const currentClassIndex = findActiveClassIndex(state.data);
-        if (currentClassIndex === -1) return state;
-        const currentClass = state.data.classes[currentClassIndex];
-        if (!(currentClass.examRecords ?? []).some((exam) => exam.id === examId)) {
-          return state;
-        }
-        const nextClasses = [...state.data.classes];
-        nextClasses[currentClassIndex] = {
-          ...currentClass,
-          examRecords: (currentClass.examRecords ?? []).filter(
-            (exam) => exam.id !== examId,
-          ),
-        };
-        const lang = state.data.settings?.language || 'zh';
-        get().showToast(
-          lang === 'en' ? 'Assessment deleted.' : '考試紀錄已刪除。',
-          'success',
-        );
-        return { data: { ...state.data, classes: nextClasses } };
-      }),
+      ...createLearningSlice(set, get, store),
 
       addStudent: (student) => set((state) => {
         const currentClassIndex = findActiveClassIndex(state.data);
@@ -1908,126 +1598,6 @@ export const useStore = create<StoreState>()(
         return { data: { ...state.data, classes: nextClasses } };
         });
         return claimed;
-      },
-
-      setDailyTaskExcusedDate: (studentId, date, excused) => set((state) => {
-        if (!isDateKey(date)) return state;
-        const currentClassIndex = findActiveClassIndex(state.data);
-        if (currentClassIndex === -1) return state;
-        const nextClasses = [...state.data.classes];
-        let changed = false;
-        nextClasses[currentClassIndex] = {
-          ...nextClasses[currentClassIndex],
-          students: nextClasses[currentClassIndex].students.map((student) => {
-            if (student.id !== studentId) return student;
-            const currentDates = normalizeDateKeyList(student.dailyProgress?.excusedDates, 120);
-            const nextDates = excused
-              ? normalizeDateKeyList([...currentDates, date], 120)
-              : currentDates.filter((item) => item !== date);
-            if (nextDates.length === currentDates.length &&
-                nextDates.every((item, index) => item === currentDates[index])) {
-              return student;
-            }
-            changed = true;
-            return {
-              ...student,
-              dailyProgress: {
-                lastClaimDate: student.dailyProgress?.lastClaimDate,
-                streak: student.dailyProgress?.streak ?? 0,
-                reflections: student.dailyProgress?.reflections,
-                excusedDates: nextDates,
-              },
-            };
-          }),
-        };
-        if (!changed) return state;
-        const tLang = translations[state.data.settings?.language || 'zh'];
-        get().showToast(tLang.dailyTaskExcusedUpdated ?? '學生請假日已更新', 'success');
-        return { data: { ...state.data, classes: nextClasses } };
-      }),
-
-      saveMentorDailyFeedback: (studentId, feedback) => set((state) => {
-        const currentClassIndex = findActiveClassIndex(state.data);
-        if (currentClassIndex === -1) return state;
-        const currentClass = state.data.classes[currentClassIndex];
-        const targetStudent = currentClass.students.find((student) => student.id === studentId);
-        if (!targetStudent) return state;
-
-        const now = Date.now();
-        const timeZone = currentClass.dailyTaskCalendar?.schoolTimeZone ??
-          state.data.settings?.schoolTimeZone;
-        const result = saveMentorDailyFeedbackForStudent(
-          targetStudent,
-          feedback,
-          now,
-          timeZone,
-        );
-        if (!result.saved) return state;
-        const savedReflection = result.student.dailyProgress?.reflections?.find(
-          (reflection) =>
-            reflection.author === 'mentor' &&
-            reflection.date === getDateKey(now, timeZone),
-        );
-        const currentEvidence = currentClass.learningEvidenceRecords ?? [];
-
-        const nextClasses = [...state.data.classes];
-        nextClasses[currentClassIndex] = {
-          ...currentClass,
-          students: currentClass.students.map((student) =>
-            student.id === studentId ? result.student : student,
-          ),
-          learningEvidenceRecords: savedReflection
-            ? syncMentorFeedbackEvidence(
-                currentEvidence,
-                currentClass.id,
-                studentId,
-                savedReflection,
-              )
-            : currentEvidence,
-        };
-        const tLang = translations[state.data.settings?.language || 'zh'];
-        get().showToast(
-          result.updated ? tLang.dailyFeedbackUpdated : tLang.dailyFeedbackSaved,
-          'success',
-        );
-        return { data: { ...state.data, classes: nextClasses } };
-      }),
-
-      addLearningEvidence: (studentId, evidence) => {
-        let created = false;
-        set((state) => {
-          const currentClassIndex = findActiveClassIndex(state.data);
-          if (currentClassIndex === -1 || !evidence.title.trim()) return state;
-          const currentClass = state.data.classes[currentClassIndex];
-          const targetStudent = currentClass.students.find((student) => student.id === studentId);
-          if (!targetStudent) return state;
-
-          const now = Date.now();
-          const record = createLearningEvidenceRecord(
-            currentClass.id,
-            studentId,
-            {
-              ...evidence,
-              actor: 'mentor',
-              source: 'manual',
-              rubricVersion: evidence.rubricVersion ?? '1.0',
-            },
-            now,
-          );
-          const nextClasses = [...state.data.classes];
-          nextClasses[currentClassIndex] = {
-            ...currentClass,
-            learningEvidenceRecords: [
-              record,
-              ...(currentClass.learningEvidenceRecords ?? []),
-            ].slice(0, MAX_LEARNING_EVIDENCE_RECORDS),
-          };
-          const lang = state.data.settings?.language || 'zh';
-          get().showToast(translations[lang].learningEvidenceSaved, 'success');
-          created = true;
-          return { data: { ...state.data, classes: nextClasses } };
-        });
-        if (created) trackAnalytics('learning_evidence_created', {});
       },
 
       revivePet: (studentId) => set((state) => {
