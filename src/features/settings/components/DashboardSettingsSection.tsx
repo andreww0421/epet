@@ -9,6 +9,7 @@ import type { Language, PetCareMode } from '../../../store/types';
 import { useDashboardSettings } from '../hooks/useDashboardSettings';
 import { GameRuleSettings } from './GameRuleSettings';
 import { SettingsOverview } from './SettingsOverview';
+import { GameFeatureSettings } from './GameFeatureSettings';
 
 type DashboardSettingsSectionProps = {
   canAdministerWorkspace: boolean;
@@ -48,6 +49,10 @@ export const DashboardSettingsSection = ({
         <Settings className="h-5 w-5 mr-2 text-indigo-500" />
         {copy.systemSettings}
       </h2>
+
+      {canAdministerWorkspace && <div hidden={mode !== 'all' && mode !== 'rules'}>
+        <GameFeatureSettings canWrite={canWrite} language={lang} />
+      </div>}
 
       <div hidden={mode !== 'all' && mode !== 'workspace'}>
         {canAdministerWorkspace && (
@@ -108,7 +113,11 @@ export const DashboardSettingsSection = ({
         <SettingsOverview model={model} mode={mode === 'governance' ? 'governance' : mode === 'rules' ? 'rules' : 'all'} />
       </div>
       <div hidden={mode !== 'all' && mode !== 'rules' && mode !== 'rewards'}>
-        <GameRuleSettings model={model} mode={mode === 'rewards' ? 'rewards' : mode === 'rules' ? 'rules' : 'all'} />
+        <details className="mb-6 rounded-xl border border-slate-200 p-4">
+          <summary className="min-h-11 cursor-pointer py-2 font-semibold text-slate-800 focus-visible:outline-2 focus-visible:outline-indigo-700">{lang === 'en' ? 'Advanced game parameters' : '進階遊戲參數'}</summary>
+          <p className="mb-4 text-sm text-slate-600">{lang === 'en' ? 'Economy, battle, boss and rank values. Changes apply only after saving settings; interface presets do not change these values.' : '包含經濟、對戰、魔王與段位數值。修改後需儲存設定才會套用；活動介面方案不會改動這些數值。'}</p>
+          <GameRuleSettings model={model} mode={mode === 'rewards' ? 'rewards' : mode === 'rules' ? 'rules' : 'all'} />
+        </details>
       </div>
 
       <div hidden={mode === 'workspace'} className="border-t border-slate-200 pt-5">
@@ -122,8 +131,8 @@ export const DashboardSettingsSection = ({
         {mode !== 'all' && mode !== 'workspace' && (
           <p className="mt-2 text-xs text-slate-500">
             {lang === 'en'
-              ? 'Save applies all settings drafts, including edits in Game Rules, Rewards, and Data Governance.'
-              : '儲存會一併套用各設定頁的草稿，包括遊戲規則、獎勵與資料治理。'}
+              ? 'Save applies Game Rules, Rewards and Data Governance drafts. Use Save activity entry points separately for visibility changes.'
+              : '此按鈕套用遊戲規則、獎勵與資料治理草稿；活動入口請另按「儲存活動入口」保存。'}
           </p>
         )}
       </div>

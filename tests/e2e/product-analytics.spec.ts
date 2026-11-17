@@ -57,10 +57,18 @@ const assertWorkflowPayloads = (events: ProductAnalyticsWorkflowEvent[], forbidd
   for (const value of forbidden.filter(Boolean)) expect(serialized.includes(value)).toBe(false);
 };
 
-const openIsolatedConsole = async (page: Page, name: string) => {
+const openIsolatedConsole = async (page: Page, name: string, showBoss = false) => {
   const created = await analyticsOwner.createWorkspace(name);
   const workspaceId = created.session.activeWorkspaceId;
   if (!workspaceId) throw new Error('Workspace is missing');
+  if (showBoss) {
+    // This command-coverage case explicitly opts into its optional activity.
+    // Keep the simple new-customer default and all event/privacy assertions.
+    const initial = await analyticsOwner.loadState(workspaceId);
+    await analyticsOwner.saveState({ ...initial.data!, settings: { ...initial.data!.settings!,
+      gameFeatures: { pets: true, battles: false, bosses: true, leaderboards: false },
+    } }, initial.revision, workspaceId);
+  }
   // Reuse the legitimately issued session, just like other feature suites.
   // Authentication suites retain real login coverage and production quotas.
   await openConsoleWithApiSession(page, analyticsOwner);
@@ -116,7 +124,7 @@ test.describe('Anonymous teacher product analytics', () => {
   test('successful teacher commands send only fixed enums and aggregate counts', async ({ context, page }) => {
     test.setTimeout(120_000);
     const workspaceName = 'AnalyticsPrivateWorkspaceCanary';
-    const workspaceId = await openIsolatedConsole(page, workspaceName);
+    const workspaceId = await openIsolatedConsole(page, workspaceName, true);
     const className = 'AnalyticsPrivateClassCanary';
     const studentNames = ['AnalyticsPrivateLearnerAlpha', 'AnalyticsPrivateLearnerBeta'];
     const pointReason = 'AnalyticsPrivatePointReasonCanary';

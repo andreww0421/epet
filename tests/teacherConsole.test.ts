@@ -8,6 +8,82 @@ import {
 import { buildTodayOverview } from '../src/features/teacher-console/model/todayOverview';
 import { createDashboardStudent } from '../src/features/students/model/createDashboardStudent';
 import type { ClassData } from '../src/store/types';
+import { getLearningWorkflowStep, resolveLearningStudent } from '../src/features/learning/model/learningWorkflow';
+import { createLearningDraftMemory, LEARNING_FORM_RECOVERY_MS } from '../src/features/learning/model/learningDraftMemory';
+import type { WorkspaceAccess } from '../shared/contracts/workspace';
+
+test('form drafts are unreadable until fresh exact authority resumes a suspended session', () => {
+  const memory = createLearningDraftMemory();
+  const access: WorkspaceAccess = { userId: 'teacher', workspaceId: 'workspace', role: 'teacher', classIds: ['A', 'B'] };
+  const first = memory.authorize({ access, generation: 1 }, 1, 0);
+  assert.deepEqual(memory.read(first, 'evidence-A-100', () => ({ text: '' })), { text: '' });
+  assert.equal(memory.update<{ text: string }>(first, 'evidence-A-100', () => ({ text: 'PRIVATE_DRAFT' }), 10), true);
+  memory.suspend();
+  assert.equal(memory.read(first, 'evidence-A-100', () => ({ text: 'must-not-run' })), undefined);
+  assert.equal(memory.update(first, 'evidence-A-100', () => ({ text: 'stale-event' })), false);
+  assert.equal(memory.authorize({ access, generation: 1 }, 2, 20), null);
+  assert.equal(memory.current(2), null);
+  const verified = memory.authorize({ access: { ...access, classIds: ['B', 'A'] }, generation: 2 }, 2, 20);
+  assert.deepEqual(memory.read(verified, 'evidence-A-100', () => ({ text: '' })), { text: 'PRIVATE_DRAFT' });
+});
+
+test('changed principal, workspace or reduced class authority cannot recover another scope form', () => {
+  const access: WorkspaceAccess = { userId: 'teacher', workspaceId: 'workspace', role: 'teacher', classIds: ['A', 'B'] };
+  for (const next of [{ ...access, userId: 'other' }, { ...access, workspaceId: 'other' }, { ...access, classIds: ['A'] }, { ...access, role: 'viewer' as const }]) {
+    const memory = createLearningDraftMemory();
+    const old = memory.authorize({ access, generation: 1 }, 1, 0);
+    memory.read(old, 'exam-100', () => 'PRIVATE_SCOPE_VALUE');
+    memory.suspend();
+    const fresh = memory.authorize({ access: next, generation: 2 }, 2, 1);
+    assert.equal(memory.read(fresh, 'exam-100', () => ''), '');
+    assert.equal(memory.read(old, 'exam-100', () => 'must-not-run'), undefined);
+    assert.equal(memory.update(old, 'exam-100', () => 'stale'), false);
+  }
+});
+
+test('expired form recovery and explicit remote replacement cannot resurrect unsaved scores', () => {
+  const access: WorkspaceAccess = { userId: 'owner', workspaceId: 'workspace', role: 'owner', classIds: null };
+  const memory = createLearningDraftMemory();
+  const initial = memory.authorize({ access, generation: 1 }, 1, 0);
+  memory.read(initial, 'exam', () => ({ score: 90 }));
+  memory.suspend();
+  const expired = memory.authorize({ access, generation: 2 }, 2, LEARNING_FORM_RECOVERY_MS);
+  assert.deepEqual(memory.read(expired, 'exam', () => ({ score: 40 })), { score: 40 });
+  memory.update(expired, 'exam', () => ({ score: 99 }), LEARNING_FORM_RECOVERY_MS + 1);
+  memory.clear();
+  const adopted = memory.authorize({ access, generation: 3 }, 3, LEARNING_FORM_RECOVERY_MS + 2);
+  assert.deepEqual(memory.read(adopted, 'exam', () => ({ score: 40 })), { score: 40 });
+  assert.equal(memory.update(expired, 'exam', () => ({ score: 100 })), false);
+});
+
+test('form recovery rejects missing or invalid memberships before evaluating draft initializers', () => {
+  const memory = createLearningDraftMemory();
+  const active = memory.authorize({ access: { userId: 'owner', workspaceId: 'workspace', role: 'owner', classIds: null }, generation: 1 }, 1);
+  memory.read(active, 'private', () => 'PRIVATE_FORM');
+  assert.equal(memory.authorize(null, 1), null);
+  assert.equal(memory.current(1), null);
+  assert.equal(memory.read(active, 'private', () => 'must-not-run'), undefined);
+  assert.equal(memory.authorize({ access: { userId: 'teacher', workspaceId: 'workspace', role: 'teacher', classIds: [] }, generation: 1 }, 1), null);
+  assert.equal(memory.read(null, 'class-A', () => { throw new Error('must not inspect unauthorized draft'); }), undefined);
+});
+
+test('learning workflow reuses educational destinations and excludes game points and pet status', () => {
+  for (const id of ['evidence', 'exams', 'comments', 'goals'] as const) assert.equal(getLearningWorkflowStep(id), 'record');
+  for (const id of ['trends', 'student-insights', 'class-insights'] as const) assert.equal(getLearningWorkflowStep(id), 'progress');
+  assert.equal(getLearningWorkflowStep('reports'), 'report');
+  for (const id of ['points', 'pets', 'battle', 'leaderboard', 'boss', 'activity-rewards', 'governance'] as const) {
+    assert.equal(getLearningWorkflowStep(id), null);
+  }
+});
+
+test('learning selection validates the class plus student identity, including collisions and deleted students', () => {
+  const selection = { classId: 'class-a', studentId: '100' };
+  assert.equal(resolveLearningStudent('class-a', [{ id: 'first' }, { id: '100' }], selection), '100');
+  assert.equal(resolveLearningStudent('class-b', [{ id: 'bob' }, { id: '100' }], selection), 'bob');
+  assert.equal(resolveLearningStudent('class-a', [{ id: 'remaining' }], selection), 'remaining');
+  assert.equal(resolveLearningStudent('class-a', [], selection), '');
+  assert.equal(resolveLearningStudent('class-a', [{ id: 'first' }], null), 'first');
+});
 
 const owner = { readOnly: false, canAdministerWorkspace: true };
 const teacher = { readOnly: false, canAdministerWorkspace: false };

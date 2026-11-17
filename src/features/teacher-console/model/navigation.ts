@@ -1,7 +1,8 @@
 import type { Language } from '../../../store/types';
+import { resolveGameFeatures, type GameFeatures } from '../../../../shared/gameFeatures';
 
 export type ConsoleArea = 'today' | 'class' | 'learning' | 'activities' | 'settings';
-export type ConsoleCapabilities = { readOnly: boolean; canAdministerWorkspace: boolean };
+export type ConsoleCapabilities = { readOnly: boolean; canAdministerWorkspace: boolean; gameFeatures?: GameFeatures };
 type Access = 'read' | 'write' | 'admin';
 const destination = <Id extends string>(id: Id, area: ConsoleArea, zh: string, en: string, access: Access) =>
   ({ id, area, label: { zh, en }, access });
@@ -50,7 +51,14 @@ export const AREA_DESCRIPTIONS: Record<ConsoleArea, Record<Language, string>> = 
   settings: { zh: '設定規則、管理工作區權限與資料安全。', en: 'Configure rules, workspace access and data safety.' },
 };
 export const getDestination = (id: ConsoleDestination) => CONSOLE_DESTINATIONS.find((item) => item.id === id)!;
+const GAME_DESTINATION_FEATURE: Partial<Record<ConsoleDestination, keyof GameFeatures>> = {
+  pets: 'pets', battle: 'battles', groups: 'battles', boss: 'bosses', leaderboard: 'leaderboards', 'activity-rewards': 'bosses',
+};
 export const canOpenDestination = (id: ConsoleDestination, capabilities: ConsoleCapabilities) => {
+  const features = resolveGameFeatures(capabilities.gameFeatures);
+  const feature = GAME_DESTINATION_FEATURE[id];
+  if (feature && !features[feature]) return false;
+  // All activity history remains accessible from Class > Records even when its activity entry is hidden.
   const { access } = getDestination(id);
   return access === 'read' || (!capabilities.readOnly &&
     (access === 'write' || capabilities.canAdministerWorkspace));

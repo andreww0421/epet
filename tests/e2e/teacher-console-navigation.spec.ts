@@ -23,6 +23,12 @@ const openOwnerConsole = async (page: Page, workspaceName: string) => {
   const created = await consoleOwner.createWorkspace(workspaceName);
   const workspaceId = created.session.activeWorkspaceId;
   if (!workspaceId) throw new Error('Workspace is missing');
+  // This suite verifies the complete existing activity surface; new-customer
+  // simple defaults are covered separately in game-features.spec.ts.
+  const initial = await consoleOwner.loadState(workspaceId);
+  await consoleOwner.saveState({ ...initial.data!, settings: { ...initial.data!.settings!,
+    gameFeatures: { pets: true, battles: true, bosses: true, leaderboards: true },
+  } }, initial.revision, workspaceId);
   await openConsoleWithApiSession(page, consoleOwner);
   return workspaceId;
 };
@@ -237,6 +243,7 @@ test.describe('Teacher Console information architecture', () => {
     await selectTeacherDestination(page, 'Learning', '本週學習目標');
     await page.getByLabel('目標名稱').fill('E2E 保留目標草稿');
     await selectTeacherDestination(page, 'Settings', '規則');
+    await page.getByText('進階遊戲參數', { exact: true }).click();
     await page.getByLabel('總積分上限').fill('850');
     await selectTeacherDestination(page, 'Today');
     await selectTeacherDestination(page, 'Learning', '學習證據');

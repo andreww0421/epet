@@ -12,6 +12,7 @@ import type {
   LearningEvidenceRecord,
   LearningEvidenceType,
 } from '../../shared/education';
+import type { GameFeatures } from '../../shared/gameFeatures';
 
 export type {
   WorldBoss, PenaltyStatus, DisciplineRecord, PointAdjustmentRecord, DailyProgress,
@@ -123,6 +124,8 @@ export type AppData = {
   classes: ClassData[];
   currentClassId: string;
   settings?: {
+    /** Optional workspace UI policy; absence retains legacy activity access. */
+    gameFeatures?: GameFeatures;
     decayAmount: number;
     decayType: 'hourly' | 'daily';
     inclusiveMode?: boolean;

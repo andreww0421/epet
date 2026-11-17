@@ -14,6 +14,12 @@ export const test = base.extend<{ teacherPage: Page }>({
   teacherPage: async ({ page }, use) => {
     const account = testAccount('accessibility');
     const session = await E2eApiSession.register(account);
+    // Accessibility coverage intentionally exposes every existing activity.
+    // The simple new-workspace profile has separate responsive axe coverage.
+    const initial = await session.loadState();
+    await session.saveState({ ...initial.data!, settings: { ...initial.data!.settings!,
+      gameFeatures: { pets: true, battles: true, bosses: true, leaderboards: true },
+    } }, initial.revision);
     await session.dispose();
     await loginViaUi(page, account);
     await addStudentViaUi(page, STUDENT_NAME);

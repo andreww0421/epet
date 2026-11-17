@@ -41,6 +41,7 @@ export type BackendSyncStatus =
 export type BackendSyncController = {
   status: BackendSyncStatus;
   verifiedAccess: WorkspaceAccess | null;
+  verifiedAccessGeneration: number | null;
   flush: () => Promise<boolean>;
   readDraftForDownload: () => Promise<AppData | null>;
   adoptRemote: () => Promise<boolean>;
@@ -69,7 +70,10 @@ export const useBackendSync = (
   role?: WorkspaceRole,
 ): BackendSyncController => {
   const [status, setStatus] = useState<BackendSyncStatus>('checking');
-  const [verifiedAccess, setVerifiedAccess] = useState<WorkspaceAccess | null>(null);
+  const [verifiedScope, setVerifiedScope] = useState<{ access: WorkspaceAccess; generation: number } | null>(null);
+  const verifiedAccess = verifiedScope?.access ?? null;
+  const setVerifiedAccess = (access: WorkspaceAccess | null) =>
+    setVerifiedScope(access ? { access, generation: getStoreSessionGeneration() } : null);
   const [failure, setFailure] = useState<SyncFailure | null>(null);
   const [retryAt, setRetryAt] = useState<number | null>(null);
   const [localDraftBytes, setLocalDraftBytes] = useState<number | null>(null);
@@ -463,7 +467,7 @@ export const useBackendSync = (
         conflicted = false;
         // Clear transient student/UI/undo memory and invalidate old downloads.
         // This effect owns the new generation after the old save has settled.
-        resetStoreForSession();
+        resetStoreForSession(Date.now(), 'replace-workspace');
         generation = getStoreSessionGeneration();
         useStore.setState({ data });
         setProductWorkflowScope(workspaceAccessKey(remote.access));
@@ -584,8 +588,8 @@ export const useBackendSync = (
     };
   }, [canWrite, enabled, onAuthenticationInvalid, role, userId, workspaceId]);
 
-  const currentAccess = verifiedAccess?.userId === userId && verifiedAccess.workspaceId === workspaceId &&
+  const currentAccess = verifiedScope?.generation === getStoreSessionGeneration() && verifiedAccess?.userId === userId && verifiedAccess.workspaceId === workspaceId &&
     verifiedAccess.role === role && (status === 'connected' || status === 'saving') ? verifiedAccess : null;
-  return { status, verifiedAccess: currentAccess, flush, readDraftForDownload, adoptRemote, preserveConflictDraft,
+  return { status, verifiedAccess: currentAccess, verifiedAccessGeneration: currentAccess ? verifiedScope.generation : null, flush, readDraftForDownload, adoptRemote, preserveConflictDraft,
     retry, failure, retryAt, localDraftBytes };
 };

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ArrowRight, BookOpen, ClipboardList, Gamepad2, MessageSquarePlus, Minus, Plus, TriangleAlert } from 'lucide-react';
 import type { AppData, ClassData, Language } from '../../../store/types';
 import type { BackendSyncStatus } from '../../../hooks/useBackendSync';
-import { canOpenDestination, getDestination, type ConsoleCapabilities, type ConsoleDestination } from '../model/navigation';
+import { canOpenDestination, getAreaDestinations, getDestination, type ConsoleCapabilities, type ConsoleDestination } from '../model/navigation';
 import { TODAY_QUICK_ACTIONS, type TodayQuickAction } from '../model/todayActions';
 import { buildTodayOverview, type AttentionReason } from '../model/todayOverview';
 import type { DashboardRecordView } from '../../records/model/recordNavigation';
@@ -46,14 +46,16 @@ export const TeacherTodayDashboard = ({ classData, language, schoolTimeZone, set
   const timeZone = classData?.dailyTaskCalendar?.schoolTimeZone ?? schoolTimeZone ?? 'Asia/Taipei';
   const feedbackTimeZone = schoolTimeZone ?? 'Asia/Taipei';
   const syncLocked = syncStatus !== 'connected' && syncStatus !== 'saving';
-  const gamesShown = setup?.state.gameMode !== 'hidden';
+  const workspaceGamesAvailable = getAreaDestinations('activities', capabilities).length > 0;
+  const gamesShown = setup?.state.gameMode !== 'hidden' && workspaceGamesAvailable;
   const action = (id: ConsoleDestination, label: string, recordView?: DashboardRecordView) => <button type="button" onClick={() => onNavigate(id, recordView)} className="inline-flex min-h-11 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-left text-sm font-semibold text-indigo-800 hover:bg-indigo-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-700">
     {label}<ArrowRight className="h-4 w-4 shrink-0" aria-hidden="true" />
   </button>;
   const runAction = (id: TodayQuickAction) => {
     if (syncLocked || capabilities.readOnly) return;
     if (onAction) onAction(id);
-    else onNavigate(({ points: 'points', 'give-points': 'points', 'deduct-points': 'points', comment: 'comments', evidence: 'evidence', exam: 'exams', activity: 'pets' } as const)[id]);
+    else onNavigate(id === 'activity' ? getAreaDestinations('activities', capabilities)[0]?.id ?? 'today' :
+      ({ points: 'points', 'give-points': 'points', 'deduct-points': 'points', comment: 'comments', evidence: 'evidence', exam: 'exams' } as const)[id]);
   };
 
   return (
@@ -76,7 +78,8 @@ export const TeacherTodayDashboard = ({ classData, language, schoolTimeZone, set
         </div>}
         {!capabilities.readOnly && <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
           <button type="button" onClick={() => runAction('comment')} disabled={syncLocked || overview.studentCount === 0} className="min-h-11 rounded-md px-2 py-2 text-sm font-semibold text-indigo-800 hover:bg-indigo-50 focus-visible:outline-2 focus-visible:outline-indigo-700 disabled:text-slate-500">{zh ? '新增評語' : 'Add comment'}</button>
-          {setup?.ready && <button type="button" onClick={() => setup.setGameMode(gamesShown ? 'hidden' : 'shown')} className="min-h-11 rounded-md px-2 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-indigo-700">{gamesShown ? (zh ? '隱藏遊戲化介面' : 'Hide gamification interface') : (zh ? '開啟遊戲化介面' : 'Show gamification interface')}</button>}
+          {setup?.ready && workspaceGamesAvailable && <button type="button" onClick={() => setup.setGameMode(gamesShown ? 'hidden' : 'shown')} className="min-h-11 rounded-md px-2 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-indigo-700">{gamesShown ? (zh ? '隱藏遊戲化介面' : 'Hide gamification interface') : (zh ? '開啟遊戲化介面' : 'Show gamification interface')}</button>}
+          {!workspaceGamesAvailable && <p className="text-sm text-slate-600">{zh ? '工作區目前專注教學；管理員可重新顯示活動入口。' : 'This workspace focuses on teaching. An admin can restore activity entry points.'}</p>}
         </div>}
         {!capabilities.readOnly && overview.studentCount === 0 && <div className="mt-4 flex flex-wrap items-center gap-3 text-sm text-slate-700"><p>{zh ? '先加入學生，即可使用積分、評語與學習操作。' : 'Add students to use point, comment and learning actions.'}</p>{action('students', zh ? '加入／匯入學生' : 'Add / import students')}</div>}
       </section>

@@ -27,7 +27,8 @@ import {
 } from './types';
 import { normalizeExamRecords } from '../examAnalytics';
 import { normalizeArchivedAt, isArchivedClass } from '../../shared/domain/classArchive';
-import { assertWorkspaceResourceBounds, checkedWarningPoints } from '../../shared/validation/workspaceValidation';
+import { assertWorkspaceResourceBounds, checkedWarningPoints, WorkspaceValidationError } from '../../shared/validation/workspaceValidation';
+import { cloneGameFeaturePreset, isGameFeatures, resolveGameFeatures } from '../../shared/gameFeatures';
 import {
   createMentorFeedbackEvidenceRecord,
   normalizeLearningEvidenceRecords,
@@ -390,6 +391,7 @@ export const createInitialData = (now = Date.now()): AppData => ({
   ],
   currentClassId: 'default',
   settings: {
+    gameFeatures: cloneGameFeaturePreset('simple'),
     decayAmount: 2,
     decayType: 'hourly',
     inclusiveMode: true,
@@ -712,6 +714,11 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
   assertWorkspaceResourceBounds(raw);
   const initialData = createInitialData(now);
   const rawSettings = raw?.settings ?? {};
+  // Keep the missing legacy policy absent, rather than applying new-customer
+  // defaults during ordinary loading, imports or historical revision restore.
+  if (rawSettings.gameFeatures !== undefined && !isGameFeatures(rawSettings.gameFeatures)) {
+    throw new WorkspaceValidationError();
+  }
   const schoolTimeZone = normalizeSchoolTimeZone(rawSettings?.schoolTimeZone);
   const legacyDailyTaskCalendar = normalizeClassDailyTaskCalendar(undefined, {
     schoolTimeZone,
@@ -895,6 +902,7 @@ export const normalizeAppData = (raw: any, now = Date.now()): AppData => {
     classes,
     currentClassId,
     settings: {
+      ...(rawSettings.gameFeatures === undefined ? {} : { gameFeatures: resolveGameFeatures(rawSettings.gameFeatures) }),
       decayAmount: Math.max(0, toFiniteNumber(rawSettings?.decayAmount ?? rawSettings?.hourlyDecay, initialData.settings?.decayAmount ?? 2)),
       decayType: rawSettings?.decayType === 'daily' ? 'daily' : 'hourly',
       inclusiveMode,

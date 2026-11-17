@@ -276,6 +276,7 @@ test('legacy local backup review waits for an in-flight settings save and import
   });
   try {
     await selectDashboardTab(page, '規則');
+    await page.getByText('進階遊戲參數', { exact: true }).click();
     const pendingMaxPoints = (initial.data.settings?.maxPoints ?? 500) + 1;
     await page.getByLabel('總積分上限', { exact: true }).fill(String(pendingMaxPoints));
     const saved = page.waitForResponse((response) =>

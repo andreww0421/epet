@@ -158,6 +158,7 @@ test.describe('D1 capacity and bounded sync recovery', () => {
     // edit changes the snapshot without adding a student beyond its capacity.
     await page.clock.resume();
     await selectDashboardTab(page, '規則');
+    await page.getByText('進階遊戲參數', { exact: true }).click();
     const saved = page.waitForResponse((result) => new URL(result.url()).pathname === '/api/v1/state' && result.request().method() === 'PUT');
     const maximum = page.locator('#maxPoints');
     await maximum.fill('699');

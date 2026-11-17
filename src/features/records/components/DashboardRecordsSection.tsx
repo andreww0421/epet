@@ -5,6 +5,7 @@ import { DashboardRecordsPanel, type DashboardRecordsMode } from './DashboardRec
 import { translations } from '../../../i18n/translations';
 import { useStore } from '../../../store/useStore';
 import { getCompetencyLabels } from '../../learning/model/getCompetencyLabels';
+import type { LearningStudentSelection } from '../../learning/model/learningWorkflow';
 import type { RecordViewRequest } from '../model/recordNavigation';
 
 type DashboardRecordsSectionProps = {
@@ -14,6 +15,7 @@ type DashboardRecordsSectionProps = {
   mode?: DashboardRecordsMode;
   historyKind?: 'all' | 'boss';
   viewRequest?: RecordViewRequest | null;
+  studentSelection?: LearningStudentSelection;
 };
 
 /** Adapts selected-class state to the existing records presentation. */
@@ -24,6 +26,7 @@ export const DashboardRecordsSection = ({
   mode = 'all',
   historyKind = 'all',
   viewRequest,
+  studentSelection,
 }: DashboardRecordsSectionProps) => {
   const { data, saveMentorDailyFeedback, showToast } = useStore(useShallow((state) => ({
     data: state.data,
@@ -42,17 +45,28 @@ export const DashboardRecordsSection = ({
       mode={mode}
       historyKind={historyKind}
       viewRequest={viewRequest}
+      studentSelection={studentSelection}
       learningEvidence={currentClass?.learningEvidenceRecords ?? []}
-      onSaveMentorDailyFeedback={(studentId, feedback) => runWorkspaceMutation(
-        !readOnly,
-        () => saveMentorDailyFeedback(studentId, feedback),
-        () => showToast(
-          lang === 'en'
-            ? 'This workspace is read-only for your account.'
-            : '目前帳號只能閱讀此工作區。',
-          'error',
-        ),
-      )}
+      onSaveMentorDailyFeedback={(studentId, feedback) => {
+        const before = useStore.getState().data;
+        const beforeClass = before.classes.find((item) => item.id === classId);
+        // A stale control must never apply this student's ID to another class.
+        if (before.currentClassId !== classId || !beforeClass?.students.some((student) => student.id === studentId)) return false;
+        const saved = runWorkspaceMutation(
+          !readOnly,
+          () => {
+            saveMentorDailyFeedback(studentId, feedback);
+            return useStore.getState().data.classes.find((item) => item.id === classId) !== beforeClass;
+          },
+          () => showToast(
+            lang === 'en'
+              ? 'This workspace is read-only for your account.'
+              : '目前帳號只能閱讀此工作區。',
+            'error',
+          ),
+        );
+        return saved === true;
+      }}
       schoolTimeZone={currentClass?.dailyTaskCalendar?.schoolTimeZone ?? data.settings?.schoolTimeZone}
       students={currentClass?.students ?? []}
       tLang={translations[lang]}

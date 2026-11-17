@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { resolveGameFeatures } from '../../shared/gameFeatures';
 import { useShallow } from 'zustand/react/shallow';
 import { translations } from '../i18n/translations';
 import { DEFAULT_BOSS_RECOVERY_MINUTES } from '../gameRules';
@@ -80,6 +81,7 @@ const TeacherClassroomActivity: React.FC<ClassroomViewProps> = ({ consoleMode, v
   const learningEvidenceRecords =
     currentClass?.learningEvidenceRecords ?? EMPTY_LEARNING_EVIDENCE;
   const language = settings?.language ?? 'zh';
+  const features = resolveGameFeatures(settings?.gameFeatures);
   const tLang = translations[language];
   const publicNameMode = settings?.publicNameMode === 'full' ? 'full' : 'masked';
   const publicLeaderboardMode: PublicLeaderboardMode =
@@ -145,6 +147,9 @@ const TeacherClassroomActivity: React.FC<ClassroomViewProps> = ({ consoleMode, v
         />
       );
 
+  const modeFeature = consoleMode && ({ pets: 'pets', battle: 'battles', boss: 'bosses', leaderboard: 'leaderboards' } as const)[consoleMode];
+  if (modeFeature && !features[modeFeature]) return null;
+
   return (
     <div className={consoleMode ? 'rounded-lg bg-amber-50/50' : 'min-h-[calc(100vh-64px)] bg-amber-50/50'}>
       <div className="px-4 sm:px-6 lg:px-8 pt-8">
@@ -201,7 +206,7 @@ const TeacherClassroomActivity: React.FC<ClassroomViewProps> = ({ consoleMode, v
           )}
           {consoleMode === 'leaderboard' && publicLeaderboardMode === 'hidden' && viewMode !== 'teams'
             ? <p className="pb-5 text-sm text-slate-600">{language === 'en' ? 'Individual leaderboards are hidden by the current privacy settings.' : '目前隱私設定已隱藏個人排行榜。'}</p>
-            : consoleMode !== 'boss' && content}
+            : content}
           <ClassroomBattlePanel
             open={visible && battleDialog.isOpen}
             students={students}

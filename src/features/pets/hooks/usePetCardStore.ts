@@ -45,6 +45,7 @@ const selectSettings = (state: PetCardStoreState): PetCardSettings => {
     .find((classData) => classData.id === state.data.currentClassId);
   const calendar = currentClass?.dailyTaskCalendar;
   return {
+    gameFeatures: state.data.settings?.gameFeatures,
     lang: state.data.settings?.language ?? 'zh',
     feedCost: state.data.settings?.feedCost ?? 10,
     playCost: state.data.settings?.playCost ?? 5,

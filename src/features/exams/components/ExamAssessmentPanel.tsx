@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { trackAnalytics } from '../../../analytics';
 import { beginProductWorkflow, completeLocalProductWorkflow, rejectProductWorkflow } from '../../../analytics/workflows';
 import {
@@ -36,6 +36,8 @@ import {
 } from '../../../imports/tabularImport';
 import type { ExamRecord } from '../../../store/types';
 import { useStore } from '../../../store/useStore';
+import type { LearningStudentSelection } from '../../learning/model/learningWorkflow';
+import { useScopedLearningDraft } from '../../learning/hooks/useScopedLearningDraft';
 import {
   cloneExam,
   createExamDraft,
@@ -51,11 +53,17 @@ import {
 type ExamAssessmentPanelProps = {
   classId?: string;
   readOnly?: boolean;
+  studentSelection?: LearningStudentSelection;
+  reportRequestId?: number;
+  visible?: boolean;
 };
 
 export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
   classId,
   readOnly = false,
+  studentSelection,
+  reportRequestId,
+  visible = true,
 }) => {
   const {
     currentClass,
@@ -87,8 +95,11 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
         assessmentTitle: 'Assessment title',
         assessmentDate: 'Date',
         save: 'Save assessment',
-        saved: 'Saved',
+        saved: 'Added to workspace',
         unsaved: 'Unsaved changes',
+        syncHint: 'Workspace changes synchronize separately. Check the page’s sync status before leaving.',
+        saveFailed: 'The assessment was not added to this workspace. Your draft is still available; check the class and try again.',
+        discardDraft: 'Discard the unsaved assessment changes and open another assessment? Cancel to keep editing.',
         delete: 'Delete',
         deleteConfirm: 'Delete this assessment and every entered score?',
         itemSettings: 'Assessment items',
@@ -157,6 +168,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
         popupBlocked: 'The report window was blocked. Allow pop-ups and try again.',
         completeRequired: 'Add an assessment title and at least one unique item before saving.',
         itemTrend: 'vs. previous',
+        itemComparison: 'Assessment item comparison',
         classComparison: 'class',
         score: 'Score',
       }
@@ -172,8 +184,11 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
         assessmentTitle: '考試名稱',
         assessmentDate: '考試日期',
         save: '保存考試',
-        saved: '已保存',
+        saved: '已加入工作區',
         unsaved: '有尚未保存的變更',
+        syncHint: '工作區變更會另行同步；離開前請確認頁面上的同步狀態。',
+        saveFailed: '考試尚未加入目前工作區，草稿仍保留；請確認班級後重試。',
+        discardDraft: '要丟棄尚未保存的考試變更並開啟另一份考試嗎？選擇取消可繼續編輯。',
         delete: '刪除',
         deleteConfirm: '確定刪除此考試及所有已輸入成績？',
         itemSettings: '考試項目',
@@ -242,6 +257,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
         popupBlocked: '報告視窗遭瀏覽器阻擋，請允許彈出式視窗後重試。',
         completeRequired: '請填寫考試名稱，並保留至少一個名稱不重複的項目。',
         itemTrend: '較上次',
+        itemComparison: '評量項目比較',
         classComparison: '班平均',
         score: '成績',
       };
@@ -253,9 +269,26 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
     () => currentClass?.examRecords ?? [],
     [currentClass?.examRecords],
   );
-  const [draft, setDraft] = useState<ExamRecord>(() => createExamDraft(lang, 1));
+  const [editor, setEditor] = useScopedLearningDraft<{ draft: ExamRecord; isDirty: boolean }>(
+    JSON.stringify(['exam', currentClass?.id]),
+    () => ({
+      draft: exams[0] ? cloneExam(exams[0]) : createExamDraft(lang, exams.length + 1),
+      isDirty: false,
+    }),
+  );
+  const { draft, isDirty } = editor;
+  const setDraft = (update: React.SetStateAction<ExamRecord>) => setEditor((current) => ({
+    ...current,
+    draft: typeof update === 'function' ? update(current.draft) : update,
+  }));
+  const setIsDirty = (update: React.SetStateAction<boolean>) => setEditor((current) => ({
+    ...current,
+    isDirty: typeof update === 'function' ? update(current.isDirty) : update,
+  }));
   const [selectedStudentId, setSelectedStudentId] = useState('');
-  const [isDirty, setIsDirty] = useState(false);
+  const reportControlsRef = useRef<HTMLDivElement>(null);
+  const handledReportRequestId = useRef<number | undefined>(undefined);
+  const reportControlsId = useId();
   const [reportScoreRange, setReportScoreRange] =
     useState<ExamReportScoreRange>('current');
   const [reportCommentRange, setReportCommentRange] =
@@ -266,19 +299,31 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
   >(null);
 
   useEffect(() => {
-    const firstExam = exams[0];
-    setDraft(firstExam ? cloneExam(firstExam) : createExamDraft(lang, exams.length + 1));
-    setSelectedStudentId(students[0]?.id ?? '');
-    setIsDirty(false);
+    if (!studentSelection) setSelectedStudentId(students[0]?.id ?? '');
     setScorePastePreview(null);
     setExcludedReportItemIds([]);
+    setReportScoreRange('current');
+    setReportCommentRange('current');
   }, [currentClass?.id]);
 
   useEffect(() => {
-    if (!students.some((student) => student.id === selectedStudentId)) {
+    if (!studentSelection && !students.some((student) => student.id === selectedStudentId)) {
       setSelectedStudentId(students[0]?.id ?? '');
     }
-  }, [selectedStudentId, students]);
+  }, [selectedStudentId, studentSelection, students]);
+
+  useEffect(() => {
+    if (!visible || !reportRequestId || !currentClass || !students.length ||
+        handledReportRequestId.current === reportRequestId) return;
+    const frame = requestAnimationFrame(() => {
+      const controls = reportControlsRef.current;
+      if (!controls || controls.getClientRects().length === 0) return;
+      handledReportRequestId.current = reportRequestId;
+      controls.focus({ preventScroll: true });
+      controls.scrollIntoView({ block: 'start' });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [currentClass?.id, reportRequestId, students.length, visible]);
 
   useEffect(() => {
     if (isDirty) return;
@@ -317,8 +362,14 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
     draft,
     ...exams.filter((exam) => exam.id !== draft.id),
   ];
+  const effectiveStudentId = studentSelection?.studentId ?? selectedStudentId;
   const selectedStudent =
-    students.find((student) => student.id === selectedStudentId) ?? students[0];
+    students.find((student) => student.id === effectiveStudentId) ?? students[0];
+  const selectStudent = (studentId: string) => {
+    if (!students.some((student) => student.id === studentId)) return;
+    if (studentSelection) studentSelection.onStudentChange(studentId);
+    else setSelectedStudentId(studentId);
+  };
   const analysis = selectedStudent
     ? computeExamStudentAnalysis(
         allExamsForAnalysis,
@@ -384,21 +435,22 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
 
   const markDirty = (next: ExamRecord) => {
     if (readOnly) return;
-    setDraft(next);
-    setIsDirty(true);
+    setEditor({ draft: next, isDirty: true });
     setScorePastePreview(null);
   };
 
   const chooseExam = (examId: string) => {
+    if (examId === draft.id ||
+        (examId !== '__new__' && !exams.some((exam) => exam.id === examId))) return;
+    if (isDirty && !window.confirm(copy.discardDraft)) return;
     if (examId === '__new__') {
-      setDraft(createExamDraft(lang, exams.length + 1));
+      setEditor({ draft: createExamDraft(lang, exams.length + 1), isDirty: false });
     } else {
       const exam = exams.find((candidate) => candidate.id === examId);
       if (!exam) return;
-      setDraft(cloneExam(exam));
+      setEditor({ draft: cloneExam(exam), isDirty: false });
     }
-    setSelectedStudentId(students[0]?.id ?? '');
-    setIsDirty(false);
+    if (!studentSelection) setSelectedStudentId(students[0]?.id ?? '');
     setScorePastePreview(null);
     setExcludedReportItemIds([]);
   };
@@ -411,11 +463,27 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
       showToast(copy.completeRequired, 'error');
       return;
     }
+    const before = useStore.getState().data;
+    if (before.currentClassId !== currentClass.id) {
+      rejectProductWorkflow(workflow);
+      showToast(copy.saveFailed, 'error');
+      return;
+    }
+    const previousExam = before.classes.find((classData) => classData.id === currentClass.id)
+      ?.examRecords?.find((exam) => exam.id === draft.id);
     saveExamRecord({
       ...draft,
       title: draft.title.trim(),
       updatedAt: Date.now(),
     });
+    const after = useStore.getState().data;
+    const savedExam = after.classes.find((classData) => classData.id === currentClass.id)
+      ?.examRecords?.find((exam) => exam.id === draft.id);
+    if (after.currentClassId !== currentClass.id || !savedExam || savedExam === previousExam) {
+      rejectProductWorkflow(workflow);
+      showToast(copy.saveFailed, 'error');
+      return;
+    }
     setIsDirty(false);
   };
 
@@ -683,7 +751,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
               <select
                 value={storedExam ? draft.id : '__new__'}
                 onChange={(event) => chooseExam(event.target.value)}
-                className="mt-1 w-full rounded-md border border-slate-300 bg-white p-2 text-sm"
+                className="mt-1 min-h-11 w-full rounded-md border border-slate-300 bg-white p-2 text-sm"
               >
                 {!storedExam && (
                   <option value="__new__">{copy.unsavedAssessment}</option>
@@ -704,7 +772,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                 onChange={(event) =>
                   markDirty({ ...draft, title: event.target.value })
                 }
-                className="mt-1 w-full rounded-md border border-slate-300 p-2 text-sm"
+                className="mt-1 min-h-11 w-full rounded-md border border-slate-300 p-2 text-sm"
               />
             </label>
             <label className="text-xs font-bold text-slate-600">
@@ -716,7 +784,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                 onChange={(event) =>
                   markDirty({ ...draft, examDate: event.target.value })
                 }
-                className="mt-1 w-full rounded-md border border-slate-300 p-2 text-sm"
+                className="mt-1 min-h-11 w-full rounded-md border border-slate-300 p-2 text-sm"
               />
             </label>
             {!readOnly && (
@@ -724,7 +792,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
               <button
                 type="button"
                 onClick={() => chooseExam('__new__')}
-                className="inline-flex items-center rounded-md border border-teal-300 bg-teal-50 px-3 py-2 text-xs font-bold text-teal-800 hover:bg-teal-100"
+                className="inline-flex min-h-11 items-center rounded-md border border-teal-300 bg-teal-50 px-3 py-2 text-xs font-bold text-teal-800 hover:bg-teal-100"
               >
                 <FilePlus2 className="mr-1.5 h-4 w-4" />
                 {copy.newAssessment}
@@ -737,14 +805,14 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                     if (!window.confirm(copy.deleteConfirm)) return;
                     deleteExamRecord(draft.id);
                     const remaining = exams.filter((exam) => exam.id !== draft.id);
-                    setDraft(
-                      remaining[0]
+                    setEditor({
+                      draft: remaining[0]
                         ? cloneExam(remaining[0])
                         : createExamDraft(lang, 1),
-                    );
-                    setIsDirty(false);
+                      isDirty: false,
+                    });
                   }}
-                  className="inline-flex items-center rounded-md border border-rose-200 bg-white px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-50"
+                  className="inline-flex min-h-11 items-center rounded-md border border-rose-200 bg-white px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-50"
                 >
                   <Trash2 className="mr-1.5 h-4 w-4" />
                   {copy.delete}
@@ -779,7 +847,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                     ],
                   })
                 }
-                className="inline-flex items-center self-start rounded-md bg-slate-900 px-3 py-2 text-xs font-bold text-white hover:bg-slate-700 disabled:bg-slate-300"
+                className="inline-flex min-h-11 items-center self-start rounded-md bg-slate-900 px-3 py-2 text-xs font-bold text-white hover:bg-slate-700 disabled:bg-slate-300"
               >
                 <Plus className="mr-1.5 h-4 w-4" />
                 {copy.addItem}
@@ -808,7 +876,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                           ),
                         })
                       }
-                      className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm text-slate-900"
+                      className="mt-1 min-h-11 w-full rounded border border-slate-300 p-1.5 text-sm text-slate-900"
                     />
                   </label>
                   <label className="text-[11px] font-bold text-slate-600">
@@ -846,7 +914,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                           })),
                         });
                       }}
-                      className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm text-slate-900"
+                      className="mt-1 min-h-11 w-full rounded border border-slate-300 p-1.5 text-sm text-slate-900"
                     />
                   </label>
                   {!readOnly && (
@@ -867,7 +935,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                         }),
                       })
                     }
-                    className="mt-5 rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-25"
+                    className="mt-5 inline-flex h-11 w-11 items-center justify-center rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-25"
                   >
                     <X className="h-4 w-4" />
                   </button>
@@ -895,7 +963,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                     type="button"
                     onClick={downloadScoreTemplate}
                     disabled={!canSave}
-                    className="inline-flex items-center rounded-md border border-teal-300 bg-white px-3 py-2 font-bold text-teal-800 hover:bg-teal-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                    className="inline-flex min-h-11 items-center rounded-md border border-teal-300 bg-white px-3 py-2 font-bold text-teal-800 hover:bg-teal-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
                   >
                     <Download className="mr-1.5 h-4 w-4" aria-hidden="true" />
                     {copy.downloadScoreTemplate}
@@ -943,7 +1011,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                     <button
                       type="button"
                       onClick={() => setScorePastePreview(null)}
-                      className="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
+                      className="min-h-11 rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
                     >
                       {copy.pasteCancel}
                     </button>
@@ -951,7 +1019,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                       type="button"
                       onClick={applyScorePaste}
                       disabled={!canApplyScorePaste}
-                      className="rounded-md bg-teal-700 px-3 py-2 text-xs font-bold text-white hover:bg-teal-600 disabled:cursor-not-allowed disabled:bg-slate-300"
+                      className="min-h-11 rounded-md bg-teal-700 px-3 py-2 text-xs font-bold text-white hover:bg-teal-600 disabled:cursor-not-allowed disabled:bg-slate-300"
                     >
                       {copy.pasteConfirm}
                     </button>
@@ -1012,7 +1080,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                     return (
                       <tr
                         key={student.id}
-                        onClick={() => setSelectedStudentId(student.id)}
+                        onClick={() => selectStudent(student.id)}
                         className={`cursor-pointer border-t border-slate-200 ${
                           isSelected
                             ? 'bg-amber-50'
@@ -1044,7 +1112,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                               step="0.5"
                               value={result?.scores[item.id] ?? ''}
                               readOnly={readOnly}
-                              onFocus={() => setSelectedStudentId(student.id)}
+                              onFocus={() => selectStudent(student.id)}
                               onPaste={(event) =>
                                 handleScorePaste(event, studentIndex, itemIndex)
                               }
@@ -1060,7 +1128,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                                 )
                               }
                               aria-label={`${student.name} ${item.name} ${copy.score}`}
-                              className="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-right font-semibold tabular-nums focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
+                              className="min-h-11 w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-right font-semibold tabular-nums focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
                             />
                           </td>
                         ))}
@@ -1077,7 +1145,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
 
           {selectedStudent && analysis && (
             <div className="grid border-t border-slate-200 bg-white xl:grid-cols-[minmax(0,1.45fr)_minmax(340px,.75fr)]">
-              <div className="border-b border-slate-200 p-5 xl:border-b-0 xl:border-r">
+              <div className="min-w-0 border-b border-slate-200 p-5 xl:border-b-0 xl:border-r">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <p className="text-xs font-bold uppercase tracking-[.14em] text-teal-700">
@@ -1089,8 +1157,8 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                   </div>
                   <select
                     value={selectedStudent.id}
-                    onChange={(event) => setSelectedStudentId(event.target.value)}
-                    className="rounded-md border border-slate-300 bg-white p-2 text-sm"
+                    onChange={(event) => selectStudent(event.target.value)}
+                    className="min-h-11 rounded-md border border-slate-300 bg-white p-2 text-sm"
                     aria-label={copy.selectedLearner}
                   >
                     {students.map((student) => (
@@ -1124,7 +1192,8 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                   </div>
                 </div>
 
-                <div className="mt-5 overflow-hidden border border-slate-200">
+                <div className="mt-5 overflow-x-auto border border-slate-200" role="region" aria-label={copy.itemComparison} tabIndex={0}>
+                  <div className="min-w-[390px]">
                   <div className="grid grid-cols-[minmax(120px,1fr)_90px_90px_90px] bg-slate-100 px-3 py-2 text-xs font-bold text-slate-600">
                     <span>{copy.itemName}</span>
                     <span className="text-right">{copy.score}</span>
@@ -1154,6 +1223,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                       </span>
                     </div>
                   ))}
+                  </div>
                 </div>
 
                 <div className="mt-4 grid gap-3 sm:grid-cols-3">
@@ -1178,7 +1248,8 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                 </div>
               </div>
 
-              <div className="bg-[#f8f4ea] p-5">
+              <div ref={reportControlsRef} id={reportControlsId} role="region" aria-labelledby={`${reportControlsId}-heading`} tabIndex={-1}
+                className="min-w-0 bg-[#f8f4ea] p-5 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-teal-700">
                 <h3 className="flex items-center text-sm font-black text-slate-900">
                   <FileText className="mr-2 h-4 w-4 text-teal-700" />
                   {copy.mentorComment}
@@ -1198,7 +1269,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                 />
                 <div className="mt-4 border-l-4 border-teal-600 bg-white px-4 py-4 shadow-sm ring-1 ring-slate-200">
                   <div>
-                    <p className="text-sm font-black text-slate-900">{copy.reportScope}</p>
+                    <p id={`${reportControlsId}-heading`} className="text-sm font-black text-slate-900">{copy.reportScope}</p>
                     <p className="mt-1 text-xs leading-5 text-slate-600">
                       {copy.reportScopeHint}
                     </p>
@@ -1211,7 +1282,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                         onChange={(event) =>
                           setReportScoreRange(event.target.value as ExamReportScoreRange)
                         }
-                        className="mt-1 min-h-10 w-full rounded-md border border-slate-300 bg-[#fffdf8] px-2 py-2 text-sm text-slate-900 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100"
+                        className="mt-1 min-h-11 w-full rounded-md border border-slate-300 bg-[#fffdf8] px-2 py-2 text-sm text-slate-900 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100"
                       >
                         <option value="current">{copy.rangeCurrentScore}</option>
                         <option value="recent3">{copy.rangeRecentScore}</option>
@@ -1225,7 +1296,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                         onChange={(event) =>
                           setReportCommentRange(event.target.value as ExamReportCommentRange)
                         }
-                        className="mt-1 min-h-10 w-full rounded-md border border-slate-300 bg-[#fffdf8] px-2 py-2 text-sm text-slate-900 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100"
+                        className="mt-1 min-h-11 w-full rounded-md border border-slate-300 bg-[#fffdf8] px-2 py-2 text-sm text-slate-900 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100"
                       >
                         <option value="current">{copy.rangeCurrentComment}</option>
                         <option value="recent3">{copy.rangeRecentComment}</option>
@@ -1245,7 +1316,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                           type="button"
                           onClick={() => setExcludedReportItemIds([])}
                           disabled={selectedReportItemIds.length === draft.items.length}
-                          className="text-teal-700 hover:text-teal-900 disabled:cursor-default disabled:text-slate-300"
+                          className="inline-flex min-h-11 min-w-11 items-center justify-center text-teal-700 hover:text-teal-900 disabled:cursor-default disabled:text-slate-300"
                         >
                           {copy.selectAllItems}
                         </button>
@@ -1254,7 +1325,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                           type="button"
                           onClick={() => setExcludedReportItemIds(draft.items.map((item) => item.id))}
                           disabled={selectedReportItemIds.length === 0}
-                          className="text-teal-700 hover:text-teal-900 disabled:cursor-default disabled:text-slate-300"
+                          className="inline-flex min-h-11 min-w-11 items-center justify-center text-teal-700 hover:text-teal-900 disabled:cursor-default disabled:text-slate-300"
                         >
                           {copy.clearAllItems}
                         </button>
@@ -1266,7 +1337,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                         return (
                           <label
                             key={item.id}
-                            className={`flex min-h-10 cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm font-semibold ${
+                            className={`flex min-h-11 cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm font-semibold ${
                               isSelected
                                 ? 'border-teal-300 bg-teal-50 text-teal-950'
                                 : 'border-slate-200 bg-[#fffdf8] text-slate-600'
@@ -1303,7 +1374,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                     type="button"
                     onClick={saveDraft}
                     disabled={!canSave}
-                    className="inline-flex items-center justify-center rounded-md bg-slate-900 px-4 py-2.5 text-sm font-bold text-white hover:bg-slate-700 disabled:bg-slate-300"
+                    className="inline-flex min-h-11 items-center justify-center rounded-md bg-slate-900 px-4 py-2.5 text-sm font-bold text-white hover:bg-slate-700 disabled:bg-slate-300"
                   >
                     <Save className="mr-2 h-4 w-4" />
                     {copy.save}
@@ -1313,14 +1384,14 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                     type="button"
                     onClick={printReport}
                     disabled={!canPrint}
-                    className="inline-flex items-center justify-center rounded-md bg-teal-700 px-4 py-2.5 text-sm font-bold text-white hover:bg-teal-600 disabled:bg-slate-300"
+                    className="inline-flex min-h-11 items-center justify-center rounded-md bg-teal-700 px-4 py-2.5 text-sm font-bold text-white hover:bg-teal-600 disabled:bg-slate-300"
                   >
                     <Printer className="mr-2 h-4 w-4" />
                     {copy.printA4}
                   </button>
                 </div>
                 <p className="mt-3 text-xs leading-5 text-slate-600">{copy.printHint}</p>
-                <div className={`mt-4 flex items-center text-xs font-bold ${
+                <div role="status" aria-live="polite" className={`mt-4 flex items-center text-xs font-bold ${
                   isPendingSave ? 'text-amber-700' : 'text-emerald-700'
                 }`}>
                   {isPendingSave
@@ -1328,6 +1399,7 @@ export const ExamAssessmentPanel: React.FC<ExamAssessmentPanelProps> = ({
                     : <CheckCircle2 className="mr-1.5 h-4 w-4" />}
                   {isPendingSave ? copy.unsaved : copy.saved}
                 </div>
+                <p className="mt-2 text-xs leading-5 text-slate-600">{copy.syncHint}</p>
               </div>
             </div>
           )}

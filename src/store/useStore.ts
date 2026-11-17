@@ -29,6 +29,7 @@ import { recordPointActionCompleted } from '../analytics/actions';
 import { beginProductWorkflow, setProductWorkflowScope } from '../analytics/workflows';
 import { recordProductWorkflowCommandResult } from '../services/productWorkflowPersistence';
 import { findActiveClassIndex, getActiveClasses, isArchivedClass } from '../../shared/domain/classArchive';
+import { resolveGameFeatures } from '../../shared/gameFeatures';
 import { 
   applyFeedToStudent, applyPlayWithPet, claimDailyTaskForStudent,
   saveMentorDailyFeedbackForStudent,
@@ -615,6 +616,7 @@ export const useStore = create<StoreState>()(
           ...state.data,
           settings: {
             ...merged,
+            ...(merged.gameFeatures === undefined ? {} : { gameFeatures: resolveGameFeatures(merged.gameFeatures) }),
             decayAmount: Math.max(0, toFiniteNumber(merged.decayAmount, 2)),
             inclusiveMode,
             pauseDecayOnWeekends: inclusiveMode || merged.pauseDecayOnWeekends !== false,
@@ -2684,10 +2686,13 @@ export const useStore = create<StoreState>()(
 // In-memory lifecycle marker, never part of AppData or persisted student data.
 // Reset notifications must invalidate old sync work before setState notifies it.
 let storeSessionGeneration = 0;
+let storeSessionResetReason: 'session' | 'replace-workspace' = 'session';
 export const getStoreSessionGeneration = () => storeSessionGeneration;
+export const getStoreSessionResetReason = () => storeSessionResetReason;
 
-export const resetStoreForSession = (now = Date.now()) => {
+export const resetStoreForSession = (now = Date.now(), reason: 'session' | 'replace-workspace' = 'session') => {
   setProductWorkflowScope(null);
+  storeSessionResetReason = reason;
   storeSessionGeneration += 1;
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = undefined;

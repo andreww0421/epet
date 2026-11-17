@@ -5,6 +5,8 @@ import type { Language } from '../../../store/types';
 import type { PetCardActionState } from '../model/petCardModel';
 
 type PetActionWarningsProps = {
+  showBattle?: boolean;
+  showCare?: boolean;
   language: Language;
   actionState: PetCardActionState;
 };
@@ -15,6 +17,8 @@ const WarningIcon = () => (
 
 /** Human-readable explanations for disabled pet actions. */
 export const PetActionWarnings = ({
+  showBattle = true,
+  showCare = true,
   language,
   actionState,
 }: PetActionWarningsProps) => {
@@ -43,7 +47,7 @@ export const PetActionWarnings = ({
       className="text-center text-[10px] text-red-700 mt-2 flex flex-col items-center justify-center space-y-0.5"
       aria-live="polite"
     >
-      {actionState.warnings.feedNeedsPoints && (
+      {showCare && actionState.warnings.feedNeedsPoints && (
         <span>
           <WarningIcon />
           {tLang.feedNeedPoints.replace(
@@ -52,7 +56,7 @@ export const PetActionWarnings = ({
           )}
         </span>
       )}
-      {actionState.warnings.playNeedsPoints && (
+      {showCare && actionState.warnings.playNeedsPoints && (
         <span>
           <WarningIcon />
           {tLang.playNeedPoints.replace(
@@ -61,13 +65,13 @@ export const PetActionWarnings = ({
           )}
         </span>
       )}
-      {actionState.warnings.battleDisabled && (
+      {showBattle && actionState.warnings.battleDisabled && (
         <span><WarningIcon />{tLang.battleDisabledByTeacher}</span>
       )}
-      {actionState.warnings.battleBlockedByPenalty && (
+      {showBattle && actionState.warnings.battleBlockedByPenalty && (
         <span><WarningIcon />{tLang.battleBlockedByPenalty}</span>
       )}
-      {actionState.warnings.battleBlockedByMood && (
+      {showBattle && actionState.warnings.battleBlockedByMood && (
         <span>
           <WarningIcon />
           {language === 'en'
@@ -75,13 +79,13 @@ export const PetActionWarnings = ({
             : '心情過低，罷工拒絕出戰！'}
         </span>
       )}
-      {actionState.warnings.battleBlockedByFullness && (
+      {showBattle && actionState.warnings.battleBlockedByFullness && (
         <span><WarningIcon />{battleNeedFullnessText}</span>
       )}
-      {actionState.warnings.upgradeNeedsFullness && (
+      {showCare && actionState.warnings.upgradeNeedsFullness && (
         <span><WarningIcon />{tLang.upgradeNeedFullness}</span>
       )}
-      {actionState.warnings.upgradeNeedsPoints && (
+      {showCare && actionState.warnings.upgradeNeedsPoints && (
         <span>
           <WarningIcon />
           {tLang.upgradeNeedPoints.replace(
@@ -90,7 +94,7 @@ export const PetActionWarnings = ({
           )}
         </span>
       )}
-      {actionState.warnings.upgradeBlockedByMood && (
+      {showCare && actionState.warnings.upgradeBlockedByMood && (
         <span><WarningIcon />{tLang.moodLowPenalty}</span>
       )}
     </p>

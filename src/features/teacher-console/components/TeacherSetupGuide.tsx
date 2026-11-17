@@ -39,7 +39,7 @@ export const TeacherSetupGuide = ({ setup, language, disabled, onStep }: Props) 
           {step.id === 'class' && step.completed && <p className="mt-1 text-sm text-slate-600">{zh ? '已有可用班級，直接使用即可，不需重複建立。' : 'A class is ready to use. No duplicate class is needed.'}</p>}
           {next?.id === step.id && <div className="mt-3 flex flex-wrap gap-2">
             {step.id === 'game' ? <>
-              <p className="w-full text-sm leading-6 text-slate-700">{zh ? '只調整寵物、對戰與活動入口的顯示；資料與計算保留，之後可隨時更改。' : 'Only pet, battle and activity entry visibility changes. Data and calculations stay intact; change this anytime.'}</p>
+              <p className="w-full text-sm leading-6 text-slate-700">{zh ? '只調整個人活動入口顯示，不會開啟管理員已隱藏的活動；資料與計算保留，之後可隨時更改。' : 'Changes your activity entry visibility without reopening admin-hidden activities. Data and calculations stay intact; change this anytime.'}</p>
               <button type="button" disabled={disabled} onClick={() => setup.setGameMode('shown')} className={buttonClass}>{zh ? '顯示遊戲化功能' : 'Show gamification'}</button>
               <button type="button" disabled={disabled} onClick={() => setup.setGameMode('hidden')} className={buttonClass}>{zh ? '先專注教學' : 'Focus on teaching for now'}</button>
             </> : <button type="button" disabled={disabled} onClick={() => onStep(step.id as 'class' | 'roster' | 'points' | 'review')} className={buttonClass}>{step.id === 'roster' ? (zh ? '加入／匯入學生' : 'Add / import students') : labels[step.id]}<ArrowRight className="h-4 w-4" aria-hidden="true" /></button>}

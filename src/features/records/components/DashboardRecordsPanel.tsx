@@ -28,6 +28,8 @@ import { buildDashboardRecordCollections } from '../model/buildDashboardRecordCo
 import { getMentorFeedbackCount } from '../model/getMentorFeedbackCount';
 import type { DashboardRecordView, RecordViewRequest } from '../model/recordNavigation';
 import { WeeklyFeedbackReportPanel } from './WeeklyFeedbackReportPanel';
+import type { LearningStudentSelection } from '../../learning/model/learningWorkflow';
+import { useScopedLearningDraft } from '../../learning/hooks/useScopedLearningDraft';
 
 type DashboardCopy = (typeof translations)[keyof typeof translations];
 
@@ -41,7 +43,7 @@ type DashboardRecordsPanelProps = {
   onSaveMentorDailyFeedback: (
     studentId: string,
     feedback: MentorDailyFeedbackInput,
-  ) => void;
+  ) => boolean | void;
   students: Student[];
   schoolTimeZone?: string;
   tLang: DashboardCopy;
@@ -49,7 +51,20 @@ type DashboardRecordsPanelProps = {
   mode?: DashboardRecordsMode;
   historyKind?: 'all' | 'boss';
   viewRequest?: RecordViewRequest | null;
+  studentSelection?: LearningStudentSelection;
 };
+
+type MentorFeedbackDraft = {
+  competency: LearningCompetency;
+  assessment: DailyAssessment;
+  text: string;
+  savedSignature: string;
+  saveOutcome: 'saved' | 'error' | 'requested' | null;
+  outcomeSignature: string;
+};
+
+const feedbackSignature = (feedback: Pick<MentorFeedbackDraft, 'competency' | 'assessment' | 'text'>) =>
+  JSON.stringify([feedback.competency, feedback.assessment, feedback.text.trim()]);
 
 export const DashboardRecordsPanel = ({
   classId,
@@ -64,6 +79,7 @@ export const DashboardRecordsPanel = ({
   mode = 'all',
   historyKind = 'all',
   viewRequest,
+  studentSelection,
 }: DashboardRecordsPanelProps) => {
   const [recordView, setRecordView] =
     useState<DashboardRecordView>('discipline');
@@ -74,12 +90,11 @@ export const DashboardRecordsPanel = ({
     setRecordView(viewRequest.view);
   }, [viewRequest, visible]);
   const activeRecordView = historyKind === 'boss' ? 'boss' : recordView;
-  const [mentorFeedbackStudentId, setMentorFeedbackStudentId] = useState('');
-  const [mentorFeedbackCompetency, setMentorFeedbackCompetency] =
-    useState<LearningCompetency>('assignmentQuality');
-  const [mentorFeedbackAssessment, setMentorFeedbackAssessment] =
-    useState<DailyAssessment>('progressing');
-  const [mentorFeedbackText, setMentorFeedbackText] = useState('');
+  const [standaloneStudentId, setStandaloneStudentId] = useState('');
+  const requestedStudentId = studentSelection?.studentId ?? standaloneStudentId;
+  const mentorFeedbackStudentId = currentStudents.some((student) => student.id === requestedStudentId)
+    ? requestedStudentId
+    : '';
 
   const todayKey = getDateKey(Date.now(), schoolTimeZone);
   const selectedMentorFeedback = useMemo(
@@ -94,37 +109,50 @@ export const DashboardRecordsPanel = ({
     () => getMentorFeedbackCount(currentStudents, todayKey),
     [currentStudents, todayKey],
   );
+  const draftKey = JSON.stringify(['daily-comment', classId, mentorFeedbackStudentId, todayKey]);
+  const savedFeedback = useMemo(() => ({
+    competency: selectedMentorFeedback?.competency ?? 'assignmentQuality' as LearningCompetency,
+    assessment: selectedMentorFeedback?.mentorAssessment ?? selectedMentorFeedback?.selfAssessment ?? 'progressing' as DailyAssessment,
+    text: selectedMentorFeedback?.text ?? '',
+  }), [selectedMentorFeedback]);
+  const savedFeedbackSignature = feedbackSignature(savedFeedback);
+  const [mentorFeedbackDraft, setMentorFeedbackDraft] = useScopedLearningDraft<MentorFeedbackDraft>(draftKey, () => {
+    return {
+      ...savedFeedback,
+      savedSignature: savedFeedbackSignature,
+      saveOutcome: null,
+      outcomeSignature: '',
+    };
+  });
+  const mentorFeedbackCompetency = mentorFeedbackDraft.competency;
+  const mentorFeedbackAssessment = mentorFeedbackDraft.assessment;
+  const mentorFeedbackText = mentorFeedbackDraft.text;
+  const signature = feedbackSignature(mentorFeedbackDraft);
+  const hasFeedbackChanges = signature !== mentorFeedbackDraft.savedSignature;
+  // Follow refreshed saved data only while pristine; never erase local input.
+  useEffect(() => {
+    setMentorFeedbackDraft((current) => {
+      if (feedbackSignature(current) !== current.savedSignature || current.savedSignature === savedFeedbackSignature) return current;
+      return { ...savedFeedback, savedSignature: savedFeedbackSignature, saveOutcome: null, outcomeSignature: '' };
+    });
+  }, [draftKey, savedFeedback, savedFeedbackSignature, setMentorFeedbackDraft]);
+  const savedFeedbackChanged = hasFeedbackChanges && mentorFeedbackDraft.savedSignature !== savedFeedbackSignature;
+  const activeSaveOutcome = mentorFeedbackDraft.outcomeSignature === signature
+    ? mentorFeedbackDraft.saveOutcome
+    : null;
 
   useEffect(() => {
-    setMentorFeedbackStudentId('');
+    setStandaloneStudentId('');
   }, [classId]);
 
   useEffect(() => {
-    if (!mentorFeedbackStudentId) {
-      setMentorFeedbackCompetency('assignmentQuality');
-      setMentorFeedbackAssessment('progressing');
-      setMentorFeedbackText('');
-      return;
-    }
-    setMentorFeedbackCompetency(
-      selectedMentorFeedback?.competency ?? 'assignmentQuality',
-    );
-    setMentorFeedbackAssessment(
-      selectedMentorFeedback?.mentorAssessment ??
-        selectedMentorFeedback?.selfAssessment ??
-        'progressing',
-    );
-    setMentorFeedbackText(selectedMentorFeedback?.text ?? '');
-  }, [mentorFeedbackStudentId, selectedMentorFeedback]);
-
-  useEffect(() => {
     if (
-      mentorFeedbackStudentId &&
-      !currentStudents.some((student) => student.id === mentorFeedbackStudentId)
+      standaloneStudentId &&
+      !currentStudents.some((student) => student.id === standaloneStudentId)
     ) {
-      setMentorFeedbackStudentId('');
+      setStandaloneStudentId('');
     }
-  }, [currentStudents, mentorFeedbackStudentId]);
+  }, [currentStudents, standaloneStudentId]);
 
   const {
     bossRewardRecords,
@@ -174,12 +202,31 @@ export const DashboardRecordsPanel = ({
       .replace('{rankPoints}', rankPoints.toString())
       .replace('{happiness}', happiness.toString());
   const handleSaveMentorDailyFeedback = () => {
-    if (!mentorFeedbackStudentId || !mentorFeedbackText.trim()) return;
-    onSaveMentorDailyFeedback(mentorFeedbackStudentId, {
+    if (!mentorFeedbackStudentId || !mentorFeedbackText.trim() || !hasFeedbackChanges) return;
+    const feedback = {
       competency: mentorFeedbackCompetency,
       assessment: mentorFeedbackAssessment,
       text: mentorFeedbackText.trim(),
-    });
+    };
+    try {
+      const saved = onSaveMentorDailyFeedback(mentorFeedbackStudentId, feedback);
+      if (saved === true) {
+        setMentorFeedbackDraft({
+          ...feedback,
+          savedSignature: feedbackSignature(feedback),
+          saveOutcome: 'saved',
+          outcomeSignature: feedbackSignature(feedback),
+        });
+      } else {
+        setMentorFeedbackDraft((current) => ({
+          ...current,
+          saveOutcome: saved === false ? 'error' : 'requested',
+          outcomeSignature: signature,
+        }));
+      }
+    } catch {
+      setMentorFeedbackDraft((current) => ({ ...current, saveOutcome: 'error', outcomeSignature: signature }));
+    }
   };
 
   return (
@@ -206,8 +253,10 @@ export const DashboardRecordsPanel = ({
               {tLang.dailyFeedbackStudent}
               <select
                 value={mentorFeedbackStudentId}
-                onChange={(event) => setMentorFeedbackStudentId(event.target.value)}
-                className="mt-1 w-full rounded-md border border-emerald-200 bg-white p-2 text-sm shadow-sm focus:border-emerald-500 focus:ring-emerald-500"
+                onChange={(event) => studentSelection
+                  ? studentSelection.onStudentChange(event.target.value)
+                  : setStandaloneStudentId(event.target.value)}
+                className="mt-1 min-h-11 w-full rounded-md border border-emerald-200 bg-white p-2 text-sm shadow-sm focus:border-emerald-500 focus:ring-emerald-500"
               >
                 <option value="">{tLang.dailyFeedbackSelectStudent}</option>
                 {currentStudents.map((student: Student) => (
@@ -219,11 +268,12 @@ export const DashboardRecordsPanel = ({
               {tLang.dailyReflectionCompetency}
               <select
                 value={mentorFeedbackCompetency}
-                onChange={(event) =>
-                  setMentorFeedbackCompetency(event.target.value as LearningCompetency)
-                }
+                onChange={(event) => {
+                  const competency = event.target.value as LearningCompetency;
+                  setMentorFeedbackDraft((current) => ({ ...current, competency }));
+                }}
                 disabled={!mentorFeedbackStudentId}
-                className="mt-1 w-full rounded-md border border-emerald-200 bg-white p-2 text-sm shadow-sm focus:border-emerald-500 focus:ring-emerald-500 disabled:bg-slate-100"
+                className="mt-1 min-h-11 w-full rounded-md border border-emerald-200 bg-white p-2 text-sm shadow-sm focus:border-emerald-500 focus:ring-emerald-500 disabled:bg-slate-100"
               >
                 {(Object.keys(competencyLabels) as LearningCompetency[]).map((competency) => (
                   <option key={competency} value={competency}>
@@ -251,8 +301,8 @@ export const DashboardRecordsPanel = ({
                   type="button"
                   aria-pressed={mentorFeedbackAssessment === assessment}
                   disabled={!mentorFeedbackStudentId}
-                  onClick={() => setMentorFeedbackAssessment(assessment)}
-                  className={`min-h-10 rounded-md px-2 py-2 text-xs font-bold transition-colors ${
+                  onClick={() => setMentorFeedbackDraft((current) => ({ ...current, assessment }))}
+                  className={`min-h-11 rounded-md px-2 py-2 text-xs font-bold transition-colors ${
                     mentorFeedbackAssessment === assessment
                       ? 'bg-emerald-700 text-white'
                       : 'border border-emerald-200 bg-white text-slate-700 hover:bg-emerald-100'
@@ -268,7 +318,10 @@ export const DashboardRecordsPanel = ({
             {tLang.dailyReflectionPrompt}
             <textarea
               value={mentorFeedbackText}
-              onChange={(event) => setMentorFeedbackText(event.target.value.slice(0, 160))}
+              onChange={(event) => {
+                const text = event.target.value.slice(0, 160);
+                setMentorFeedbackDraft((current) => ({ ...current, text }));
+              }}
               disabled={!mentorFeedbackStudentId}
               maxLength={160}
               rows={3}
@@ -285,8 +338,8 @@ export const DashboardRecordsPanel = ({
             <button
               type="button"
               onClick={handleSaveMentorDailyFeedback}
-              disabled={!mentorFeedbackStudentId || !mentorFeedbackText.trim()}
-              className="inline-flex min-h-10 items-center justify-center rounded-md bg-emerald-700 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+              disabled={!mentorFeedbackStudentId || !mentorFeedbackText.trim() || !hasFeedbackChanges}
+              className="inline-flex min-h-11 items-center justify-center rounded-md bg-emerald-700 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               <Save className="mr-2 h-4 w-4" />
               {selectedMentorFeedback
@@ -294,6 +347,24 @@ export const DashboardRecordsPanel = ({
                 : tLang.dailyReflectionSubmit}
             </button>
           </div>
+          <p role="status" className={`mt-3 text-sm ${activeSaveOutcome === 'error' ? 'text-rose-800' : 'text-emerald-900'}`}>
+            {activeSaveOutcome === 'saved'
+              ? (lang === 'en'
+                  ? 'This student’s local record was updated. Check the workspace status above for cloud sync.'
+                  : '已更新此學生的本機記錄；雲端同步狀態請見上方。')
+              : activeSaveOutcome === 'error'
+                ? (lang === 'en'
+                    ? 'The local update did not complete. Your text is kept; check the current class and try again.'
+                    : '尚未完成本機更新，輸入內容已保留。請確認目前班級後重試。')
+                : activeSaveOutcome === 'requested'
+                  ? (lang === 'en' ? 'The update was requested. Please confirm the save result.' : '已送出記錄，請確認儲存結果。')
+                  : mentorFeedbackStudentId && mentorFeedbackText.trim() && hasFeedbackChanges
+                    ? (lang === 'en' ? 'You have unsaved changes for this student.' : '這位學生有尚未儲存的修改。')
+                    : ''}
+          </p>
+          {savedFeedbackChanged && <p role="status" className="mt-2 text-sm text-amber-900">
+            {lang === 'en' ? 'The saved daily comment has changed. Your unsaved input is retained; review it before saving.' : '工作區中的今日評語已更新。尚未保存的輸入仍保留，請核對後再保存。'}
+          </p>}
         </div>
 
         <div hidden={mode !== 'all' && mode !== 'reports'}>

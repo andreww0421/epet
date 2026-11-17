@@ -1,3 +1,5 @@
+import { isGameFeatures } from '../gameFeatures';
+
 /** Resource limits apply before normalization, cloning, sorting or projection.
  * They are deliberately wider than the UI's domain/retention limits so legacy
  * defaults and migrations can still run after the input has been bounded.
@@ -196,6 +198,7 @@ const classroomFields = {
 };
 const settingsFields: Record<string, Rule> = {
   ...calendarFields,
+  gameFeatures: isGameFeatures,
   decayType: text(40), petCareMode: text(40), publicNameMode: text(40), publicLeaderboardMode: text(40),
   language: text(10), battleMode: text(40), bossAttackMode: text(40),
   rankBrackets: fields({ diamond: number(), platinum: number(), gold: number(), silver: number() }),

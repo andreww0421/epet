@@ -55,7 +55,7 @@ test.describe('Exam assessment', () => {
     await expect(secondScore).toHaveValue('90');
     await performSyncedAction(page, () =>
       page.getByRole('button', { name: '保存考試' }).click());
-    await expect(page.getByText('已保存', { exact: true })).toBeVisible();
+    await expect(page.getByText('已加入工作區', { exact: true })).toBeVisible();
 
     await pasteScores(firstScore, '101\n90');
     const invalidPreview = page.locator('[aria-label="成績貼上預覽"]');

@@ -20,6 +20,8 @@ import {
 import { useStore } from '../../../store/useStore';
 import { ExamAssessmentPanel } from '../../exams/components/ExamAssessmentPanel';
 import { LearningEvidenceForm } from '../../learning/components/LearningEvidenceForm';
+import { getCompetencyLabels } from '../../learning/model/getCompetencyLabels';
+import type { LearningStudentSelection } from '../../learning/model/learningWorkflow';
 import { EconomyDashboardPanel } from './EconomyDashboardPanel';
 
 const levelTone: Record<LearningEvidenceLevel, string> = {
@@ -35,6 +37,8 @@ type StudentAnalyticsPanelProps = {
   readOnly?: boolean;
   mode?: StudentAnalyticsMode;
   visible?: boolean;
+  studentSelection?: LearningStudentSelection;
+  reportRequestId?: number;
 };
 
 export const StudentAnalyticsPanel: React.FC<StudentAnalyticsPanelProps> = ({
@@ -42,6 +46,8 @@ export const StudentAnalyticsPanel: React.FC<StudentAnalyticsPanelProps> = ({
   readOnly = false,
   mode = 'all',
   visible = true,
+  studentSelection,
+  reportRequestId,
 }) => {
   const { currentClass, lang, maxPoints } = useStore(
     useShallow((state) => ({
@@ -59,7 +65,7 @@ export const StudentAnalyticsPanel: React.FC<StudentAnalyticsPanelProps> = ({
     [currentClass?.learningEvidenceRecords],
   );
   const [studentId, setStudentId] = useState(students[0]?.id ?? '');
-  const selectedStudent = students.find((student) => student.id === studentId) ?? students[0];
+  const selectedStudent = students.find((student) => student.id === (studentSelection?.studentId ?? studentId)) ?? students[0];
 
   useEffect(() => {
     if (!students.some((student) => student.id === studentId)) {
@@ -129,13 +135,7 @@ export const StudentAnalyticsPanel: React.FC<StudentAnalyticsPanelProps> = ({
     remoteClassMetrics?.evidenceCount === localClassMetrics.evidenceCount
       ? remoteClassMetrics
       : localClassMetrics;
-  const competencyLabels: Record<LearningCompetency, string> = {
-    participation: tLang.competencyParticipation,
-    collaboration: tLang.competencyCollaboration,
-    selfManagement: tLang.competencySelfManagement,
-    assignmentQuality: tLang.competencyAssignmentQuality,
-    growth: tLang.competencyGrowth,
-  };
+  const competencyLabels = getCompetencyLabels(lang);
   const levelLabels: Record<LearningEvidenceLevel, string> = {
     needsSupport: tLang.dailyReflectionNeedsSupport,
     progressing: tLang.dailyReflectionProgressing,
@@ -225,8 +225,8 @@ export const StudentAnalyticsPanel: React.FC<StudentAnalyticsPanelProps> = ({
               {tLang.studentAnalyticsSelect}
               <select
                 value={selectedStudent?.id ?? ''}
-                onChange={(event) => setStudentId(event.target.value)}
-                className="mt-1 w-full rounded-md border border-slate-300 bg-white p-2"
+                onChange={(event) => (studentSelection?.onStudentChange ?? setStudentId)(event.target.value)}
+                className="mt-1 min-h-11 w-full rounded-md border border-slate-300 bg-white p-2"
               >
                 {students.map((student) => (
                   <option key={student.id} value={student.id}>{student.name}</option>
@@ -351,6 +351,7 @@ export const StudentAnalyticsPanel: React.FC<StudentAnalyticsPanelProps> = ({
           </div>
 
           <LearningEvidenceForm
+            classId={currentClass.id}
             canWrite={!readOnly}
             competencyLabels={competencyLabels}
             language={lang}
@@ -362,7 +363,8 @@ export const StudentAnalyticsPanel: React.FC<StudentAnalyticsPanelProps> = ({
         </div>
     </section>
     <div hidden={!visible || (mode !== 'all' && mode !== 'exams')}>
-      <ExamAssessmentPanel readOnly={readOnly} classId={classId} />
+      <ExamAssessmentPanel readOnly={readOnly} classId={classId} studentSelection={studentSelection}
+        reportRequestId={reportRequestId} visible={visible && (mode === 'all' || mode === 'exams')} />
     </div>
     </>
   );

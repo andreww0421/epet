@@ -135,7 +135,7 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
     () => invalidateSession(),
     [invalidateSession],
   );
-  const { status: backendStatus, verifiedAccess, flush: flushBackendChanges, readDraftForDownload,
+  const { status: backendStatus, verifiedAccess, verifiedAccessGeneration, flush: flushBackendChanges, readDraftForDownload,
     adoptRemote, preserveConflictDraft, retry: retrySync, failure: syncFailure,
     retryAt, localDraftBytes } = useBackendSync(
     true,
@@ -462,6 +462,7 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
             )}
           >
             <DashboardView
+                    draftAuthorization={verifiedAccess && verifiedAccessGeneration !== null ? { access: verifiedAccess, generation: verifiedAccessGeneration } : null}
                     setup={setup}
                     workspaceName={activeWorkspaceName}
                     syncStatus={backendStatus}

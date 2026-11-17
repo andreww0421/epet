@@ -1,4 +1,5 @@
 import React from 'react';
+import { resolveGameFeatures } from '../../shared/gameFeatures';
 import { PetActions } from '../features/pets/components/PetActions';
 import { PetBadges } from '../features/pets/components/PetBadges';
 import { PetCardHeader } from '../features/pets/components/PetCardHeader';
@@ -92,6 +93,7 @@ export const PetCard = React.memo<PetCardProps>(({
         status={status}
       />
       <PetActions
+        features={resolveGameFeatures(settings.gameFeatures)}
         model={model}
         storeActions={actions}
         onBattle={onBattle}

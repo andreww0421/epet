@@ -17,6 +17,10 @@ const openOwnerDashboard = async (page: Page, workspaceName: string) => {
   const created = await featureOwner.createWorkspace(workspaceName);
   const workspaceId = created.session.activeWorkspaceId;
   if (!workspaceId) throw new Error('Workspace is missing');
+  const initial = await featureOwner.loadState(workspaceId);
+  await featureOwner.saveState({ ...initial.data!, settings: { ...initial.data!.settings!,
+    gameFeatures: { pets: true, battles: true, bosses: true, leaderboards: true },
+  } }, initial.revision, workspaceId);
   await loginViaUi(page, featureOwner.account);
   await switchWorkspaceViaUi(page, workspaceId);
   // Session/workspace switches start at Today; the Console button is a safe no-op here.
@@ -53,6 +57,7 @@ test.describe('Dashboard feature wiring', () => {
     await expect(goalSection.getByText(goalTitle, { exact: true })).toBeVisible();
 
     await selectDashboardTab(page, '規則');
+    await page.getByText('進階遊戲參數', { exact: true }).click();
     await page.getByLabel('總積分上限').fill('850');
     await performSyncedAction(page, () => page.getByRole('button', {
       name: '儲存設定',

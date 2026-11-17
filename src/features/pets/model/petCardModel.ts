@@ -1,4 +1,5 @@
 import { getActiveLearningEvidence } from '../../../../shared/education';
+import type { GameFeatures } from '../../../../shared/gameFeatures';
 import {
   getLatestPositiveFeedback,
   getNextStudentGoal,
@@ -39,6 +40,7 @@ import { computeBadges } from '../../../store/utils';
 import { getPublicStudentName } from '../../../studentPresentation';
 
 export type PetCardSettings = {
+  gameFeatures?: GameFeatures;
   lang: Language;
   feedCost: number;
   playCost: number;
