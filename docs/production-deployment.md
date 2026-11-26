@@ -1,6 +1,14 @@
 # Production application deployment
 
-更新日期：2026-11-05。適用於 GitHub Actions 的 `deploy.yml`、既有 `epet-api` Worker 與同次發布的 static assets。2026-10-31 的流程修改僅使用 mock／本機驗證；本次新增既有失敗 run 的唯讀診斷及操作計畫。正式操作需另外取得授權，實際命令與結果以各自的 workflow runs 為準，不能把文件中的操作步驟視為已執行。
+更新日期：2026-11-26。適用於 GitHub Actions 的 `deploy.yml`、既有 `epet-api` Worker 與同次發布的 static assets。下列各次診斷及操作保留各自日期與授權範圍；實際命令與結果以各自的 workflow runs 為準，不能把文件中的操作步驟視為已執行。
+
+## 2026-11-26：寄信能力的部署後驗收阻擋
+
+main `629a5a10fbe78f15911c6b4bb46485de2521981d` 的 [deployment run 45772866012](https://github.com/andreww0421/epet/actions/runs/45772866012) 已完成 verify、migration ledger check 與 Worker deploy，部署後 smoke 回報 `HEALTH_CONTRACT`。匿名唯讀 GET `/api/v1/health` 得到 HTTP 200、`ok:true`、`authenticationEnabled:true`、`registrationEnabled:false`，但 `emailVerificationEnabled:false`。因此是「已發布、部署後驗收未通過」，不是 git push 失敗或已自動回復舊版；其他健康旗標也不能替代真實寄信驗證。
+
+`createEmailVerificationMailer`（`shared/services/accountEmail.ts`）要求有效的 `RESEND_API_KEY`、`PASSWORD_RESET_FROM` 與 `PUBLIC_APP_URL` 才建立 mailer；公開 health 只反映 mailer 是否可建立，不能指出缺哪一項，也不能證明郵件實際送達。管理員需在 Cloudflare 的正確 Production Worker 核對上述設定是否綁定到實際 serving deployment，確認 Resend 寄件網域／寄件身分，僅記錄存在性與驗證結果，不讀出或貼上 Secret 值。先以隔離 staging 驗證寄信與驗證連結；正式設定變更仍須獨立授權，本次沒有新增／修改 Secrets、開放註冊或建立正式測試帳號。
+
+保留 `EMAIL_VERIFICATION_REQUIRED:true` 與 smoke 的 `emailVerificationEnabled:true` 驗收條件，不改成接受 false、不跳過 smoke。經核准完成營運設定後，依實際 serving release 的資產執行既有 GET-only smoke；若只是重驗 smoke，不為此重發整個 Worker，也不回滾 D1。若需要應用回復，先核准 schema 相容版本並依下方回復程序處理；回復應用不會自動補齊缺失的 provider 設定。
 
 ## 2026-11-05：PR #21 合併後的 schema gate 阻擋
 

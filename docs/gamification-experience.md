@@ -4,6 +4,26 @@
 
 設計日期：2026-11-15。此文件區分「入口顯示政策」與既有遊戲規則；功能隱藏不會刪除資料、暫停時間流逝或重算遊戲結果。
 
+## 2026-11-19 單一寵物活動入口
+
+本次介面改為在上方「寵物活動 / Pet activities」集中提供互動名冊，取代原本上方「展示大廳」的預設入口。教師控制台的「寵物／對戰」保留規則說明與「開啟寵物活動」按鈕；「魔王管理」保留召喚、撤退與設定，透過同一按鈕進入參與活動，不再重複呈現互動寵物卡。排行榜保留個人／隊伍表格，不回退成互動寵物列表。
+
+| 入口 | 目前責任 |
+| --- | --- |
+| 上方「寵物活動」 | 唯一互動寵物列表；沿用既有餵食、升級、孵化、個人／隊伍對戰及魔王參與動作，各自遵守功能旗標與資格 |
+| 控制台「活動 → 寵物／對戰」 | 精簡說明與共用活動入口，不放第二份寵物卡 |
+| 控制台「活動 → 魔王管理」 | 保留管理表單及活動入口；攻擊與參與集中在活動列表 |
+| 控制台「活動 → 排行榜」 | 既有個人／隊伍排行及隱私政策；空名冊或隱藏個人排行時也不顯示互動寵物卡 |
+| 活動頁「唯讀投影」／`#/presentation` | 保留既有隔離的展示模式與遮罩 allowlist DTO；不是互動活動頁 |
+
+活動頁必須先取得目前帳號、工作區、角色與班級範圍的已驗證授權，確認當前班級在範圍內，且工作區已載入可安全操作的版本。只有可寫入角色能開啟；viewer 沿用原有唯讀控制台，不取得活動控制。個人隱藏偏好與工作區功能旗標仍共同生效，旗標不是後端權限的替代品。授權 generation、班級或功能政策改變時，活動組件會重新建立；離開頁面會卸載活動對話框。
+
+同一列表每頁最多掛載 **24 張**寵物卡，支援班內搜尋與前後分頁。這只限制 DOM 掛載數，不截斷名冊、不修改保存資料；對戰／組隊仍使用完整且已授權的目前班級名冊。搜尋與分頁只在此頁的記憶體中存在。分頁後焦點移到列表標題，操作與結果數量提供可讀名稱及狀態文字。
+
+返回控制台時保留原先分頁與尚未提交的編輯草稿；控制台在活動頁期間隱藏並停用其可見流程，不以重新掛載整個控制台換取精簡。Autosave、Revision Conflict、登入／工作區切換與草稿權限驗證仍由既有同步機制負責，不由活動頁另開寫入路徑。
+
+這段是目前程式與驗收契約，**不是新一輪測試已全部完成的宣告**。效能基準、後測、E2E／無障礙結果與尚待人工驗證項目統一記錄於 [前端體驗稽核](frontend-experience-audit.md)；下方 2026-11-15 的通過數僅為歷史紀錄。
+
 ## 盤點與功能去留矩陣
 
 A＝必須保留；B＝可合併入口；C＝可預設隱藏；D＝有條件可淘汰。分類可同時適用於不同層次。本次沒有任何遊戲能力或資料進入淘汰階段。
@@ -13,9 +33,9 @@ A＝必須保留；B＝可合併入口；C＝可預設隱藏；D＝有條件可�
 | 寵物養成 | A、B | 作為單一寵物入口，整合既有照護動作；教學模式可隱藏 | 寵物種類、等級、徽章、既有狀態完整保留；`src/features/pets/model/petCardModel.ts`、`src/components/PetCard.tsx` |
 | 餵食與升級 | A、B | 保留於寵物卡，不在首頁建立另一套控制；精簡模式仍可使用 | 餵食、玩耍、升級資格與支出不變；`src/domain/game/feedingRules.ts`、`upgradeRules.ts` |
 | 扭蛋 | A、B、C | 與寵物入口一起顯示或隱藏，不拆出重複活動入口 | 蛋的首次孵化、200 積分成本及已取得的升級獎勵資格保留；升級換寵會改變等級及狀態，不能在套用介面方案時自動觸發；`src/store/useStore.ts` 的 `gachaPet`、`rerollPetFromUpgrade` |
-| 個人對戰 | A、B、C | 與隊伍對戰共用對戰入口；新工作區預設隱藏 | 勝敗、消耗、資格、對戰模式和歷史不變；`src/domain/game/battleRules.ts` |
+| 個人對戰 | A、B、C | 與隊伍對戰共用單一寵物活動列表；控制台保留入口，新工作區預設隱藏 | 勝敗、消耗、資格、對戰模式和歷史不變；`src/domain/game/battleRules.ts` |
 | 隊伍對戰 | A、B、C | 與個人對戰共用開關；相關組隊按鈕一起隱藏 | 隊伍 ID、成員、既有對戰統計不移除；`src/features/classroom/model/classroomModels.ts`、`src/store/useStore.ts` 的 `setTeammate` |
-| 魔王副本 | A、B、C | 新工作區預設隱藏；活動與召喚時獎勵設定沿用現有組件 | 現役魔王、貢獻、恢復、已設定獎勵與發獎紀錄保留，不因隱藏而撤退；`src/features/boss/components/BossManagementSection.tsx`、`src/domain/game/bossRules.ts`、`rewardRules.ts` |
+| 魔王副本 | A、B、C | 新工作區預設隱藏；控制台保留管理，參與與攻擊集中在單一寵物活動列表；獎勵設定沿用現有組件 | 現役魔王、貢獻、恢復、已設定獎勵與發獎紀錄保留，不因隱藏而撤退；`src/features/boss/components/BossManagementSection.tsx`、`src/domain/game/bossRules.ts`、`rewardRules.ts` |
 | 排行榜 | A、B、C | 個人與隊伍排行集中；新工作區預設隱藏入口 | 公開姓名、包容模式和公開排行限制仍優先，不能由介面開關放寬；`ClassroomLeaderboard.tsx`、`ClassroomTeamLeaderboard.tsx`、`src/features/classroom/model/classroomPresentation.ts` |
 | 遊戲經濟與獎勵設定 | A、B、C | 管理員以方案和功能選擇開始；詳細成本、消耗、賽季、獎勵參數放進可展開的進階設定 | 積分餘額、經濟事件、獎勵語意及既有數值不重算；`src/features/settings/components/GameRuleSettings.tsx`、`src/domain/game/economyRules.ts` |
 | 懲罰與寵物狀態 | A、C、D（僅未來重複入口） | 保留現有友善模式；高複雜度參數收進進階設定。未來只有經使用證據確認的重複操作入口可淘汰 | 警告、處分紀錄、反向操作、休息／死亡語意完整保留；`src/domain/game/penaltyRules.ts`、`petRules.ts`。本次不移除任何懲罰能力 |
@@ -28,7 +48,7 @@ A＝必須保留；B＝可合併入口；C＝可預設隱藏；D＝有條件可�
 - 未含此欄位的歷史工作區、舊備份和匯入資料，保留原有功能可見性（四項皆可見）；原本的 `battleEnabled`、`battleMode`、公開排行榜及其他規則仍各自生效。
 - 只有新建立的工作區使用低複雜度入口預設：寵物顯示，對戰、魔王、排行榜隱藏。不能根據「學生人數為零」推斷舊工作區為新客戶。
 - 「簡約養成（建議）」方案為寵物顯示，其餘隱藏；「完整活動」顯示全部；「專注教學」隱藏全部。管理員仍可逐項調整。方案只影響入口，不調整遊戲規則。
-- `pets=false` 時隱藏寵物導覽、照顧、每日領取與升級操作；若個別開啟對戰或魔王，活動頁仍呈現參與所需的寵物卡。蛋的初次孵化保留為活動前置操作，成本與資格不變，不自動孵化或補充寵物。只有排行榜開啟時不顯示可寫入的寵物操作。
+- `pets=false` 時隱藏控制台寵物分頁、照顧、每日領取與升級操作；若個別開啟對戰或魔王，共用活動列表仍呈現參與所需的寵物卡。上方入口只要有任一遊戲功能開啟且個人未隱藏時即可顯示，不把寵物開關當作其他獨立功能的前置條件。蛋的初次孵化保留為活動前置操作，成本與資格不變，不自動孵化或補充寵物。只有排行榜開啟時不顯示可寫入的寵物操作。
 - `battles=false` 同時隱藏對戰頁、遊戲分組與卡片組隊／對戰按鈕及相關停用提示。`bosses=false` 隱藏魔王管理、卡片攻擊與遊戲獎勵捷徑；歷史仍在班級紀錄中。`leaderboards=false` 隱藏教師控制台的個人與隊伍排行入口，不改班級展示政策。
 - 開關不變更 `battleEnabled`、`inclusiveMode`、`petCareMode`、公開姓名與排行榜模式、任何經濟數值、時間戳記、等級、隊伍、勝敗、魔王進度或歷史紀錄。
 - 現有個人 `TeacherSetupState.gameMode` 保留為個人介面偏好。個人偏好可以進一步隱藏入口，不能重新顯示工作區政策隱藏的入口。
@@ -44,7 +64,7 @@ A＝必須保留；B＝可合併入口；C＝可預設隱藏；D＝有條件可�
 
 ### 班級展示模式
 
-既有班級展示模式刻意保持不變：沿用 `buildClassroomPresentation` 的 allowlist DTO，只有經遮罩的顯示名稱、可信任寵物類型、等級、受政策限制的 RP 與魔王 HP；沒有互動寫入 callback。工作區教師控制台入口的隱藏，不會移除班級展示、擴大展示資料或放寬公開隱私設定。
+既有班級展示能力保留於活動頁的「唯讀投影」與明確的 `#/presentation` 路徑。原上方入口改為私有互動活動頁；兩者的生命週期分開，不能因切到寵物列表便自動啟用投影旗標。展示仍沿用 `buildClassroomPresentation` 的 allowlist DTO，只有經遮罩的顯示名稱、可信任寵物類型、等級、受政策限制的 RP 與魔王 HP；沒有互動寫入 callback。重新載入、返回與登入失效的既有投影保護仍保留，不會擴大展示資料或放寬公開隱私設定。
 
 ## 分階段介面調整
 
@@ -60,10 +80,10 @@ A＝必須保留；B＝可合併入口；C＝可預設隱藏；D＝有條件可�
 | 新工作區活動導覽 | 5 個活動分頁：寵物、魔王、對戰、遊戲獎勵、排行榜 | 1 個寵物分頁；教學入口照常，管理員可恢復全部活動 |
 | 管理員選擇遊戲複雜度 | 搜尋多組數值及規則，逐項理解 | 選一個介面方案或逐項開關，再保存 |
 | 管理員調整對戰消耗 | 直接面對所有參數 | 展開進階設定後使用原欄位 |
-| 查看魔王並選學生攻擊 | 管理／魔王頁與寵物頁之間切換 | 同一魔王頁沿用現有寵物卡，不新增另一套攻擊規則 |
+| 查看魔王並選學生攻擊 | 寵物、對戰、魔王頁各自顯示寵物卡 | 上方寵物活動：1 次；從魔王管理按「開啟寵物活動」也到同一列表，不新增另一套攻擊規則 |
 | 停用與恢復活動入口 | 分散在個人偏好、對戰與公開排行規則 | 由管理員政策統一控制入口；重新顯示即沿用原進度與歷史 |
 
-活動入口使用獨立的「儲存活動入口」按鈕，只提交四個入口欄位；不連帶保存其他頁的規則或經濟草稿。介面明確區分已加入本機工作區與上方雲端同步狀態。魔王頁沿用既有寵物卡提供攻擊，不必先切回寵物頁。切換離開活動頁或政策變更會卸載互動對話框，重新開啟不會復活舊的對戰選擇。
+活動入口使用獨立的「儲存活動入口」按鈕，只提交四個入口欄位；不連帶保存其他頁的規則或經濟草稿。介面明確區分已加入本機工作區與上方雲端同步狀態。魔王攻擊集中於共用寵物活動列表，魔王管理頁不再複製卡片。切換離開活動頁或政策變更會卸載互動對話框，重新開啟不會復活舊的對戰選擇。
 
 ## 修改範圍
 
@@ -74,7 +94,8 @@ A＝必須保留；B＝可合併入口；C＝可預設隱藏；D＝有條件可�
 | `src/store/useStore.ts` | 在原有設定寫入中複製政策物件，避免共用可變參照；保留前一任務的 session metadata 修改 |
 | `src/features/settings/components/GameFeatureSettings.tsx`、`DashboardSettingsSection.tsx` | 管理員入口選擇、獨立保存、原數值表單的原生進階展開 |
 | `src/features/teacher-console/model/navigation.ts`、`TeacherTodayDashboard.tsx`、`TeacherSetupGuide.tsx` | 導覽與首頁捷徑遵守工作區政策，個人偏好說明 |
-| `src/components/DashboardView.tsx`、`ClassroomView.tsx` | 頁面可用性、安全退回、互動對話框生命週期及魔王頁參與入口 |
+| `src/App.tsx`、`src/components/DashboardView.tsx`、`ClassroomView.tsx`、`src/features/teacher-console/components/TeacherClassContext.tsx` | 私有共用活動入口、保留控制台草稿、已驗證班級選擇、獨立投影路徑與活動對話框生命週期 |
+| `src/features/classroom/components/ClassroomStudentGrid.tsx` | 24 張卡片分頁、班內搜尋與列表焦點／結果提示；完整名冊仍供原有活動規則使用 |
 | `src/components/PetCard.tsx`、`src/features/pets/hooks/usePetCardStore.ts`、`model/petCardModel.ts`、`components/PetActions.tsx`、`PetActionWarnings.tsx` | 傳遞入口政策、隱藏非必要操作及相關提示；不改資格／成本計算 |
 | `tests/gameFeatures.test.ts`、`tests/gameFeaturePersistence.test.ts`、`tests/e2e/game-features.spec.ts`、`package.json` | 政策、API、Node／D1 持久化與瀏覽器回歸，納入既有 verify |
 | `tests/e2e/teacher-console-navigation.spec.ts`、`dashboard-refactor.spec.ts`、`class-lifecycle.spec.ts`、`tests/e2e-capacity/capacity-recovery.spec.ts`、`tests/accessibility/fixtures.ts` | 既有完整活動案例明確設定全功能；數值案例先展開進階設定，保留原斷言 |
@@ -90,7 +111,7 @@ A＝必須保留；B＝可合併入口；C＝可預設隱藏；D＝有條件可�
 5. 不需要新 Secrets、Cloudflare 資源或 D1 schema 變更。若日後回復到尚不認識 `gameFeatures` 的舊版程式，舊 Normalizer 可能忽略新入口政策；部署回復計畫需先保留設定備份，不能假設舊版會強制維持新入口限制。
 6. 使用合成班級進行真機觸控、螢幕閱讀器及教師試用。後續依匿名使用證據評估重複入口；任何實際淘汰須先完成相容與資料保存評估。本次沒有淘汰功能或更動歷史資料保存政策。
 
-## 驗收紀錄
+## 2026-11-15 歷史驗收紀錄
 
 驗收日期：2026-11-15。狀態：**Completed（本機程式、自動化驗收及畫面檢視）**。這不是正式環境上線或完整 WCAG 符合性宣告。基底 commit：`422ca70cf9206e6b7880d30f700c3e2811ecd149`。
 

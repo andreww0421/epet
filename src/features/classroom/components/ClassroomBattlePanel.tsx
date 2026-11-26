@@ -43,7 +43,7 @@ export const ClassroomBattlePanel: React.FC<ClassroomBattlePanelProps> = ({
       labelledBy={titleId}
       describedBy={descriptionId}
       onClose={onClose}
-      className="max-w-lg overflow-hidden"
+      className="max-w-lg [overflow-wrap:anywhere]"
     >
       <div className="flex justify-between items-center p-4 border-b border-gray-200">
         <h2 id={titleId} className="text-lg font-bold text-slate-900 flex items-center">
@@ -53,7 +53,7 @@ export const ClassroomBattlePanel: React.FC<ClassroomBattlePanelProps> = ({
         <button
           type="button"
           onClick={onClose}
-          className="text-gray-400 hover:text-gray-500"
+          className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-slate-600 hover:bg-slate-100 hover:text-slate-900"
           aria-label={tLang.close}
         >
           <X className="h-5 w-5" />
@@ -105,15 +105,15 @@ export const ClassroomBattlePanel: React.FC<ClassroomBattlePanelProps> = ({
                     : 'border-gray-200 hover:bg-gray-50'
                 }`}
               >
-                <div className="flex items-center">
-                  <div className="bg-white p-2 rounded-full shadow-sm mr-3">
+                <div className="flex min-w-0 items-center">
+                  <div className="shrink-0 bg-white p-2 rounded-full shadow-sm mr-3">
                     <PetIcon className="h-5 w-5 text-gray-600" />
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <div className="font-medium text-gray-900">
                       {displayStudentName(student.name)}
                     </div>
-                    <div className="text-xs text-gray-500">
+                    <div className="text-xs text-slate-600">
                       Lv. {student.pet.level || 1} | {tLang.petFullness}: {student.pet.fullness}
                       {student.teamId
                         ? ` | ${language === 'en' ? 'Team' : '隊伍'}: ${getTeamMembers(students, student, settings.maxTeamSize).length} ${language === 'en' ? 'members' : '人'}`
@@ -131,11 +131,11 @@ export const ClassroomBattlePanel: React.FC<ClassroomBattlePanelProps> = ({
           )}
         </div>
       </div>
-      <div className="bg-gray-50 px-6 py-4 flex justify-end space-x-3">
+      <div className="bg-gray-50 px-6 py-4 flex flex-wrap justify-end gap-3">
         <button
           type="button"
           onClick={onClose}
-          className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+          className="min-h-11 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
         >
           {tLang.cancel}
         </button>
@@ -143,7 +143,7 @@ export const ClassroomBattlePanel: React.FC<ClassroomBattlePanelProps> = ({
           type="button"
           onClick={onStart}
           disabled={!defenderId}
-          className="px-4 py-2 text-sm font-medium text-white bg-rose-600 border border-transparent rounded-md hover:bg-rose-700 disabled:bg-rose-300 disabled:cursor-not-allowed"
+          className="min-h-11 px-4 py-2 text-sm font-medium text-white bg-rose-700 border border-transparent rounded-md hover:bg-rose-800 disabled:bg-rose-300 disabled:cursor-not-allowed"
         >
           {tLang.startBattle}
         </button>

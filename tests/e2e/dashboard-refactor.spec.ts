@@ -99,7 +99,9 @@ test.describe('Dashboard feature wiring', () => {
       isActive: true,
     }));
 
-    await page.getByRole('button', { name: '展示大廳', exact: true }).click();
+    await page.getByRole('button', { name: '寵物活動', exact: true }).click();
+    await expect(page.getByRole('heading', { name: '寵物活動', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: '唯讀投影', exact: true }).click();
     // Freeform educational/boss titles remain private; only game health is projected.
     await expect(page.getByText(goalTitle, { exact: true })).toHaveCount(0);
     await expect(page.getByRole('heading', { name: bossName, exact: true })).toHaveCount(0);
@@ -160,9 +162,12 @@ test.describe('Dashboard feature wiring', () => {
     ) ?? [];
     expect(adjustedStudents.every((student) => student.points === 200)).toBe(true);
 
-    // The same gameplay assertions now run in the explicitly private Activities area.
+    // The console entry opens the single private list; management tabs do not
+    // duplicate interactive pet cards.
     await selectTeacherDestination(page, 'Activities', '寵物');
     await expect(page.getByRole('tab', { name: '寵物', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await page.getByRole('button', { name: '開啟寵物活動', exact: true }).click();
+    await expect(page.getByRole('heading', { name: '寵物活動', exact: true })).toBeVisible();
     await expect(page.getByText('甲***', { exact: true }).first()).toBeVisible();
 
     for (let index = 0; index < studentNames.length; index += 1) {
@@ -220,6 +225,7 @@ test.describe('Dashboard feature wiring', () => {
     expect(adjustedStudents[0]?.teamId).toBeTruthy();
     expect(adjustedStudents[1]?.teamId).toBe(adjustedStudents[0]?.teamId);
 
+    await page.getByRole('button', { name: '導師控制台', exact: true }).click();
     await selectTeacherDestination(page, 'Activities', '排行榜');
     const teamLeaderboardButton = page.getByRole('button', { name: '隊伍排行榜', exact: true });
     await teamLeaderboardButton.click();

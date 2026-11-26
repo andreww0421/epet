@@ -44,7 +44,7 @@ export const ClassroomTeamDialog: React.FC<ClassroomTeamDialogProps> = ({
       labelledBy={titleId}
       describedBy={descriptionId}
       onClose={onClose}
-      className="max-w-lg overflow-hidden"
+      className="max-w-lg [overflow-wrap:anywhere]"
     >
       <div className="flex justify-between items-center p-4 border-b border-gray-200">
         <h2 id={titleId} className="text-lg font-bold text-slate-900 flex items-center">
@@ -54,7 +54,7 @@ export const ClassroomTeamDialog: React.FC<ClassroomTeamDialogProps> = ({
         <button
           type="button"
           onClick={onClose}
-          className="text-gray-400 hover:text-gray-500"
+          className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-slate-600 hover:bg-slate-100 hover:text-slate-900"
           aria-label={tLang.close}
         >
           <X className="h-5 w-5" />
@@ -99,14 +99,14 @@ export const ClassroomTeamDialog: React.FC<ClassroomTeamDialogProps> = ({
                     : 'border-slate-200 hover:bg-slate-50'
                 }`}
               >
-                <div className="flex items-center justify-between">
-                  <div className="font-medium text-slate-900">
+                <div className="flex min-w-0 items-center justify-between gap-2">
+                  <div className="min-w-0 font-medium text-slate-900">
                     {displayStudentName(candidate.name)}
                   </div>
-                  <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${
+                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-bold ${
                     selected
                       ? 'bg-indigo-100 text-indigo-700'
-                      : 'bg-slate-100 text-slate-500'
+                      : 'bg-slate-100 text-slate-700'
                   }`}>
                     {selected
                       ? language === 'en' ? 'Selected' : '已選取'
@@ -115,7 +115,7 @@ export const ClassroomTeamDialog: React.FC<ClassroomTeamDialogProps> = ({
                         : language === 'en' ? 'Available' : '可加入'}
                   </span>
                 </div>
-                <div className="text-xs text-slate-500">
+                <div className="text-xs text-slate-600">
                   Lv. {candidate.pet.level || 1} | {tLang.petFullness}: {candidate.pet.fullness}
                 </div>
               </button>
@@ -129,18 +129,18 @@ export const ClassroomTeamDialog: React.FC<ClassroomTeamDialogProps> = ({
             </div>
           )}
         </div>
-        <div className="mt-4 flex justify-end space-x-3">
+        <div className="mt-4 flex flex-wrap justify-end gap-3">
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50"
+            className="min-h-11 px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50"
           >
             {tLang.cancel}
           </button>
           <button
             type="button"
             onClick={onSave}
-            className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 border border-transparent rounded-md hover:bg-indigo-700"
+            className="min-h-11 px-4 py-2 text-sm font-medium text-white bg-indigo-700 border border-transparent rounded-md hover:bg-indigo-800"
           >
             {language === 'en' ? 'Save Team' : '儲存隊伍'}
           </button>

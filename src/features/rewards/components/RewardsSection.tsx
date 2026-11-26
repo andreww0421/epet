@@ -265,7 +265,7 @@ export const RewardsSection = ({
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-slate-200">
-                {currentStudents.length === 0 ? (
+                {visible && mode !== 'settings' && (currentStudents.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="px-6 py-8 text-center text-slate-500">{tLang.noStudents}</td>
                   </tr>
@@ -395,7 +395,7 @@ export const RewardsSection = ({
                       </td>
                     </tr>
                   );
-                })}
+                }))}
               </tbody>
             </table>
           </div>

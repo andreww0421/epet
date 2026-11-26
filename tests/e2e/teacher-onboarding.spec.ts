@@ -45,16 +45,16 @@ const openWorkspace = async (page: Page, name: string) => {
 
 const expectGames = async (page: Page, shown: boolean) => {
   const activities = navigation(page).getByRole('button', { name: '活動', exact: true });
-  const presentation = page.getByRole('button', { name: '展示大廳', exact: true });
+  const petActivities = page.getByRole('button', { name: '寵物活動', exact: true });
   const activityAction = page.getByRole('region', { name: '快速操作', exact: true })
     .getByRole('button', { name: '開始活動', exact: true });
   if (shown) {
     await expect(activities).toBeVisible();
-    await expect(presentation).toBeVisible();
+    await expect(petActivities).toBeVisible();
     await expect(activityAction).toBeVisible();
   } else {
     await expect(activities).toHaveCount(0);
-    await expect(presentation).toHaveCount(0);
+    await expect(petActivities).toHaveCount(0);
     await expect(activityAction).toHaveCount(0);
   }
 };

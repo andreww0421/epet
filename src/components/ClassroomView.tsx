@@ -32,11 +32,11 @@ import {
 const EMPTY_STUDENTS: Student[] = [];
 const EMPTY_LEARNING_EVIDENCE: LearningEvidenceRecord[] = [];
 
-export type ClassroomConsoleMode = 'pets' | 'battle' | 'leaderboard' | 'boss';
+export type ClassroomConsoleMode = 'pets' | 'battle' | 'leaderboard' | 'boss' | 'activities';
 type ClassroomViewProps = { consoleMode?: ClassroomConsoleMode; visible?: boolean };
 
 /** No-mode callers are public/read-only. Interactive controls require an explicit
- * Teacher Console destination and remain protected by the existing backend. */
+ * teacher activity destination and remain protected by the existing backend. */
 export const ClassroomView: React.FC<ClassroomViewProps> = (props) => props.consoleMode
   ? <TeacherClassroomActivity {...props} />
   : <ClassroomPresentation options={{ maskNames: true, inclusiveLeaderboard: true }} />;
@@ -71,7 +71,9 @@ const TeacherClassroomActivity: React.FC<ClassroomViewProps> = ({ consoleMode, v
       clearBossRecovery: state.clearBossRecovery,
     })),
   );
-  const [viewMode, setViewMode] = useState<ClassroomViewMode>('grid');
+  const [viewMode, setViewMode] = useState<ClassroomViewMode>(
+    () => consoleMode === 'leaderboard' ? 'leaderboard' : 'grid',
+  );
 
   useEffect(() => {
     if (consoleMode) setViewMode(consoleMode === 'leaderboard' ? 'leaderboard' : 'grid');
@@ -116,17 +118,20 @@ const TeacherClassroomActivity: React.FC<ClassroomViewProps> = ({ consoleMode, v
     }
   }, [publicLeaderboardMode, viewMode]);
 
-  const content = students.length === 0 || viewMode === 'grid'
+  // Rankings never fall back to the interactive roster, including empty classes
+  // and privacy changes. All pet actions live in the private activity hub.
+  const content = consoleMode !== 'leaderboard'
     ? (
       <ClassroomStudentGrid
         students={students}
+        language={language}
         translations={tLang}
         onBattle={battleDialog.open}
         onTeamUp={teamDialog.open}
         getRankInfo={getRankInfo}
       />
     )
-    : viewMode === 'leaderboard'
+    : viewMode !== 'teams'
       ? (
         <ClassroomLeaderboard
           mode={publicLeaderboardMode === 'growth' ? 'growth' : 'rank'}
@@ -147,8 +152,9 @@ const TeacherClassroomActivity: React.FC<ClassroomViewProps> = ({ consoleMode, v
         />
       );
 
-  const modeFeature = consoleMode && ({ pets: 'pets', battle: 'battles', boss: 'bosses', leaderboard: 'leaderboards' } as const)[consoleMode];
+  const modeFeature = consoleMode && consoleMode !== 'activities' && ({ pets: 'pets', battle: 'battles', boss: 'bosses', leaderboard: 'leaderboards' } as const)[consoleMode];
   if (modeFeature && !features[modeFeature]) return null;
+  if (consoleMode === 'activities' && !Object.values(features).some(Boolean)) return null;
 
   return (
     <div className={consoleMode ? 'rounded-lg bg-amber-50/50' : 'min-h-[calc(100vh-64px)] bg-amber-50/50'}>
@@ -162,7 +168,7 @@ const TeacherClassroomActivity: React.FC<ClassroomViewProps> = ({ consoleMode, v
             onViewModeChange={setViewMode}
           />}
           <ClassroomBossVictoryDialog
-            open={visible && showBossVictory}
+            open={visible && features.bosses && consoleMode !== 'leaderboard' && showBossVictory}
             result={bossVictoryResult}
             translations={tLang}
             displayStudentName={displayStudentName}
@@ -177,7 +183,7 @@ const TeacherClassroomActivity: React.FC<ClassroomViewProps> = ({ consoleMode, v
             language={language}
             translations={tLang}
           />}
-          {(!consoleMode || consoleMode === 'boss') && <ClassroomBossPanel
+          {features.bosses && (!consoleMode || consoleMode === 'boss' || consoleMode === 'activities') && <ClassroomBossPanel
             boss={currentClass?.activeBoss}
             students={students}
             now={recoveryNow}
@@ -208,7 +214,7 @@ const TeacherClassroomActivity: React.FC<ClassroomViewProps> = ({ consoleMode, v
             ? <p className="pb-5 text-sm text-slate-600">{language === 'en' ? 'Individual leaderboards are hidden by the current privacy settings.' : '目前隱私設定已隱藏個人排行榜。'}</p>
             : content}
           <ClassroomBattlePanel
-            open={visible && battleDialog.isOpen}
+            open={visible && features.battles && consoleMode !== 'leaderboard' && battleDialog.isOpen}
             students={students}
             opponents={battleDialog.opponents}
             defenderId={battleDialog.defenderId}
@@ -221,7 +227,7 @@ const TeacherClassroomActivity: React.FC<ClassroomViewProps> = ({ consoleMode, v
             onStart={battleDialog.start}
           />
           <ClassroomTeamDialog
-            open={visible && teamDialog.isOpen}
+            open={visible && features.battles && consoleMode !== 'leaderboard' && teamDialog.isOpen}
             student={teamDialog.student}
             currentTeamMembers={teamDialog.currentTeamMembers}
             availableTeammates={teamDialog.availableTeammates}

@@ -455,6 +455,9 @@ export const AuthScreen = () => {
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    // Keep the public layout stable during session/config discovery, but never
+    // submit until the server's auth and bot-protection policy is known.
+    if (status === 'checking' || pending) return;
     setSubmitError('');
     if (
       !authenticationEnabled &&
@@ -517,24 +520,15 @@ export const AuthScreen = () => {
     }
   };
 
-  if (status === 'checking') {
-    return (
-      <main className="flex min-h-screen items-center justify-center bg-[#f4f1e8] px-4" aria-busy="true" aria-label="正在確認登入狀態">
-        <div className="flex items-center gap-3 rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-black text-slate-700 shadow-sm" role="status">
-          <LoaderCircle aria-hidden="true" className="h-5 w-5 motion-safe:animate-spin" />
-          正在確認登入狀態…
-        </div>
-      </main>
-    );
-  }
-
+  const checking = status === 'checking';
   const completed = forgotComplete || resetComplete;
   const isRegister = mode === 'register';
   const isInvite = mode === 'invite';
   const isLogin = mode === 'login';
 
   return (
-    <main className="auth-page relative min-h-screen overflow-hidden bg-[#f4f1e8] text-slate-950">
+    <main aria-busy={checking} className="auth-page relative min-h-screen overflow-hidden bg-[#f4f1e8] text-slate-950">
+      <p role="status" className="sr-only">{checking ? '正在確認登入狀態…' : ''}</p>
       <div aria-hidden="true" className="pointer-events-none absolute inset-0">
         <div className="absolute -left-24 top-24 h-80 w-80 rounded-full bg-teal-300/25 blur-3xl" />
         <div className="absolute -right-24 top-0 h-96 w-96 rounded-full bg-amber-200/45 blur-3xl" />
@@ -635,7 +629,7 @@ export const AuthScreen = () => {
                   </button>
                 </div>
               ) : (
-                <form onSubmit={handleSubmit} className="px-6 pb-8 pt-6 sm:px-10 sm:pb-10" noValidate aria-busy={pending}>
+                <form inert={checking} onSubmit={handleSubmit} className="px-6 pb-8 pt-6 sm:px-10 sm:pb-10" noValidate aria-busy={pending || checking}>
                   {submitError && (
                     <div
                       ref={errorRef}
@@ -779,7 +773,7 @@ export const AuthScreen = () => {
                   <button
                     type="submit"
                     disabled={
-                      pending ||
+                      checking || pending ||
                       (isRegister && !registrationEnabled) ||
                       (botProtectionEnabled &&
                         (mode === 'login' || mode === 'register' || mode === 'forgot') &&
@@ -788,7 +782,7 @@ export const AuthScreen = () => {
                     className="mt-6 inline-flex min-h-14 w-full items-center justify-center gap-3 rounded-2xl bg-slate-950 px-5 py-3 text-base font-black text-white shadow-lg shadow-slate-950/15 transition duration-200 hover:-translate-y-0.5 hover:bg-teal-950 hover:shadow-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-700 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:translate-y-0 disabled:bg-slate-300 disabled:shadow-none"
                   >
                     {pending && <LoaderCircle aria-hidden="true" className="h-5 w-5 motion-safe:animate-spin" />}
-                    {pending ? '處理中…' : pageCopy.submit}
+                    {checking ? '正在確認登入狀態…' : pending ? '處理中…' : pageCopy.submit}
                     {!pending && <ArrowRight aria-hidden="true" className="h-5 w-5" />}
                   </button>
 

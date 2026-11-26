@@ -54,7 +54,7 @@ export const PetBadges = ({ badges, language }: PetBadgesProps) => {
 
   return (
     <div
-      className="absolute top-16 right-2 flex flex-col gap-1 z-20"
+      className="flex flex-wrap gap-1 px-4 py-2"
       role="list"
       aria-label={language === 'en' ? 'Pet badges' : '寵物徽章'}
     >

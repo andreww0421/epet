@@ -78,9 +78,9 @@ const seedPresentationConsole = async (page: Page, hiddenLeaderboard = false) =>
 };
 
 const enterPresentation = async (page: Page) => {
-  await page.getByRole('button', { name: '展示大廳', exact: true }).click();
+  await page.evaluate(() => { location.hash = '#/presentation'; });
   await expect(page.getByRole('heading', { name: '寵物展示大廳', exact: true })).toBeVisible();
-    await expect(page.locator('[data-presentation-mode="true"]')).toBeVisible();
+  await expect(page.locator('[data-presentation-mode="true"]')).toBeVisible();
 };
 
 test.describe('Teacher Console information architecture', () => {
@@ -282,7 +282,7 @@ test.describe('Teacher Console information architecture', () => {
     expect(await loadBrowserState(context, workspaceId)).toEqual(snapshot);
   });
 
-  test('Class groups and embedded pet, battle and leaderboard activities reuse existing game interactions', async ({ context, page }) => {
+  test('Class groups, the shared pet activity hub and leaderboard retain existing game interactions', async ({ context, page }) => {
     const workspaceId = await openOwnerConsole(page, 'console-game-interactions');
     const names = ['甲組隊學生', '乙組隊學生', '丙對戰學生'];
     for (const name of names) await addStudentViaUi(page, name);
@@ -304,6 +304,8 @@ test.describe('Teacher Console information architecture', () => {
     expect(second?.teamId).toBe(first?.teamId);
 
     await selectTeacherDestination(page, 'Activities', '寵物');
+    await expect(page.getByRole('article')).toHaveCount(0);
+    await page.getByRole('button', { name: '寵物活動', exact: true }).click();
     for (let index = 0; index < names.length; index += 1) {
       await performSyncedAction(page, () => page.getByRole('button', { name: '扭蛋 (-200)', exact: true }).first().click());
     }
@@ -314,6 +316,8 @@ test.describe('Teacher Console information architecture', () => {
     expect(students.every((student) => student.pet.type !== 'egg')).toBe(true);
 
     await selectTeacherDestination(page, 'Activities', '對戰');
+    await expect(page.getByRole('article')).toHaveCount(0);
+    await page.getByRole('button', { name: '寵物活動', exact: true }).click();
     await page.getByRole('article').first().getByRole('button', { name: '對戰', exact: true }).click();
     const battleDialog = page.getByRole('dialog', { name: '選擇對戰對手', exact: true });
     await expect(battleDialog).toBeVisible();
@@ -455,7 +459,7 @@ test.describe('Teacher Console information architecture', () => {
     const recent = page.getByRole('region', { name: '最近活動', exact: true });
     for (const name of ['每日評語', '學習證據', '考試更新']) await expect(recent.getByRole('button', { name, exact: true })).toHaveCount(name === '學習證據' ? 2 : 1);
     await page.getByRole('region', { name: '快速操作', exact: true }).getByRole('button', { name: '開始活動', exact: true }).click();
-    await expect(page.getByRole('tab', { name: '寵物', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('heading', { name: '寵物活動', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: '扭蛋 (-200)', exact: true })).toBeVisible();
     const snapshot = await loadBrowserState(context, workspaceId);
     expect(snapshot.data?.classes[0]?.examRecords?.[0]?.title).toBe('E2E Today 評量');
@@ -582,7 +586,7 @@ test.describe('Teacher Console information architecture', () => {
     await expect(page.getByRole('article')).toHaveCount(4);
     await expect(page.getByRole('article').first()).toHaveAccessibleName(getPublicStudentName(presentationNames[0]));
     await expect(page.getByRole('navigation', { name: 'Teacher Console', exact: true })).toHaveCount(0);
-    for (const name of ['教師控制台', '登出', '下载本機草稿', '下載本機草稿', '扭蛋 (-200)', '對戰', '建立隊伍']) {
+    for (const name of ['教師控制台', '導師控制台', '寵物活動', '登出', '下载本機草稿', '下載本機草稿', '扭蛋 (-200)', '對戰', '建立隊伍']) {
       await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0);
     }
     await expect(page.getByRole('combobox')).toHaveCount(0);

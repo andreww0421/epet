@@ -3,13 +3,9 @@ import { RefreshCw } from 'lucide-react';
 import { translations } from '../i18n/translations';
 import type { Language, PetCareMode } from '../store/types';
 import { getStoreSessionGeneration, useStore } from '../store/useStore';
-import { BossManagementSection } from '../features/boss/components/BossManagementSection';
 import { LearningActivitiesSection } from '../features/learning/components/LearningActivitiesSection';
 import { DashboardUndoNotices } from '../features/penalties/components/DashboardUndoNotices';
-import { DashboardRecordsSection } from '../features/records/components/DashboardRecordsSection';
 import { RewardsSection } from '../features/rewards/components/RewardsSection';
-import { DashboardSettingsSection } from '../features/settings/components/DashboardSettingsSection';
-import { StudentManagementSection } from '../features/students/components/StudentManagementSection';
 import { DashboardHeader } from '../features/workspace/components/DashboardHeader';
 import { ClassGroupsPanel } from '../features/teacher-console/components/ClassGroupsPanel';
 import { ConsoleSecurityPanel } from '../features/teacher-console/components/ConsoleSecurityPanel';
@@ -20,7 +16,6 @@ import {
   AREA_DESCRIPTIONS, getAreaLabel, getAreaDestinations, getDestination, resolveDestination,
   type ConsoleArea, type ConsoleDestination,
 } from '../features/teacher-console/model/navigation';
-import type { ClassroomConsoleMode } from './ClassroomView';
 import { type TodayPointEntryRequest, type TodayQuickAction } from '../features/teacher-console/model/todayActions';
 import type { BackendSyncStatus } from '../hooks/useBackendSync';
 import type { DashboardRecordView, RecordViewRequest } from '../features/records/model/recordNavigation';
@@ -35,6 +30,10 @@ import { resolveGameFeatures } from '../../shared/gameFeatures';
 const StudentAnalyticsSection = lazy(() => import('../features/analytics/components/StudentAnalyticsSection').then((module) => ({ default: module.StudentAnalyticsSection })));
 const DataGovernanceSection = lazy(() => import('../features/workspace/components/DataGovernanceSection').then((module) => ({ default: module.DataGovernanceSection })));
 const ClassroomView = lazy(() => import('./ClassroomView').then((module) => ({ default: module.ClassroomView })));
+const StudentManagementSection = lazy(() => import('../features/students/components/StudentManagementSection').then((module) => ({ default: module.StudentManagementSection })));
+const DashboardRecordsSection = lazy(() => import('../features/records/components/DashboardRecordsSection').then((module) => ({ default: module.DashboardRecordsSection })));
+const DashboardSettingsSection = lazy(() => import('../features/settings/components/DashboardSettingsSection').then((module) => ({ default: module.DashboardSettingsSection })));
+const BossManagementSection = lazy(() => import('../features/boss/components/BossManagementSection').then((module) => ({ default: module.BossManagementSection })));
 
 type DashboardViewProps = {
   readOnly?: boolean;
@@ -45,12 +44,14 @@ type DashboardViewProps = {
   syncStatus?: BackendSyncStatus;
   setup?: TeacherSetupController;
   draftAuthorization?: LearningDraftAuthorization | null;
+  visible?: boolean;
+  onOpenPetActivities?: () => void;
 };
 const analyticsModes = { 'student-insights': 'student', 'class-insights': 'class', trends: 'trends', evidence: 'evidence', exams: 'exams' } as const;
 const gameDestinations: ConsoleDestination[] = ['pets', 'battle', 'leaderboard', 'boss'];
 
 /** Draft editors stay mounted; activity dialogs close when leaving their page. */
-export const DashboardView = ({ readOnly = false, canExportFullData = false, canAdministerWorkspace = false, flushChanges = async () => true, workspaceName, syncStatus = 'connected', setup, draftAuthorization }: DashboardViewProps) => {
+export const DashboardView = ({ readOnly = false, canExportFullData = false, canAdministerWorkspace = false, flushChanges = async () => true, workspaceName, syncStatus = 'connected', setup, draftAuthorization, visible = true, onOpenPetActivities }: DashboardViewProps) => {
   const draftPermit = authorizeLearningDrafts(draftAuthorization);
   const data = useStore((state) => state.data);
   const lang = data.settings?.language || 'zh';
@@ -58,8 +59,7 @@ export const DashboardView = ({ readOnly = false, canExportFullData = false, can
   const capabilities = { readOnly, canAdministerWorkspace, gameFeatures };
   const [destination, setDestination] = useState<ConsoleDestination>('today');
   const [lastDestinations, setLastDestinations] = useState<Partial<Record<ConsoleArea, ConsoleDestination>>>({});
-  const [visited, setVisited] = useState({ analytics: false, governance: false });
-  const [gameMode, setGameMode] = useState<ClassroomConsoleMode>('pets');
+  const [visited, setVisited] = useState({ analytics: false, governance: false, students: false, records: false, settings: false, boss: false });
   const [todayPointEntry, setTodayPointEntry] = useState<TodayPointEntryRequest | null>(null);
   const [recordViewRequest, setRecordViewRequest] = useState<RecordViewRequest | null>(null);
   const [learningSelection, setLearningSelection] = useState<{ classId: string; studentId: string } | null>(null);
@@ -70,7 +70,7 @@ export const DashboardView = ({ readOnly = false, canExportFullData = false, can
   const [petCareMode, setPetCareMode] = useState<PetCareMode>(data.settings?.petCareMode === 'death' ? 'death' : 'rest');
   const gamesShown = setup?.state.gameMode !== 'hidden' && Object.values(gameFeatures).some(Boolean);
   const active = resolveDestination(!gamesShown && getDestination(destination).area === 'activities' ? 'today' : destination, capabilities);
-  useFeatureAnalytics(active, !readOnly);
+  useFeatureAnalytics(active, !readOnly && visible);
   const area = getDestination(active).area;
   const selectedClassId = readOnly ? readOnlyClassId : data.currentClassId;
   const sessionGeneration = getStoreSessionGeneration();
@@ -91,16 +91,25 @@ export const DashboardView = ({ readOnly = false, canExportFullData = false, can
   const analyticsMode = active in analyticsModes ? analyticsModes[active as keyof typeof analyticsModes] : 'student';
   const analyticsVisible = active in analyticsModes;
   const governanceVisible = active === 'governance' && !readOnly && canAdministerWorkspace;
-  const gamesVisible = !readOnly && gameDestinations.includes(active);
   const rewardsSettingsVisible = active === 'reward-settings' && !readOnly && canAdministerWorkspace;
+  const recordsVisible = ['comments', 'reports', 'records', 'activity-rewards'].includes(active);
+  const settingsVisible = !readOnly && canAdministerWorkspace && ['rules', 'reward-settings', 'workspace', 'governance'].includes(active);
 
   const navigate = (next: ConsoleDestination) => {
     setExamReportActive(false);
     const resolved = resolveDestination(!gamesShown && getDestination(next).area === 'activities' ? 'today' : next, capabilities);
     setDestination(resolved);
     setLastDestinations((current) => ({ ...current, [getDestination(resolved).area]: resolved }));
-    setVisited((current) => ({ analytics: current.analytics || resolved in analyticsModes, governance: current.governance || resolved === 'governance' }));
-    if (gameDestinations.includes(resolved)) setGameMode(resolved as ClassroomConsoleMode);
+    // Load expensive editors on first use, then retain their local drafts while
+    // navigating. Hidden student/report/settings trees no longer burden Today.
+    setVisited((current) => ({
+      analytics: current.analytics || resolved in analyticsModes,
+      governance: current.governance || resolved === 'governance',
+      students: current.students || resolved === 'students',
+      records: current.records || ['comments', 'reports', 'records', 'activity-rewards'].includes(resolved),
+      settings: current.settings || ['rules', 'reward-settings', 'workspace', 'governance'].includes(resolved),
+      boss: current.boss || resolved === 'boss' || resolved === 'reward-settings',
+    }));
   };
   const navigateArea = (next: ConsoleArea) => {
     const available = getAreaDestinations(next, capabilities);
@@ -115,6 +124,10 @@ export const DashboardView = ({ readOnly = false, canExportFullData = false, can
   };
   const runTodayAction = (action: TodayQuickAction) => {
     if (readOnly || (syncStatus !== 'connected' && syncStatus !== 'saving')) return;
+    if (action === 'activity' && gamesShown && onOpenPetActivities) {
+      onOpenPetActivities();
+      return;
+    }
     if (action === 'points' || action === 'give-points' || action === 'deduct-points') {
       setTodayPointEntry((previous) => ({ id: (previous?.id ?? 0) + 1, direction: action === 'deduct-points' ? 'deduct' : 'give' }));
     } else {
@@ -139,7 +152,7 @@ export const DashboardView = ({ readOnly = false, canExportFullData = false, can
 
   return (
     <div className="mx-auto min-h-full max-w-7xl bg-slate-50 px-4 py-6 sm:px-6 lg:px-8">
-      <DashboardHeader readOnly={readOnly} canAdministerWorkspace={governanceVisible} canExportFullData={governanceVisible && canExportFullData}
+      <DashboardHeader readOnly={readOnly} canAdministerWorkspace={visible && governanceVisible} canExportFullData={visible && governanceVisible && canExportFullData}
         flushChanges={flushChanges}
         description={lang === 'en' ? 'Start your day with points, comments and exams.' : '從首頁開始，加減分、評語與考試一目了然。'} />
       <TeacherClassContext classes={data.classes} classId={selectedClassId} language={lang} readOnly={readOnly} workspaceName={workspaceName} onReviewClassChange={setReadOnlyClassId} />
@@ -160,29 +173,38 @@ export const DashboardView = ({ readOnly = false, canExportFullData = false, can
           }} /></div>}
         {active === 'today' && <TodayOverview classData={currentClass} language={lang} schoolTimeZone={data.settings?.schoolTimeZone} settings={data.settings} syncStatus={syncStatus} onNavigate={navigateFromToday} onAction={runTodayAction} setup={setup} onSetupStep={runSetupStep} {...capabilities} />}
         {(visited.analytics || analyticsVisible) && <Suspense fallback={<DashboardLoading language={lang} />}>
-          <StudentAnalyticsSection classId={selectedClassId} readOnly={readOnly} mode={analyticsMode} visible={analyticsVisible}
+          <StudentAnalyticsSection classId={selectedClassId} readOnly={readOnly} mode={analyticsMode} visible={visible && analyticsVisible}
             studentSelection={studentSelection} reportRequestId={examReportRequestId} />
         </Suspense>}
-        <StudentManagementSection canAdministerWorkspace={canAdministerWorkspace} canWrite={!readOnly} showClassSelector={false} visible={!readOnly && active === 'students'} flushChanges={flushChanges} />
-        <ClassGroupsPanel classData={currentClass} language={lang} canWrite={!readOnly} visible={!readOnly && active === 'groups'} />
+        {!readOnly && visited.students && <Suspense fallback={<DashboardLoading language={lang} />}>
+          <StudentManagementSection canAdministerWorkspace={canAdministerWorkspace} canWrite={!readOnly} showClassSelector={false} visible={visible && active === 'students'} flushChanges={flushChanges} />
+        </Suspense>}
+        <ClassGroupsPanel classData={currentClass} language={lang} canWrite={!readOnly} visible={visible && !readOnly && active === 'groups'} />
         <RewardsSection canAdministerWorkspace={canAdministerWorkspace} canWrite={!readOnly} reasonLanguage={settingsLanguage}
-          todayPointEntry={todayPointEntry} todayActive={active === 'today'}
-          mode={rewardsSettingsVisible ? 'settings' : 'points'} visible={!readOnly && (active === 'points' || rewardsSettingsVisible)} />
-        <BossManagementSection canWrite={!readOnly} mode={rewardsSettingsVisible ? 'rewards' : 'boss'} visible={!readOnly && (active === 'boss' || (rewardsSettingsVisible && gameFeatures.bosses))} />
-        {!readOnly && gamesVisible && <div>
-          <Suspense fallback={<DashboardLoading language={lang} />}><ClassroomView key={JSON.stringify(gameFeatures)} consoleMode={gameMode} visible={gamesVisible} /></Suspense>
-        </div>}
-        <LearningActivitiesSection canWrite={!readOnly} petCareMode={petCareMode} visible={!readOnly && active === 'goals'} guideVisible={!readOnly && (active === 'pets' || active === 'battle')} />
-        <DashboardRecordsSection classId={selectedClassId} readOnly={readOnly} mode={active === 'comments' ? 'comments' : active === 'reports' ? 'reports' : 'records'}
+          todayPointEntry={todayPointEntry} todayActive={visible && active === 'today'}
+          mode={rewardsSettingsVisible ? 'settings' : 'points'} visible={visible && !readOnly && (active === 'points' || rewardsSettingsVisible)} />
+        {!readOnly && visited.boss && <Suspense fallback={<DashboardLoading language={lang} />}>
+          <BossManagementSection canWrite={!readOnly} mode={rewardsSettingsVisible ? 'rewards' : 'boss'} visible={visible && (active === 'boss' || (rewardsSettingsVisible && gameFeatures.bosses))} />
+        </Suspense>}
+        {!readOnly && gameDestinations.includes(active) && active !== 'leaderboard' && <section className="mb-5 rounded-xl border border-amber-200 bg-white p-5">
+          <h3 className="font-bold text-slate-900">{lang === 'en' ? 'One place for pet activities' : '所有寵物活動集中在同一處'}</h3>
+          <p className="mt-2 text-sm leading-6 text-slate-600">{lang === 'en' ? 'Feed, upgrade, battle and join boss activities from the same class roster. Only enabled activities appear.' : '從同一份班級名冊餵食、升級、對戰與參加魔王活動，只顯示已啟用的功能。'}</p>
+          <button type="button" onClick={onOpenPetActivities} disabled={!onOpenPetActivities} className="mt-4 min-h-11 rounded-lg bg-amber-800 px-4 py-2 text-sm font-bold text-white hover:bg-amber-900">{lang === 'en' ? 'Open pet activities' : '開啟寵物活動'}</button>
+        </section>}
+        {!readOnly && active === 'leaderboard' && <Suspense fallback={<DashboardLoading language={lang} />}>
+          <ClassroomView key={JSON.stringify(gameFeatures)} consoleMode="leaderboard" visible={visible} />
+        </Suspense>}
+        <LearningActivitiesSection canWrite={!readOnly} petCareMode={petCareMode} visible={visible && !readOnly && active === 'goals'} guideVisible={visible && !readOnly && (active === 'pets' || active === 'battle')} />
+        {visited.records && <Suspense fallback={<DashboardLoading language={lang} />}><DashboardRecordsSection classId={selectedClassId} readOnly={readOnly} mode={active === 'comments' ? 'comments' : active === 'reports' ? 'reports' : 'records'}
           studentSelection={studentSelection}
           viewRequest={recordViewRequest}
-          historyKind={active === 'activity-rewards' ? 'boss' : 'all'} visible={active === 'comments' || active === 'reports' || active === 'records' || active === 'activity-rewards'} />
-        <DashboardSettingsSection canAdministerWorkspace={canAdministerWorkspace} canWrite={!readOnly && canAdministerWorkspace}
+          historyKind={active === 'activity-rewards' ? 'boss' : 'all'} visible={visible && recordsVisible} /></Suspense>}
+        {!readOnly && canAdministerWorkspace && visited.settings && <Suspense fallback={<DashboardLoading language={lang} />}><DashboardSettingsSection canAdministerWorkspace={canAdministerWorkspace} canWrite={!readOnly && canAdministerWorkspace}
           languageDraft={settingsLanguage} onLanguageDraftChange={setSettingsLanguage} petCareModeDraft={petCareMode} onPetCareModeDraftChange={setPetCareMode}
           mode={active === 'reward-settings' ? 'rewards' : active === 'workspace' ? 'workspace' : active === 'governance' ? 'governance' : 'rules'}
-          visible={!readOnly && canAdministerWorkspace && ['rules', 'reward-settings', 'workspace', 'governance'].includes(active)} />
+          visible={visible && settingsVisible} /></Suspense>}
         {!readOnly && canAdministerWorkspace && active === 'security' && <ConsoleSecurityPanel language={lang} onNavigate={navigate} />}
-        {!readOnly && canAdministerWorkspace && (visited.governance || governanceVisible) && <div hidden={!governanceVisible}>
+        {!readOnly && canAdministerWorkspace && (visited.governance || governanceVisible) && <div hidden={!visible || !governanceVisible}>
           <Suspense fallback={<DashboardLoading language={lang} />}><DataGovernanceSection classes={data.classes} settings={data.settings} language={lang} flushChanges={flushChanges} /></Suspense>
         </div>}
       </div>

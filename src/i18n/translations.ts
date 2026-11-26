@@ -3,7 +3,7 @@ import { Language, PointReasonOption } from '../store/types';
 export const translations = {
   zh: {
     appTitle: '班級寵物養成系統',
-    classroom: '展示大廳',
+    classroom: '寵物活動',
     dashboard: '導師控制台',
     loading: '載入中...',
     addedStudent: '已新增學生：',
@@ -492,7 +492,7 @@ export const translations = {
   },
   en: {
     appTitle: 'Classroom Pet System',
-    classroom: 'Classroom',
+    classroom: 'Pet activities',
     dashboard: 'Teacher Console',
     loading: 'Loading...',
     addedStudent: 'Added student: ',

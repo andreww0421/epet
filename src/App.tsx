@@ -1,6 +1,6 @@
 import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import {
-  AlertCircle, CloudOff, Database, Dices, Dog, LogOut, RefreshCw, Settings, Smile, Users,
+  AlertCircle, CloudOff, Database, Dices, Dog, Gamepad2, LogOut, Monitor, RefreshCw, Settings, Smile,
 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { resetStoreForSession, useStore } from './store/useStore';
@@ -14,6 +14,7 @@ import {
 } from './components/EmailVerificationScreen';
 import { LegacyDataMigration } from './components/LegacyDataMigration';
 import { AccountDeletionDialog } from './components/AccountDeletionDialog';
+import { ModalDialog } from './components/ModalDialog';
 import {
   canAdministerWorkspace,
   canExportWorkspace,
@@ -22,10 +23,18 @@ import {
 import { usePresentationMode } from './features/classroom/hooks/usePresentationMode';
 import { ClassroomPresentationShell, PresentationPaused } from './features/classroom/components/ClassroomPresentationShell';
 import { useTeacherSetup } from './features/teacher-console/hooks/useTeacherSetup';
+import { TeacherClassContext } from './features/teacher-console/components/TeacherClassContext';
+import { resolveGameFeatures } from '../shared/gameFeatures';
+import { workspaceAccessKey } from '../shared/contracts/workspace';
 
 const ClassroomPresentation = lazy(() =>
   import('./features/classroom/components/ClassroomPresentation').then((module) => ({
     default: module.ClassroomPresentation,
+  })),
+);
+const ClassroomView = lazy(() =>
+  import('./components/ClassroomView').then((module) => ({
+    default: module.ClassroomView,
   })),
 );
 const DashboardView = lazy(() =>
@@ -115,12 +124,14 @@ const EmptyWorkspaceView = ({
   );
 };
 
-function WorkspaceApp({ presentationMode, onEndPresentation }: {
+function WorkspaceApp({ presentationMode, onStartPresentation, onEndPresentation }: {
   presentationMode: boolean;
+  onStartPresentation: () => void;
   onEndPresentation: () => void;
 }) {
   const { session, logout, selectWorkspace, invalidateSession } = useAuth();
   const workspaceSwitchInFlight = useRef(false);
+  const petActivitiesHeading = useRef<HTMLHeadingElement>(null);
   const [switchingWorkspace, setSwitchingWorkspace] = useState(false);
   const [navigationError, setNavigationError] = useState<string | null>(null);
   const activeWorkspaceId = session?.activeWorkspaceId ?? null;
@@ -151,7 +162,8 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
   // Read functional preferences only after the existing sync guard has loaded
   // the server-authorized class projection for this session and workspace.
   const setup = useTeacherSetup(switchingWorkspace ? null : verifiedAccess, workspaceData, canManage);
-  const gamesShown = setup.state.gameMode !== 'hidden';
+  const gameFeatures = resolveGameFeatures(workspaceData.settings?.gameFeatures);
+  const gamesShown = setup.state.gameMode !== 'hidden' && Object.values(gameFeatures).some(Boolean);
   const {
     view,
     toast,
@@ -183,10 +195,21 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
   const activeWorkspaceName =
     activeWorkspace?.name
     ?? (lang === 'en' ? 'current workspace' : '目前工作區');
-  const effectiveView = canManage ? view : 'dashboard';
   const workspaceReady =
     !switchingWorkspace &&
     (backendStatus === 'connected' || backendStatus === 'saving');
+  const authorizedClassIds = verifiedAccess?.classIds;
+  const authorizedClasses = authorizedClassIds
+    ? workspaceData.classes.filter((classData) => authorizedClassIds.includes(classData.id))
+    : workspaceData.classes;
+  const canOpenPetActivities = canManage && workspaceReady && gamesShown &&
+    verifiedAccess !== null && verifiedAccessGeneration !== null &&
+    authorizedClasses.some((classData) => classData.id === workspaceData.currentClassId);
+  const effectiveView = canOpenPetActivities ? view : 'dashboard';
+  const petActivitiesKey = verifiedAccess ? JSON.stringify([
+    workspaceAccessKey(verifiedAccess), verifiedAccessGeneration,
+    workspaceData.currentClassId, gameFeatures,
+  ]) : '';
   const canRecoverSync = ['conflict', 'capacity-error', 'validation-error', 'save-error', 'retry-paused'].includes(backendStatus);
   const syncErrorTitle = backendStatus === 'capacity-error'
     ? (lang === 'en' ? 'Workspace capacity reached' : '工作區容量已達上限')
@@ -203,6 +226,12 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'auto' });
   }, [effectiveView]);
+
+  useEffect(() => {
+    if (!presentationMode && effectiveView === 'classroom' && canOpenPetActivities) {
+      petActivitiesHeading.current?.focus();
+    }
+  }, [canOpenPetActivities, effectiveView, presentationMode]);
 
   useEffect(() => {
     document.documentElement.lang = lang === 'en' ? 'en' : 'zh-Hant';
@@ -246,6 +275,12 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
         : '尚未採用雲端版本，草稿仍保留。請確認網路連線及瀏覽器儲存權限後再試。');
     }
   }, [adoptRemote, lang]);
+
+  const keepUpgradeReward = () => {
+    if (!upgradeReward) return;
+    advanceUpgradeRewardProgress(upgradeReward.studentId, upgradeReward.reachedLevel);
+    setUpgradeReward(null);
+  };
 
   const handleWorkspaceChange = useCallback(async (workspaceId: string) => {
     if (workspaceSwitchInFlight.current || workspaceId === activeWorkspaceId) return;
@@ -382,8 +417,11 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
               </span>
               {canManage && gamesShown && (
                 <button
+                  type="button"
                   onClick={() => setView('classroom')}
                   aria-label={tLang.classroom}
+                  aria-current={effectiveView === 'classroom' ? 'page' : undefined}
+                  disabled={!canOpenPetActivities}
                   title={tLang.classroom}
                   className={`flex h-10 w-10 items-center justify-center rounded-md text-sm font-medium transition-colors sm:h-auto sm:w-auto sm:px-4 sm:py-2 ${
                     effectiveView === 'classroom'
@@ -391,13 +429,15 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
                       : 'text-gray-600 hover:bg-gray-100'
                   }`}
                 >
-                  <Users className="h-4 w-4 sm:mr-2" />
+                  <Gamepad2 className="h-4 w-4 sm:mr-2" aria-hidden="true" />
                   <span className="hidden sm:inline">{tLang.classroom}</span>
                 </button>
               )}
               <button
+                type="button"
                 onClick={() => setView('dashboard')}
                 aria-label={tLang.dashboard}
+                aria-current={effectiveView === 'dashboard' ? 'page' : undefined}
                 title={tLang.dashboard}
                 className={`flex h-10 w-10 items-center justify-center rounded-md text-sm font-medium transition-colors sm:h-auto sm:w-auto sm:px-4 sm:py-2 ${
                   effectiveView === 'dashboard'
@@ -453,25 +493,57 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
       )}
       <main className="flex-1 overflow-auto">
         {workspaceReady ? (
-          <Suspense
-            fallback={(
-              <div className="flex min-h-64 items-center justify-center text-sm font-medium text-slate-500">
-                <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                {tLang.loading}
+          <>
+            {/* Keep private editor drafts and console navigation when opening the
+                activity hub. The hidden console never tracks feature views. */}
+            <div hidden={effectiveView !== 'dashboard'}>
+              <Suspense fallback={(
+                <div className="flex min-h-64 items-center justify-center text-sm font-medium text-slate-500">
+                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                  {tLang.loading}
+                </div>
+              )}>
+                <DashboardView
+                  draftAuthorization={verifiedAccess && verifiedAccessGeneration !== null ? { access: verifiedAccess, generation: verifiedAccessGeneration } : null}
+                  setup={setup}
+                  workspaceName={activeWorkspaceName}
+                  syncStatus={backendStatus}
+                  readOnly={!canManage}
+                  canExportFullData={canExportFullData}
+                  canAdministerWorkspace={canAdminister}
+                  flushChanges={flushBackendChanges}
+                  visible={effectiveView === 'dashboard'}
+                  onOpenPetActivities={() => setView('classroom')}
+                />
+              </Suspense>
+            </div>
+            {effectiveView === 'classroom' && canOpenPetActivities && <section
+              className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8"
+              aria-labelledby="pet-activities-title"
+            >
+              <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <h1 id="pet-activities-title" ref={petActivitiesHeading} tabIndex={-1}
+                    className="text-2xl font-bold text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-indigo-700">{tLang.classroom}</h1>
+                  <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
+                    {lang === 'en'
+                      ? 'Feed, upgrade and run enabled activities from one pet list. Game progress is separate from learning assessment.'
+                      : '在同一份寵物列表餵食、升級與進行已啟用的活動。遊戲進度與正式學習評量分開。'}
+                  </p>
+                </div>
+                <button type="button" onClick={onStartPresentation}
+                  className="inline-flex min-h-11 items-center gap-2 rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-700">
+                  <Monitor className="h-4 w-4" aria-hidden="true" />{lang === 'en' ? 'Read-only presentation' : '唯讀投影'}
+                </button>
               </div>
-            )}
-          >
-            <DashboardView
-                    draftAuthorization={verifiedAccess && verifiedAccessGeneration !== null ? { access: verifiedAccess, generation: verifiedAccessGeneration } : null}
-                    setup={setup}
-                    workspaceName={activeWorkspaceName}
-                    syncStatus={backendStatus}
-                    readOnly={!canManage}
-                    canExportFullData={canExportFullData}
-                    canAdministerWorkspace={canAdminister}
-                    flushChanges={flushBackendChanges}
-            />
-          </Suspense>
+              <TeacherClassContext classes={authorizedClasses} classId={workspaceData.currentClassId}
+                language={lang} readOnly={false} workspaceName={activeWorkspaceName}
+                selectId="pet-activity-class" onReviewClassChange={() => {}} />
+              <Suspense fallback={<p className="py-10 text-center text-sm text-slate-600" role="status">{tLang.loading}</p>}>
+                <ClassroomView key={petActivitiesKey} consoleMode="activities" />
+              </Suspense>
+            </section>}
+          </>
         ) : (
           <section
             className="mx-auto flex min-h-[60vh] max-w-xl flex-col items-center justify-center px-6 py-16 text-center"
@@ -594,14 +666,14 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
 
       {/* Upgrade Gacha Reward Modal */}
       {upgradeReward && canManage && workspaceReady && (
-        <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="upgrade-reward-title"
-            aria-describedby="upgrade-reward-description"
-            className="bg-white rounded-2xl shadow-xl max-w-md w-full overflow-hidden"
-          >
+        <ModalDialog
+          labelledBy="upgrade-reward-title"
+          describedBy="upgrade-reward-description"
+          initialFocusId="upgrade-reward-keep"
+          returnFocusId={effectiveView === 'classroom' ? 'pet-activities-title' : 'dashboard-panel'}
+          onClose={keepUpgradeReward}
+          className="max-w-md rounded-2xl"
+        >
             <div className="p-6">
               <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-amber-100">
                 <Dices className="h-7 w-7 text-amber-600" />
@@ -611,33 +683,33 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
                 {tLang.upgradeGachaDesc
                   .replace('{name}', upgradeReward.studentName)
                   .replace('{level}', upgradeReward.reachedLevel.toString())}
+                <span className="mt-2 block">{lang === 'en' ? 'Esc keeps your current pet.' : '按 Esc 保留原寵物。'}</span>
               </p>
               <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
                 {tLang.upgradeGachaResetNote}
               </div>
             </div>
-            <div className="bg-slate-50 px-6 py-4 flex justify-end gap-3">
+            <div className="bg-slate-50 px-6 py-4 flex flex-wrap justify-end gap-3">
               <button
-                onClick={() => {
-                  advanceUpgradeRewardProgress(upgradeReward.studentId, upgradeReward.reachedLevel);
-                  setUpgradeReward(null);
-                }}
-                className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50"
+                id="upgrade-reward-keep"
+                type="button"
+                onClick={keepUpgradeReward}
+                className="min-h-11 px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-700"
               >
                 {tLang.upgradeGachaKeep}
               </button>
               <button
+                type="button"
                 onClick={() => {
                   rerollPetFromUpgrade(upgradeReward.studentId, upgradeReward.reachedLevel);
                   setUpgradeReward(null);
                 }}
-                className="px-4 py-2 text-sm font-medium text-white bg-amber-500 border border-transparent rounded-md hover:bg-amber-600"
+                className="min-h-11 px-4 py-2 text-sm font-medium text-amber-950 bg-amber-400 border border-transparent rounded-md hover:bg-amber-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-800"
               >
                 {tLang.upgradeGachaDraw}
               </button>
             </div>
-          </div>
-        </div>
+        </ModalDialog>
       )}
 
       {/* Toast Notification */}
@@ -661,7 +733,6 @@ function WorkspaceApp({ presentationMode, onEndPresentation }: {
 const AuthenticatedApp = () => {
   const { status, session } = useAuth();
   const presentation = usePresentationMode();
-  const requestedPresentation = useStore((state) => state.view === 'classroom');
   const language = useStore((state) => state.data.settings?.language ?? 'zh');
   const [verificationRoute, setVerificationRoute] = useState(
     readEmailVerificationRoute,
@@ -677,14 +748,13 @@ const AuthenticatedApp = () => {
       window.removeEventListener('popstate', updateRoute);
     };
   }, []);
-  useEffect(() => {
-    if (requestedPresentation && !presentation.active) presentation.enter();
-  }, [requestedPresentation, presentation.active, presentation.enter]);
   const endPresentation = () => {
     useStore.getState().setView('dashboard');
     presentation.leave();
   };
-  const presentationActive = presentation.active || requestedPresentation;
+  // Private pet activities and the explicit projection route are independent.
+  // Only the presentation guard may replace private UI with the read-only shell.
+  const presentationActive = presentation.active;
   const verificationRequired = verificationRoute.active ||
     (status === 'authenticated' && session?.user.emailVerified === false);
   if (presentationActive && (status !== 'authenticated' || verificationRequired)) {
@@ -697,7 +767,7 @@ const AuthenticatedApp = () => {
   ) {
     return <EmailVerificationScreen token={verificationRoute.token} />;
   }
-  return status === 'authenticated' ? <WorkspaceApp presentationMode={presentationActive} onEndPresentation={endPresentation} /> : <AuthScreen />;
+  return status === 'authenticated' ? <WorkspaceApp presentationMode={presentationActive} onStartPresentation={presentation.enter} onEndPresentation={endPresentation} /> : <AuthScreen />;
 };
 
 export default function App() {

@@ -158,6 +158,9 @@ test.describe('Workspace gamification availability', () => {
     await expect(page.getByRole('tab', { name: '寵物', exact: true })).toBeVisible();
     await expect(page.getByRole('tab', { name: '魔王管理', exact: true })).toBeVisible();
     for (const name of ['對戰', '排行榜']) await expect(page.getByRole('tab', { name, exact: true })).toHaveCount(0);
+    await expect(page.getByRole('article')).toHaveCount(0);
+    await page.getByRole('button', { name: '寵物活動', exact: true }).click();
+    await expect(page.getByRole('article')).toHaveCount(2);
     const card = page.getByRole('article').first();
     await expect(card.getByRole('button', { name: '對戰', exact: true })).toHaveCount(0);
     await expect(card.getByRole('button', { name: /建立隊伍|管理隊伍/ })).toHaveCount(0);
@@ -177,6 +180,8 @@ test.describe('Workspace gamification availability', () => {
     const { workspaceId, saved } = await seed('game-policy-refresh-dialog', flags('full'));
     await openConsoleWithApiSession(page, owner);
     await selectTeacherDestination(page, 'Activities', '對戰');
+    await expect(page.getByRole('article')).toHaveCount(0);
+    await page.getByRole('button', { name: '寵物活動', exact: true }).click();
     await page.getByRole('article').first().getByRole('button', { name: '對戰', exact: true }).click();
     await expect(page.getByRole('dialog', { name: '選擇對戰對手', exact: true })).toBeVisible();
     const current = await owner.loadState(workspaceId);
@@ -191,6 +196,7 @@ test.describe('Workspace gamification availability', () => {
     await owner.saveState({ ...disabled.data, settings: { ...disabled.data.settings!, gameFeatures: flags('full') } }, disabled.revision, workspaceId);
     await refreshVerifiedState(page);
     await selectTeacherDestination(page, 'Activities', '對戰');
+    await page.getByRole('button', { name: '寵物活動', exact: true }).click();
     await expect(page.getByRole('dialog', { name: '選擇對戰對手', exact: true })).toHaveCount(0);
     expect(preservedData((await loadBrowserState(context, workspaceId)).data)).toEqual(preservedData(saved.data));
   });
@@ -198,9 +204,14 @@ test.describe('Workspace gamification availability', () => {
   test('a boss-only workspace starts its available activity directly without exposing hidden pet care', async ({ page, context }) => {
     const { workspaceId, saved } = await seed('game-boss-only', { pets: false, battles: false, bosses: true, leaderboards: false });
     await openConsoleWithApiSession(page, owner);
-    await page.getByRole('region', { name: '快速操作', exact: true }).getByRole('button', { name: '開始活動', exact: true }).click();
+    await selectTeacherDestination(page, 'Activities', '魔王管理');
     await expect(page.getByRole('tab', { name: '魔王管理', exact: true })).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByRole('tab', { name: '寵物', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('article')).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: '魔王副本管理', exact: true })).toBeVisible();
+    await selectTeacherDestination(page, 'Today');
+    await page.getByRole('region', { name: '快速操作', exact: true }).getByRole('button', { name: '開始活動', exact: true }).click();
+    await expect(page.getByRole('heading', { name: '寵物活動', exact: true })).toBeVisible();
     await expect(page.getByRole('article')).toHaveCount(2);
     for (const card of await page.getByRole('article').all()) {
       await expect(card.getByRole('button', { name: '討伐 (-20)', exact: true })).toBeVisible();
@@ -213,7 +224,8 @@ test.describe('Workspace gamification availability', () => {
     const { workspaceId, saved } = await seed('game-hidden-presentation', flags('teaching'));
     await openConsoleWithApiSession(page, owner);
     await expect(navigation(page).locator('#console-area-activities')).toHaveCount(0);
-    await page.getByRole('button', { name: '展示大廳', exact: true }).click();
+    await expect(page.getByRole('button', { name: '寵物活動', exact: true })).toHaveCount(0);
+    await page.evaluate(() => { location.hash = '#/presentation'; });
     const display = page.locator('[data-presentation-mode="true"]');
     await expect(display).toBeVisible();
     await expect(display.getByRole('heading', { name: '寵物展示大廳', exact: true })).toBeVisible();

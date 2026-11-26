@@ -6,6 +6,20 @@ The former seven feature tabs mixed unrelated teaching tasks. Analytics containe
 
 The console starts at **首頁 / Today**. As of 2026-11-03, four primary work areas organize daily teaching: **首頁、班級、教學、活動** (Today, Class, Learning, Activities in English). **管理設定 / Settings** remains an independent administrator action. Analysis is available in its relevant workflow instead of a separate Insights area. There are no expandable menu trees. The existing indigo/slate visual language, editors and feature ownership remain in place.
 
+## 2026-11-19 private pet activity hub
+
+The application header now opens **寵物活動 / Pet activities** instead of opening the presentation hall. This private page owns the only interactive pet roster. Console Pets and Battle show a compact launcher; Boss management retains its existing configuration and a launcher, without another roster. Individual and team leaderboards remain table views and never fall back to interactive pet cards, including empty classes and hidden individual rankings.
+
+The hub mounts only after current user/workspace/role/class-scope verification, with a current store generation, writer capability, a ready synchronized workspace and an authorized current class. Workspace feature flags and the teacher's personal visibility preference both apply. A viewer receives no activity controls. These UI gates supplement the existing backend authorization; they do not grant API access or turn visibility flags into new game rules.
+
+The roster mounts at most **24 cards per page**, with class-local search and accessible page controls. Pagination changes mounted UI only: the complete authorized class remains available to existing battle/team eligibility logic, and persisted students, game history and learning records are not truncated or reordered. Changing the authorized scope, generation, class or game-feature policy replaces the hub component and its transient dialogs. Leaving the hub unmounts it.
+
+The console stays mounted but hidden while the hub is open, preserving navigation and unsubmitted editors. Feature analytics and visible child flows must be disabled while hidden. The hub reuses `TeacherClassContext` with a distinct select ID, because the console's class selector still exists in its hidden subtree. Existing autosave, revision-conflict recovery, scoped draft leases, logout and workspace switching continue to own data synchronization.
+
+**唯讀投影 / Read-only presentation** remains a secondary hub action and the explicit `#/presentation` route. It uses the existing isolated shell, allowlist projection, masking and exit/session-loss guards. Private `view === 'classroom'` no longer implicitly activates presentation mode. The projection never receives interactive mutation callbacks or the hidden console DOM.
+
+This section records the implemented architecture and acceptance contract. It does not certify that the new tests or performance comparisons have completed. Current measurements, test outcomes and remaining manual checks belong in [Frontend experience audit](frontend-experience-audit.md). The dated 2026-11-03 and 2026-10 results below remain historical evidence only.
+
 ## Destination map
 
 | Area | Tasks | Existing functionality reused |
@@ -13,14 +27,14 @@ The console starts at **首頁 / Today**. As of 2026-11-03, four primary work ar
 | Today | Current class, quick actions, pending work, recent activity, important alerts | Read-only projections of existing feedback, goal, boss, evidence, exam and ledger data |
 | Class / 班級 | Students, groups, **加減分**, daily comments, records; contextual student/class analysis | Enrollment/import, class administration, existing classroom teams, point and penalty actions, mentor comments, record ledgers; existing student competency and class/economy analysis |
 | Learning / 教學 | Evidence, exams, goals, weekly feedback reports; contextual learning trends | Existing evidence editor, assessment/results and exports, weekly class goals, weekly A4/CSV feedback reports; evidence and competency trend indicators |
-| Activities | Pets, boss, battle, game rewards, leaderboard | Same classroom pet/battle/boss controls and dialogs; boss management; existing boss reward history; individual and team leaderboards |
+| Activities | Pet/battle launchers, boss management, game rewards, leaderboard | One shared private pet activity roster; existing boss configuration and reward history; individual and team leaderboard tables |
 | Settings | Rules, reward settings, workspace/users, security/account, data governance | Game/calendar settings, point reasons/guardrails/participation/season rewards, summon-time boss reward drafts, RBAC/invitations, privacy/public display controls, exports/import, revision recovery, audit and account lifecycle |
 
 `班級 > 加減分` replaces the ambiguous `Class > 獎勵` label and retains the same point feedback and penalty operations. `活動 > 遊戲獎勵` means recorded game outcomes. Configuration belongs in `管理設定 > 獎勵設定`. These are distinct tasks, not duplicated reward implementations.
 
-Groups are the existing game teams, not a new classroom grouping model. Activities embed the existing classroom implementation; the standalone student presentation hall is still available from the application header. Pets and Battle retain shared pet-card actions rather than introducing alternate gameplay controls.
+Groups are the existing game teams, not a new classroom grouping model. The header's private pet activity hub reuses the existing pet-card actions rather than introducing alternate gameplay controls. Console Pets, Battle and Boss management link to that same roster. The standalone read-only presentation remains available through the hub's secondary action and explicit presentation route.
 
-The existing usage guide remains available below the pet/battle controls so the selected task is immediately actionable.
+The existing usage guide remains available with the console pet/battle launchers.
 
 Security routes directly to existing workspace access and governance/account-lifecycle controls. Password recovery remains on the sign-in screen. No new session-management or authentication API is implied.
 
@@ -28,13 +42,15 @@ Security routes directly to existing workspace access and governance/account-lif
 
 - `features/teacher-console/model/navigation.ts`: typed, localized destination map and presentation capability filtering. It does not grant backend authorization.
 - `TeacherConsoleNavigation`: four localized primary areas and one flat task tablist, active semantics and keyboard behavior. `WorkflowAnalysisLinks` adds lightweight analysis tabs as direct children of the same tablist, visually separated by an analysis caption. It does not create a nested navigation level.
-- `TeacherClassContext`: persistent class context. Writers use the existing guarded switch action; viewers select a class locally without changing persisted workspace state.
+- `TeacherClassContext`: persistent class context. Writers use the existing guarded switch action; viewers select a class locally without changing persisted workspace state. The private activity hub uses its own select ID and only the verified authorized classes.
 - `TeacherTodayDashboard` (`TodayOverview` compatibility export) and `model/todayOverview.ts`: a bounded, non-mutating, action-oriented workbench. Pending counts are optional reminders, not invented deadlines or mandatory tasks. Daily comments use the class calendar timezone; weekly goals and point fairness retain their existing global calendar definitions. The summary refreshes immediately on data changes and every minute while visible. See [Teacher Today Dashboard](teacher-today-dashboard.md) for its action flow and reminder definitions.
 - `ClassGroupsPanel`: adapts the existing team hook/dialog and canonical team membership helper.
 - `ConsoleSecurityPanel`: links to existing security operations, without copying authentication logic.
-- `DashboardView`: composition, navigation, capabilities and high-level shared drafts. It remembers the last task per area for the current mounted console.
-- Existing Analytics, Records, Rewards, Boss and Settings components expose backward-compatible presentation modes (default `all`). One owner remains mounted for each editor. Hidden wrappers remove inactive controls from keyboard/accessibility traversal without discarding drafts. Heavy analytics/governance/game bundles load on first use.
-- `ClassroomView` optionally embeds focused game surfaces, retaining the standalone default. Embedded dialogs open only while the surface is visible.
+- `DashboardView`: composition, navigation, capabilities and high-level shared drafts. It remembers the last task per area for the current mounted console and exposes the shared activity launcher. Its `visible` contract separates retained drafts from active workflows and feature-view tracking.
+- Existing Analytics, Records, Rewards, Boss and Settings components expose backward-compatible presentation modes (default `all`). One owner remains mounted for each visited editor. Hidden wrappers remove inactive controls from keyboard/accessibility traversal without discarding drafts. Students, Records, Settings, Boss, Analytics and Governance load on first use instead of eagerly mounting their full forms on Today.
+- `App`: coordinates the private hub and retained console, fresh verified access, class/policy/generation component keys, and the independently guarded read-only presentation route. Synchronization and recovery stay with `useBackendSync`.
+- `ClassroomView`: explicit `activities` mode owns the interactive roster; console `leaderboard` mode owns ranking tables only. Its no-mode fallback remains read-only. Embedded dialogs open only while the authorized surface and required game feature are active.
+- `ClassroomStudentGrid`: class-local search, 24-card pagination and page-change focus/status. It limits rendering, not stored data or the eligibility roster passed to battle/team dialogs.
 
 Settings still has one shared draft/save owner. Save applies pending rule, reward and governance drafts together, exactly as before; a visible hint makes that clear. Boss reward settings remain summon-time drafts and take effect on the next summon, not an independent settings save.
 
@@ -46,7 +62,7 @@ The four primary actions fit one compact mobile row; administrator Settings is o
 
 Owner/admin Settings gates, teacher class assignments, viewer read-only restrictions and backend RBAC are unchanged. Viewers retain analytics, records, saved exams and reports. They do not see mutation destinations or Settings. APIs, database schema, persisted data, game values, CSRF and authorization contracts are untouched.
 
-## 2026-11-03 導覽調整與操作對照
+## 2026-11-03 歷史導覽調整與操作對照
 
 先檢查原有五區導覽與既有 Today 快捷操作，再調整入口；沒有重做已存在的加減分、考試、評語、報告或分析功能。
 
@@ -128,7 +144,7 @@ Regression coverage includes destination/capability mapping, school-timezone rem
 
 Leaderboard coverage explicitly checks the default hidden individual board and the existing team board before opting into growth display through the real Settings UI. Neither production privacy defaults nor gameplay values were changed to satisfy the test.
 
-The new console suite and existing dashboard/workspace suites reuse real registered owners with separately created workspaces. This reduces setup registrations while retaining real cookies, CSRF, backend authorization, independent browser contexts and workspace data isolation. Production rate limits are unchanged. As of the 2026-10-03 Today implementation, login and workspace session reset start at Today; the standalone presentation hall remains available from the header.
+The new console suite and existing dashboard/workspace suites reuse real registered owners with separately created workspaces. This reduces setup registrations while retaining real cookies, CSRF, backend authorization, independent browser contexts and workspace data isolation. Production rate limits are unchanged. As of the 2026-10-03 Today implementation, login and workspace session reset start at Today; the standalone presentation hall was available from the header at that time. The 2026-11-19 header entry now opens the private activity hub, with read-only projection retained separately.
 
 TypeScript excludes generated `dist`, browser reports under `output`, coverage, and Wrangler artifacts. Application, server, shared domain, scripts and tests remain checked; no diagnostics are suppressed or rule checks disabled.
 
@@ -151,7 +167,7 @@ The subsequent Teacher Today implementation was verified on 2026-10-03: `npm tes
 
 Remaining deliberate boundaries:
 
-- Navigation remains in-memory, matching the previous console. URL deep links/history restoration require a separate routing change.
+- Private console/hub navigation remains in-memory, matching the previous console. General deep links/history restoration require a separate routing change; the explicit `#/presentation` fragment remains an existing projection privacy guard.
 - Learning trends reuse existing indicators, not a newly invented historical time-series dataset.
 - Governance retains its existing internal revision/export/audit/lifecycle tab strip. Flattening that complex workflow can be a later scoped change.
 - Settings saves all shared drafts; independent per-task saving would change existing behavior and needs a separate design decision.

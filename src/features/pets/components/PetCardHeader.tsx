@@ -43,10 +43,10 @@ export const PetCardHeader = ({
   const tLang = translations[language];
   return (
     <header
-      className={`px-4 py-3 border-b ${borderColor} ${backgroundColor} flex justify-between items-center`}
+      className={`px-4 py-3 border-b ${borderColor} ${backgroundColor} flex flex-col items-start gap-2`}
     >
-      <div className="flex flex-col">
-        <h2 id={headingId} className="font-bold text-gray-800 text-lg">
+      <div className="min-w-0 w-full flex flex-col [overflow-wrap:anywhere]">
+        <h2 id={headingId} className="min-w-0 font-bold text-gray-800 text-lg">
           {publicStudentName}
         </h2>
         <span className="text-xs font-bold text-amber-700 flex items-center">
@@ -72,8 +72,8 @@ export const PetCardHeader = ({
           </span>
         )}
         {teammateName && (
-          <span className="mt-1 inline-flex w-fit items-center rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-bold text-sky-700">
-            <Users className="mr-1 h-3 w-3" aria-hidden="true" />
+          <span className="mt-1 inline-flex max-w-full w-fit items-center rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-bold text-sky-700">
+            <Users className="mr-1 h-3 w-3 shrink-0" aria-hidden="true" />
             {language === 'en' ? 'Team' : '隊伍'}: {teammateName}
           </span>
         )}
@@ -84,7 +84,7 @@ export const PetCardHeader = ({
           />
         )}
       </div>
-      <div className="flex items-center bg-white px-2 py-1 rounded-full shadow-sm">
+      <div className="flex shrink-0 items-center bg-white px-2 py-1 rounded-full shadow-sm">
         <span className="text-xs font-bold text-indigo-600 mr-1">
           {tLang.points}
         </span>

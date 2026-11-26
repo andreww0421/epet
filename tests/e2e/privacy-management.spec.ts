@@ -370,7 +370,7 @@ test.describe('Data and Privacy management', () => {
     const saved = await loadBrowserState(context, workspaceId);
     expect(saved.data?.settings?.publicNameMode).toBe('masked');
     expect(saved.data?.settings?.publicLeaderboardMode).toBe('hidden');
-    await page.getByRole('button', { name: '展示大廳', exact: true }).click();
+    await page.evaluate(() => { location.hash = '#/presentation'; });
     await expect(page.locator('[data-presentation-mode="true"]')).toBeVisible();
     const mask = page.getByRole('checkbox', { name: '遮罩學生姓名', exact: true });
     await expect(mask).toBeChecked();

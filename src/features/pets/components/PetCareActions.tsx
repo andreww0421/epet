@@ -33,31 +33,31 @@ export const PetCareActions = ({
         type="button"
         onClick={onRevive}
         disabled={!actionState.canRevive}
-        className={`w-full flex items-center justify-center py-2 px-4 rounded-xl font-bold text-sm transition-all duration-200 ${
+        className={`min-h-11 w-full flex items-center justify-center gap-2 py-2 px-4 rounded-xl font-bold text-sm [overflow-wrap:anywhere] transition-all duration-200 ${
           !actionState.canRevive
             ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
             : 'bg-rose-700 hover:bg-rose-800 text-white shadow-sm hover:shadow active:scale-95'
         }`}
       >
-        <RefreshCw className="h-4 w-4 mr-2" aria-hidden="true" />
+        <RefreshCw className="h-4 w-4 shrink-0" aria-hidden="true" />
         {tLang.revivePet.replace('{cost}', actionState.reviveCost.toString())}
       </button>
     );
   }
 
   return (
-    <div className="flex space-x-2">
+    <div className="grid min-w-0 grid-cols-2 gap-2">
       <button
         type="button"
         onClick={onFeed}
         disabled={!actionState.canFeed || pet.fullness >= 100}
-        className={`flex-1 flex items-center justify-center py-2 px-2 rounded-xl font-bold text-xs transition-all duration-200 ${
+        className={`min-h-11 min-w-0 flex items-center justify-center gap-1 py-2 px-2 rounded-xl font-bold text-xs [overflow-wrap:anywhere] transition-all duration-200 ${
           !actionState.canFeed || pet.fullness >= 100
             ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
             : 'bg-amber-400 hover:bg-amber-500 text-amber-900 shadow-sm hover:shadow active:scale-95'
         }`}
       >
-        <Utensils className="h-3 w-3 mr-1" aria-hidden="true" />
+        <Utensils className="h-3 w-3 shrink-0" aria-hidden="true" />
         {pet.fullness >= 100
           ? tLang.alreadyFull
           : actionState.canFeed
@@ -68,13 +68,13 @@ export const PetCareActions = ({
         type="button"
         onClick={onPlay}
         disabled={!actionState.canPlay || pet.happiness >= 100}
-        className={`flex-1 flex items-center justify-center py-2 px-2 rounded-xl font-bold text-xs transition-all duration-200 ${
+        className={`min-h-11 min-w-0 flex items-center justify-center gap-1 py-2 px-2 rounded-xl font-bold text-xs [overflow-wrap:anywhere] transition-all duration-200 ${
           !actionState.canPlay || pet.happiness >= 100
             ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
             : 'bg-rose-700 hover:bg-rose-800 text-white shadow-sm hover:shadow active:scale-95'
         }`}
       >
-        <Smile className="h-3 w-3 mr-1" aria-hidden="true" />
+        <Smile className="h-3 w-3 shrink-0" aria-hidden="true" />
         {pet.happiness >= 100
           ? language === 'en'
             ? 'Very happy!'

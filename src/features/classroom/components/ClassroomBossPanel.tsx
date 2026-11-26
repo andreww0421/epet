@@ -153,7 +153,7 @@ export const ClassroomBossPanel: React.FC<ClassroomBossPanelProps> = ({
             {tLang.bossFairRankingHint}
           </p>
           {standings.length === 0 ? (
-            <p className="py-3 text-center text-xs text-slate-500">
+            <p className="py-3 text-center text-xs text-slate-300">
               {tLang.noContribution}
             </p>
           ) : (

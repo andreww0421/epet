@@ -25,7 +25,12 @@ before(async () => {
     assets: { directory: assets, binding: 'ASSETS' },
     d1_databases: [{ binding: 'DB', database_name: 'epet-monitoring-test', database_id: '11111111-1111-4111-8111-111111111111' }],
   }));
-  const childEnv = { ...process.env, WRANGLER_SEND_METRICS: 'false', WRANGLER_LOG_PATH: join(directory, 'wrangler.log') };
+  const childEnv: NodeJS.ProcessEnv = { ...process.env, WRANGLER_SEND_METRICS: 'false', WRANGLER_HIDE_BANNER: 'true', WRANGLER_LOG_PATH: join(directory, 'wrangler.log') };
+  // Wrangler 4.115.0 probes installed agent skills before its metrics opt-out
+  // check. The synthetic dry-run must not inherit optional Codex detection and
+  // start an unrelated GitHub lookup. Hiding the banner also skips its npm
+  // update lookup; runtime checks, diagnostics and timeout stay intact.
+  delete childEnv.CODEX_THREAD_ID;
   for (const key of Object.keys(childEnv)) {
     if (/^(?:CF_|CLOUDFLARE_|STAGING_|SENTRY_)/.test(key)) delete childEnv[key];
   }

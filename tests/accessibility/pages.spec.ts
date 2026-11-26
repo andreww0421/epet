@@ -13,8 +13,10 @@ test('Login: labels, errors, semantics and contrast', async ({ page }, info) => 
 });
 
 test('Teacher Activities: populated pet cards and controls', async ({ teacherPage: page }, info) => {
-  // Gameplay is retained in the teacher console, not on the public display.
+  // Management pages launch one private roster; projection stays read-only.
   await selectTeacherDestination(page, 'Activities', '寵物');
+  await expect(page.getByRole('article')).toHaveCount(0);
+  await page.getByRole('button', { name: '寵物活動', exact: true }).click();
   const hatch = page.getByRole('button', { name: /扭蛋/ });
   await expect(hatch).toBeVisible();
   await scanAccessibility(page, info, 'classroom-before-hatching');
@@ -43,6 +45,8 @@ test('Teacher Activities: populated pet cards and controls', async ({ teacherPag
   await teamDialog.getByRole('button', { name: '取消' }).click();
 
   await selectTeacherDestination(page, 'Activities', '對戰');
+  await expect(page.getByRole('article')).toHaveCount(0);
+  await page.getByRole('button', { name: '寵物活動', exact: true }).click();
   const battleAction = petCard.getByRole('button', { name: '對戰', exact: true });
   await battleAction.focus();
   await expect(battleAction).toBeFocused();
@@ -72,7 +76,7 @@ test('Classroom presentation: read-only content and guarded keyboard exit', asyn
   expect(saved.status()).toBe(200);
   await page.reload();
   await expect(page.getByRole('heading', { name: '首頁', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: '展示大廳', exact: true }).click();
+  await page.evaluate(() => { location.hash = '#/presentation'; });
   await expect(page.getByRole('heading', { name: '寵物展示大廳' })).toBeVisible();
   await expect(page.getByRole('article').first()).toHaveAccessibleName(/\*+/);
   await expect(page.getByRole('button', { name: /扭蛋/ })).toHaveCount(0);

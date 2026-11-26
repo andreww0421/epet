@@ -229,7 +229,7 @@ test.describe('Anonymous teacher product analytics', () => {
       { feature: 'students' }, { feature: 'points' },
     ]);
     const beforePresentation = await collected(page);
-    await page.getByRole('button', { name: '展示大廳', exact: true }).click();
+    await page.evaluate(() => { location.hash = '#/presentation'; });
     await expect(page.getByRole('heading', { name: '寵物展示大廳', exact: true })).toBeVisible();
     await page.keyboard.press('Escape');
     await page.evaluate(() => { location.hash = '#/login'; });

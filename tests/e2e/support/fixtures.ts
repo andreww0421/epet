@@ -341,8 +341,13 @@ export const selectTeacherDestination = async (
   area: TeacherConsoleArea,
   destination?: string,
 ) => {
-  await page.getByRole('navigation', { name: 'Teacher Console', exact: true })
-    .locator(`#console-area-${consoleAreaIds[area]}`).click();
+  const navigation = page.getByRole('navigation', { name: 'Teacher Console', exact: true });
+  // The activity hub keeps editor drafts mounted in a hidden console. Return
+  // through its public UI before selecting a management destination.
+  if (!await navigation.isVisible()) {
+    await page.getByRole('button', { name: /^(導師控制台|Teacher Console)$/, exact: true }).click();
+  }
+  await navigation.locator(`#console-area-${consoleAreaIds[area]}`).click();
   if (destination) {
     await page.getByRole('tab', { name: destination, exact: true }).click();
   }
