@@ -80,7 +80,7 @@
     "tsx": "^4.23.1",
     "typescript": "~5.8.2",
     "vite": "^8.1.6",
-    "wrangler": "4.115.0"
+    "wrangler": "4.165.0"
   },
   "overrides": {
     "miniflare@4.20260722.1": {
